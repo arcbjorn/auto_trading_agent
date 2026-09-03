@@ -110,6 +110,10 @@ struct CancelAllArgs {}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct BalancesArgs {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GetOrderArgs {
     order_id: Decimal,
 }
@@ -176,6 +180,9 @@ fn fill_json(t: &pb::Trade) -> Value {
 fn grpc_error(status: tonic::Status) -> ToolOutput {
     let hint = match status.code() {
         tonic::Code::NotFound => " Check the id with list_orders.",
+        tonic::Code::FailedPrecondition if status.message().starts_with("insufficient") => {
+            " Reduce the quantity or the price to what the account holds, or tell the user what is available (get_balances); do not retry the same order."
+        }
         tonic::Code::FailedPrecondition => " The order is no longer open; nothing to do.",
         tonic::Code::PermissionDenied => " Only this account's orders can be managed.",
         tonic::Code::InvalidArgument => " Fix the argument and retry.",
@@ -290,6 +297,17 @@ impl ToolSet {
                 "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false }
             }),
             json!({
+                "name": "get_balances",
+                "title": "Balances",
+                "description": "What this account holds: available and reserved USDC and ETH. Reserved amounts back its open orders. Call when the user asks what they have, and before an order that may exceed it.",
+                "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+                "outputSchema": { "type": "object", "properties": {
+                    "usdc_available": { "type": "string" }, "usdc_reserved": { "type": "string" },
+                    "eth_available": { "type": "string" }, "eth_reserved": { "type": "string" }, "enforced": { "type": "boolean" } },
+                    "required": ["usdc_available", "usdc_reserved", "eth_available", "eth_reserved", "enforced"] },
+                "annotations": read_only
+            }),
+            json!({
                 "name": "get_order",
                 "title": "Get order",
                 "description": "One of this account's orders by order_id, with its current status and remaining quantity. Call when the user asks about a specific order, or to check an older order that list_orders no longer shows.",
@@ -381,6 +399,7 @@ impl ToolSet {
             "cancel_order" => self.cancel(args).await,
             "cancel_all_orders" => self.cancel_all(args).await,
             "get_order" => self.get_order(args).await,
+            "get_balances" => self.balances(args).await,
             "list_orders" => self.list_orders(args).await,
             "list_trades" => self.list_trades(args).await,
             other => return Err(RpcError::invalid_params(format!("Unknown tool: {other}"))),
@@ -619,6 +638,28 @@ impl ToolSet {
                     "cancelled_eth": eth(o.remaining_lots as u64),
                     "side": side_name(o.side),
                     "price_usdc": usdc(o.price_ticks as u64)
+                }))
+            }
+            Err(s) => grpc_error(s),
+        }
+    }
+
+    async fn balances(&self, args: &Value) -> ToolOutput {
+        if let Err(e) = parse_args::<BalancesArgs>(args) {
+            return e;
+        }
+        let req = pb::GetBalancesRequest {
+            account_id: self.account.clone(),
+        };
+        match self.engine.clone().get_balances(req).await {
+            Ok(r) => {
+                let b = r.into_inner();
+                ToolOutput::ok(json!({
+                    "usdc_available": usdc_from_micro(b.usdc_available_micro as u128),
+                    "usdc_reserved": usdc_from_micro(b.usdc_reserved_micro as u128),
+                    "eth_available": eth(b.eth_available_lots),
+                    "eth_reserved": eth(b.eth_reserved_lots),
+                    "enforced": b.enforced
                 }))
             }
             Err(s) => grpc_error(s),

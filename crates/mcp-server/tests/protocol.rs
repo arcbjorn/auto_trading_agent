@@ -1,7 +1,7 @@
 //! End-to-end protocol tests: a real engine (tonic, in-process) behind the MCP server, driven with
 //! raw JSON-RPC messages exactly as a host would send them.
 use clob_proto::v1::engine_client::EngineClient;
-use clob_proto::v1::{PlaceOrderRequest, Side, TimeInForce};
+use clob_proto::v1::{DepositRequest, PlaceOrderRequest, Side, TimeInForce};
 use engine_server::{serve, EngineConfig, ServerHandle};
 use mcp_server::{serve_http, McpServer, Policy, PolicyConfig, ToolSet};
 use serde_json::{json, Value};
@@ -12,7 +12,20 @@ async fn stack() -> (Arc<McpServer>, EngineClient<Channel>, ServerHandle) {
     let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), EngineConfig::default())
         .await
         .unwrap();
-    let engine = EngineClient::connect(format!("http://{addr}")).await.unwrap();
+    let mut engine = EngineClient::connect(format!("http://{addr}")).await.unwrap();
+    for (account, usdc, eth) in [
+        ("mm", 1_000_000_000_000u64, 1_000_000_000u64),
+        ("demo", 50_000_000_000, 100_000),
+    ] {
+        engine
+            .deposit(DepositRequest {
+                account_id: account.into(),
+                usdc_micro: usdc,
+                eth_lots: eth,
+            })
+            .await
+            .unwrap();
+    }
     let policy = Arc::new(Policy::new(PolicyConfig {
         actions_per_minute: 1_000,
         ..PolicyConfig::default()
@@ -75,7 +88,7 @@ async fn lifecycle_and_discovery() {
 
     let r = server.handle_message(req(4, "tools/list", json!({}))).await.unwrap();
     let tools = r["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 10);
     let place = tools.iter().find(|t| t["name"] == "place_limit_order").unwrap();
     assert_eq!(place["annotations"]["readOnlyHint"], false);
     assert_eq!(
@@ -400,6 +413,42 @@ async fn tools_against_a_real_engine() {
         .contains("Only this account"));
     let missing = call(&server, 32, "get_order", json!({ "order_id": 99999 })).await;
     assert!(missing["content"][0]["text"].as_str().unwrap().contains("list_orders"));
+
+    // Balances in human units: 10 ETH and 50,000 USDC to start, 1.2 ETH bought for 3,601.90 above,
+    // everything else cancelled again, so nothing is reserved.
+    let b = call(&server, 40, "get_balances", json!({})).await;
+    assert_eq!(b["isError"], false, "{b}");
+    assert_eq!(
+        b["structuredContent"],
+        json!({ "enforced": true, "eth_available": "11.2000", "eth_reserved": "0.0000", "usdc_available": "46398.10", "usdc_reserved": "0.00" })
+    );
+    // A sell that outruns the ETH left after a reservation is refused with the balance in the text.
+    let reserve = call(
+        &server,
+        41,
+        "place_limit_order",
+        json!({ "side": "sell", "price_usdc": "3050", "quantity_eth": "6" }),
+    )
+    .await;
+    assert_eq!(reserve["structuredContent"]["status"], "open", "{reserve}");
+    let broke = call(
+        &server,
+        42,
+        "place_limit_order",
+        json!({ "side": "sell", "price_usdc": "3060", "quantity_eth": "6" }),
+    )
+    .await;
+    assert_eq!(broke["isError"], true, "{broke}");
+    let text = broke["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("insufficient ETH") && text.contains("5.2000") && text.contains("get_balances"),
+        "{text}"
+    );
+    let after = call(&server, 43, "get_balances", json!({})).await["structuredContent"].clone();
+    assert_eq!(
+        (after["eth_reserved"].as_str(), after["eth_available"].as_str()),
+        (Some("6.0000"), Some("5.2000"))
+    );
 
     // Client order ids are bounded and plain: they come back in listings the model reads.
     let smuggle = call(

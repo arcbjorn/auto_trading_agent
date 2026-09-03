@@ -21,7 +21,7 @@ async def main() -> None:
         tools = (await c.list_tools()).tools
         names = [t.name for t in tools]
         print("tools:", names)
-        assert len(names) == 9, names
+        assert len(names) == 10, names
         r = await c.call_tool("get_market_summary", {})
         assert not r.is_error, r
         print("summary:", r.structured_content)
@@ -34,6 +34,9 @@ async def main() -> None:
         assert not r.is_error, r
         print("place:", r.structured_content)
         order_id = r.structured_content["order_id"]
+        r = await c.call_tool("get_balances", {})
+        assert not r.is_error, r
+        print("balances:", r.structured_content)
         r = await c.call_tool("get_order", {"order_id": order_id})
         assert not r.is_error and r.structured_content["status"] == "open", r
         print("get_order:", r.structured_content["status"])
