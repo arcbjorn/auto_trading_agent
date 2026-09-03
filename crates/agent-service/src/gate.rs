@@ -1,12 +1,14 @@
 //! Conversation-level guardrails. Everything here is deterministic code: which action tools a turn
-//! may execute, a confirmation step for large orders, and a verifier that checks what happened
-//! against what the user asked for.
+//! may execute at once, a confirmation step for everything else, and a verifier that checks what
+//! happened against what the user asked for.
 //!
 //! The tool *list* sent to the model never changes within a session (a changing list defeats
 //! prompt caching and, on the newest models, invalidates the thinking blocks bound to the
-//! conversation prefix). Permission is decided per turn from the user's own words and enforced
-//! when the model calls a tool: a call outside the permission is answered with an error result and
-//! never reaches the MCP server.
+//! conversation prefix). What changes per turn is *permission*, decided from the user's own words.
+//! An action the words justify executes at once; any other action, and any order that is large,
+//! at a price the user never stated, or framed as a demo, is turned into a confirmation request:
+//! the model must relay a summary and the user must say so in a turn of their own. Nothing reaches
+//! the MCP server without either the words or the confirmation.
 
 use mcp_server::units::{eth, parse_price, parse_qty, usdc_from_micro};
 use serde_json::{json, Value};
@@ -50,10 +52,15 @@ const FRAMING_WORDS: [&str; 8] = [
     "example",
     "test",
 ];
-const CONFIRM_WORDS: [&str; 10] = [
+/// A confirmation in the user's own turn, in the languages a Latin-script tokenizer can tell apart.
+const CONFIRM_WORDS: [&str; 20] = [
     "confirm",
     "confirmed",
+    "confirmo",
+    "confirme",
     "yes",
+    "yep",
+    "yeah",
     "go ahead",
     "do it",
     "proceed",
@@ -61,6 +68,12 @@ const CONFIRM_WORDS: [&str; 10] = [
     "approved",
     "ok",
     "okay",
+    "sí",
+    "si",
+    "oui",
+    "ja",
+    "da",
+    "sim",
 ];
 const ASSET_WORDS: [&str; 3] = ["eth", "ether", "ethereum"];
 
@@ -70,7 +83,7 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
 }
 
 fn has_word(text: &str, word: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
+    let lower = text.to_lowercase();
     words(&lower).any(|w| w.trim_matches(|c| c == '.' || c == ',') == word)
         || (word.contains(' ') && lower.contains(word))
 }
@@ -101,7 +114,9 @@ pub fn mentions_confirmation(text: &str) -> bool {
     CONFIRM_WORDS.iter().any(|w| has_word(text, w))
 }
 
-/// What this turn may execute. Read-only tools are always permitted.
+/// Which action tools this turn may execute without a confirmation step. Read-only tools are
+/// always permitted; the others are permitted when the user's own words carry the intent, or when
+/// the user confirms an action of that kind that is pending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Permissions {
     pub trade: bool,
@@ -109,18 +124,19 @@ pub struct Permissions {
 }
 
 impl Permissions {
-    /// Decides from the user's own words (or a confirmation of a pending order). With the gate
-    /// disabled everything is permitted and the verifier is the only check.
-    pub fn for_turn(user_text: &str, pending_confirmation: bool, gate_enabled: bool) -> Self {
+    /// `pending_tool` is the action tool awaiting confirmation, if any. With the gate disabled
+    /// everything is permitted and the verifier is the only check.
+    pub fn for_turn(user_text: &str, pending_tool: Option<&str>, gate_enabled: bool) -> Self {
         if !gate_enabled {
             return Self {
                 trade: true,
                 cancel: true,
             };
         }
+        let confirms = pending_tool.is_some() && mentions_confirmation(user_text);
         Self {
-            trade: mentions_trade_intent(user_text) || (pending_confirmation && mentions_confirmation(user_text)),
-            cancel: mentions_cancel_intent(user_text),
+            trade: mentions_trade_intent(user_text) || (confirms && pending_tool == Some("place_limit_order")),
+            cancel: mentions_cancel_intent(user_text) || (confirms && pending_tool != Some("place_limit_order")),
         }
     }
 
@@ -132,15 +148,15 @@ impl Permissions {
         }
     }
 
-    /// The short note appended to the user's message so the model knows what this turn allows,
+    /// The short note appended after the user's message so the model knows what this turn allows
     /// without the tool list changing. Enforcement does not depend on the model reading it.
     pub fn note(&self) -> String {
-        let yes_no = |b: bool| if b { "yes" } else { "no" };
+        let how = |b: bool| if b { "allowed" } else { "confirmation required" };
         format!(
-            "[service] This turn permits: place orders = {}, cancel orders = {}. \
-             Calls outside that are refused; if the user's message does not ask for an action, do not attempt one.",
-            yes_no(self.trade),
-            yes_no(self.cancel)
+            "[service] This turn: place orders = {}; cancel orders = {}. \
+             An action that requires confirmation returns needs_confirmation: relay the summary, ask the user, and never assume approval.",
+            how(self.trade),
+            how(self.cancel)
         )
     }
 }
@@ -148,6 +164,7 @@ impl Permissions {
 #[derive(Debug, Clone)]
 pub struct PendingConfirmation {
     pub token: String,
+    pub tool: String,
     pub args: Value,
     pub summary: String,
     pub created: Instant,
@@ -171,6 +188,9 @@ pub enum Intercept {
 }
 
 impl ConfirmationGate {
+    /// Decides whether an action tool call executes now, is turned into a confirmation request, or
+    /// completes a pending confirmation. `permitted` is the turn's permission for this tool.
+    #[allow(clippy::too_many_arguments)]
     pub fn intercept(
         &self,
         pending: &mut Option<PendingConfirmation>,
@@ -179,8 +199,9 @@ impl ConfirmationGate {
         session_id: &str,
         turn: u32,
         user_text: &str,
+        permitted: bool,
     ) -> Intercept {
-        if tool != "place_limit_order" {
+        if !ACTION_TOOLS.contains(&tool) {
             return Intercept::Proceed(args.clone());
         }
         let mut args = args.clone();
@@ -191,16 +212,14 @@ impl ConfirmationGate {
         if let Some(obj) = args.as_object_mut() {
             obj.remove("confirmation_token");
         }
-        let side = args["side"].as_str().unwrap_or("").to_string();
-        let (Ok(price), Ok(qty)) = (
-            parse_price(&text_of(&args["price_usdc"])),
-            parse_qty(&text_of(&args["quantity_eth"])),
-        ) else {
-            return Intercept::Proceed(args); // let the server produce the validation message
-        };
         if let Some(token) = token {
             return match pending.take() {
-                Some(p) if p.token == token && p.created.elapsed() <= self.ttl && same_order(&p.args, &args) => {
+                Some(p)
+                    if p.token == token
+                        && p.tool == tool
+                        && p.created.elapsed() <= self.ttl
+                        && same_action(tool, &p.args, &args) =>
+                {
                     Intercept::Proceed(args)
                 }
                 Some(p) => {
@@ -208,27 +227,65 @@ impl ConfirmationGate {
                     Intercept::Reply(json!({
                         "rejected": true,
                         "code": "CONFIRMATION_MISMATCH",
-                        "message": "the confirmation token does not match a pending order (different parameters, expired, or unknown)",
-                        "hint": "ask the user to confirm the exact order again"
+                        "message": "the confirmation token does not match the pending action (different tool or parameters, expired, or unknown)",
+                        "hint": "ask the user to confirm the exact action again"
                     }))
                 }
                 None => Intercept::Reply(json!({
                     "rejected": true,
                     "code": "NO_PENDING_CONFIRMATION",
-                    "message": "there is no order awaiting confirmation",
-                    "hint": "place the order without a confirmation_token; if it needs confirmation you will be told"
+                    "message": "there is no action awaiting confirmation",
+                    "hint": "call the tool without a confirmation_token; if it needs confirmation you will be told"
                 })),
             };
         }
-        let price_quoted = numbers(user_text).iter().any(|n| parse_price(n).ok() == Some(price));
-        let reason = if qty >= self.threshold_lots {
-            "This order is large."
-        } else if self.confirm_unpriced && !price_quoted {
-            "The user did not state this price; the model chose it."
-        } else if mentions_framing(user_text) {
-            "The request was framed as a demo, test or hypothetical; a real order needs an explicit confirmation."
-        } else {
-            return Intercept::Proceed(args);
+        let framed = mentions_framing(user_text);
+        let (reason, summary) = match tool {
+            "place_limit_order" => {
+                let side = args["side"].as_str().unwrap_or("").to_string();
+                let (Ok(price), Ok(qty)) = (
+                    parse_price(&text_of(&args["price_usdc"])),
+                    parse_qty(&text_of(&args["quantity_eth"])),
+                ) else {
+                    return Intercept::Proceed(args); // let the server produce the validation message
+                };
+                let price_quoted = numbers(user_text).iter().any(|n| parse_price(n).ok() == Some(price));
+                let reason = if !permitted {
+                    "The user's message did not clearly ask to trade."
+                } else if qty >= self.threshold_lots {
+                    "This order is large."
+                } else if self.confirm_unpriced && !price_quoted {
+                    "The user did not state this price; the model chose it."
+                } else if framed {
+                    "The request was framed as a demo, test or hypothetical; a real order needs an explicit confirmation."
+                } else {
+                    return Intercept::Proceed(args);
+                };
+                let notional = usdc_from_micro(price as u128 * qty as u128);
+                (
+                    reason,
+                    format!(
+                        "{side} {} ETH at {} USDC (up to {notional} USDC)",
+                        eth(qty),
+                        mcp_server::units::usdc(price)
+                    ),
+                )
+            }
+            _ => {
+                let reason = if !permitted {
+                    "The user's message did not clearly ask to cancel."
+                } else if framed {
+                    "The request was framed as a demo or test."
+                } else {
+                    return Intercept::Proceed(args);
+                };
+                let summary = if tool == "cancel_order" {
+                    format!("cancel order {}", text_of(&args["order_id"]))
+                } else {
+                    "cancel every open order of the account".to_string()
+                };
+                (reason, summary)
+            }
         };
         let token = format!(
             "cfm-{session_id}-{turn}-{}",
@@ -237,14 +294,9 @@ impl ConfirmationGate {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
-        let notional = usdc_from_micro(price as u128 * qty as u128);
-        let summary = format!(
-            "{side} {} ETH at {} USDC (up to {notional} USDC)",
-            eth(qty),
-            mcp_server::units::usdc(price)
-        );
         *pending = Some(PendingConfirmation {
             token: token.clone(),
+            tool: tool.to_string(),
             args: args.clone(),
             summary: summary.clone(),
             created: Instant::now(),
@@ -253,7 +305,7 @@ impl ConfirmationGate {
             "needs_confirmation": true,
             "confirmation_token": token,
             "summary": summary,
-            "instruction": format!("{reason} Tell the user the summary and ask them to confirm. When they confirm, call place_limit_order again with the same arguments plus this confirmation_token.")
+            "instruction": format!("{reason} Tell the user the summary and ask them to confirm. When they confirm, call {tool} again with the same arguments plus this confirmation_token.")
         }))
     }
 }
@@ -262,9 +314,13 @@ fn text_of(v: &Value) -> String {
     v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())
 }
 
-fn same_order(a: &Value, b: &Value) -> bool {
-    ["side", "price_usdc", "quantity_eth"]
-        .iter()
+fn same_action(tool: &str, a: &Value, b: &Value) -> bool {
+    let keys: &[&str] = match tool {
+        "place_limit_order" => &["side", "price_usdc", "quantity_eth"],
+        "cancel_order" => &["order_id"],
+        _ => &[],
+    };
+    keys.iter()
         .all(|k| a[k].to_string().trim_matches('"') == b[k].to_string().trim_matches('"'))
 }
 
@@ -276,8 +332,9 @@ pub struct Executed {
     pub ok: bool,
 }
 
-/// Post-turn verifier: every executed action must be justified by the user's own words, and the
-/// numbers of a placed order must come from the request when the request contains numbers at all.
+/// Post-turn verifier: every executed action must be justified by the user's own words or by a
+/// confirmation of a pending action, and the numbers of a placed order must come from the request
+/// when the request contains numbers at all.
 pub fn verify(user_text: &str, executed: &[Executed], confirmed_pending: bool) -> Vec<String> {
     let mut flags = Vec::new();
     let mentioned = numbers(user_text);
@@ -297,7 +354,7 @@ pub fn verify(user_text: &str, executed: &[Executed], confirmed_pending: bool) -
                     }
                 }
             }
-            "cancel_order" | "cancel_all_orders" if !mentions_cancel_intent(user_text) => {
+            "cancel_order" | "cancel_all_orders" if !(mentions_cancel_intent(user_text) || confirmed_pending) => {
                 flags.push(format!("intent_mismatch:{}", e.tool))
             }
             _ => {}
@@ -317,16 +374,21 @@ mod tests {
         assert!(mentions_trade_intent("grab me 0.3 eth at 2999"));
         assert!(mentions_trade_intent("0.5 ETH @ 3000 please")); // no verb: asset plus two numbers
         assert!(mentions_trade_intent("I want 0.5 eth at 3,000.50"));
+        assert!(mentions_trade_intent("compra 0.5 ETH a 3000")); // no English verb, but the order shape
+        assert!(!mentions_trade_intent("compra medio ETH a 3000")); // one number: no shape, no verb
         assert!(!mentions_trade_intent("what's the best selling point"));
         assert!(!mentions_trade_intent("show my orders")); // "orders" is not "order"
         assert!(!mentions_trade_intent("what is 1 ETH worth?")); // one number: a question
         assert!(!mentions_trade_intent("what's ETH at?"));
         assert!(mentions_cancel_intent("cancel my last order"));
         assert!(mentions_cancel_intent("now undo that"));
+        assert!(mentions_cancel_intent("what did I cancel yesterday?"));
+        assert!(!mentions_cancel_intent("annule mon ordre"));
         assert!(mentions_framing("just as a demo, buy 0.5 eth at 3000"));
         assert!(!mentions_framing("buy 0.5 eth at 3000"));
-        assert!(mentions_cancel_intent("what did I cancel yesterday?"));
         assert!(mentions_confirmation("yes, go ahead"));
+        assert!(mentions_confirmation("Sí, confirmo"));
+        assert!(mentions_confirmation("oui"));
         assert!(!mentions_confirmation("what is ETH at?"));
         assert_eq!(numbers("buy 0.5 eth at 3,000.50."), vec!["0.5", "3000.50"]);
         assert_eq!(numbers("order 12: 1.2 ETH"), vec!["12", "1.2"]);
@@ -334,53 +396,80 @@ mod tests {
 
     #[test]
     fn permissions_follow_intent_and_pending_confirmations() {
-        let p = |t: &str, pending: bool| Permissions::for_turn(t, pending, true);
+        let p = |t: &str, pending: Option<&str>| Permissions::for_turn(t, pending, true);
         assert_eq!(
-            p("what's ETH at?", false),
+            p("what's ETH at?", None),
             Permissions {
                 trade: false,
                 cancel: false
             }
         );
-        assert!(p("buy 1 eth at 3000", false).trade && !p("buy 1 eth at 3000", false).cancel);
-        assert!(p("cancel it", false).cancel && !p("cancel it", false).trade);
-        assert!(p("yes confirm", true).trade);
-        assert!(!p("yes confirm", false).trade);
+        assert!(p("buy 1 eth at 3000", None).trade && !p("buy 1 eth at 3000", None).cancel);
+        assert!(p("cancel it", None).cancel && !p("cancel it", None).trade);
+        assert!(p("yes confirm", Some("place_limit_order")).trade);
+        assert!(!p("yes confirm", Some("place_limit_order")).cancel);
+        assert!(p("yes", Some("cancel_all_orders")).cancel && !p("yes", Some("cancel_all_orders")).trade);
+        assert!(!p("yes confirm", None).trade);
         assert_eq!(
-            Permissions::for_turn("anything", false, false),
+            Permissions::for_turn("anything", None, false),
             Permissions {
                 trade: true,
                 cancel: true
             }
         );
-        let none = p("price?", false);
+        let none = p("price?", None);
         assert!(
             none.allows("get_market_summary") && !none.allows("place_limit_order") && !none.allows("cancel_all_orders")
         );
-        assert!(none.note().contains("place orders = no"));
+        assert!(none.note().contains("place orders = confirmation required"));
+        assert!(p("buy 1 eth", None).note().contains("place orders = allowed"));
     }
 
-    #[test]
-    fn large_orders_need_a_matching_token() {
-        let gate = ConfirmationGate {
+    fn gate() -> ConfirmationGate {
+        ConfirmationGate {
             threshold_lots: 10_000,
             confirm_unpriced: true,
             ttl: Duration::from_secs(600),
-        };
+        }
+    }
+
+    #[test]
+    fn orders_need_confirmation_when_large_unpriced_framed_or_unrequested() {
+        let gate = gate();
         let mut pending = None;
         let small = json!({"side":"buy","price_usdc":"3000","quantity_eth":"0.5"});
         let text = "buy 0.5 eth at 3000";
         assert!(matches!(
-            gate.intercept(&mut pending, "place_limit_order", &small, "s", 1, text),
+            gate.intercept(&mut pending, "place_limit_order", &small, "s", 1, text, true),
             Intercept::Proceed(_)
         ));
-        // A small order at a price the user never mentioned: the model chose it, so confirm.
-        let Intercept::Reply(unpriced) =
-            gate.intercept(&mut pending, "place_limit_order", &small, "s", 1, "sell 0.5 eth now")
-        else {
+        // The same order without recognised intent: a confirmation request, not a refusal.
+        let Intercept::Reply(r) = gate.intercept(
+            &mut pending,
+            "place_limit_order",
+            &small,
+            "s",
+            1,
+            "compra medio eth a 3000",
+            false,
+        ) else {
             panic!("expected preview")
         };
-        assert_eq!(unpriced["needs_confirmation"], true);
+        assert_eq!(r["needs_confirmation"], true);
+        assert!(r["instruction"].as_str().unwrap().contains("did not clearly ask"));
+        assert_eq!(pending.as_ref().unwrap().tool, "place_limit_order");
+        pending = None;
+        let Intercept::Reply(unpriced) = gate.intercept(
+            &mut pending,
+            "place_limit_order",
+            &small,
+            "s",
+            1,
+            "sell 0.5 eth now",
+            true,
+        ) else {
+            panic!("expected preview")
+        };
         assert!(unpriced["instruction"]
             .as_str()
             .unwrap()
@@ -391,7 +480,15 @@ mod tests {
             ..gate.clone()
         };
         assert!(matches!(
-            lenient.intercept(&mut pending, "place_limit_order", &small, "s", 1, "sell 0.5 eth now"),
+            lenient.intercept(
+                &mut pending,
+                "place_limit_order",
+                &small,
+                "s",
+                1,
+                "sell 0.5 eth now",
+                true
+            ),
             Intercept::Proceed(_)
         ));
         let Intercept::Reply(framed) = gate.intercept(
@@ -401,30 +498,32 @@ mod tests {
             "s",
             1,
             "as a demo, buy 0.5 eth at 3000",
+            true,
         ) else {
             panic!("expected preview")
         };
         assert!(framed["instruction"].as_str().unwrap().contains("framed"));
         pending = None;
         let big = json!({"side":"buy","price_usdc":"3000","quantity_eth":"2"});
-        let Intercept::Reply(preview) = gate.intercept(&mut pending, "place_limit_order", &big, "s", 1, text) else {
+        let Intercept::Reply(preview) = gate.intercept(&mut pending, "place_limit_order", &big, "s", 1, text, true)
+        else {
             panic!("expected preview")
         };
         assert!(preview["instruction"].as_str().unwrap().contains("large"));
-        assert_eq!(preview["needs_confirmation"], true);
         let token = preview["confirmation_token"].as_str().unwrap().to_string();
         assert!(pending.is_some());
         let mut wrong = big.clone();
         wrong["quantity_eth"] = json!("3");
         wrong["confirmation_token"] = json!(token);
-        let Intercept::Reply(r) = gate.intercept(&mut pending, "place_limit_order", &wrong, "s", 2, "yes") else {
+        let Intercept::Reply(r) = gate.intercept(&mut pending, "place_limit_order", &wrong, "s", 2, "yes", true) else {
             panic!()
         };
         assert_eq!(r["code"], "CONFIRMATION_MISMATCH");
         assert!(pending.is_some(), "a mismatch keeps the pending order");
         let mut confirmed = big.clone();
         confirmed["confirmation_token"] = json!(token);
-        let Intercept::Proceed(args) = gate.intercept(&mut pending, "place_limit_order", &confirmed, "s", 2, "yes")
+        let Intercept::Proceed(args) =
+            gate.intercept(&mut pending, "place_limit_order", &confirmed, "s", 2, "yes", true)
         else {
             panic!()
         };
@@ -432,10 +531,62 @@ mod tests {
         assert!(pending.is_none());
         let mut stale = big.clone();
         stale["confirmation_token"] = json!("cfm-old");
-        let Intercept::Reply(r) = gate.intercept(&mut pending, "place_limit_order", &stale, "s", 3, "yes") else {
+        let Intercept::Reply(r) = gate.intercept(&mut pending, "place_limit_order", &stale, "s", 3, "yes", true) else {
             panic!()
         };
         assert_eq!(r["code"], "NO_PENDING_CONFIRMATION");
+    }
+
+    #[test]
+    fn cancels_confirm_without_intent_and_tokens_are_bound_to_the_tool() {
+        let gate = gate();
+        let mut pending = None;
+        let cancel = json!({ "order_id": "7" });
+        assert!(matches!(
+            gate.intercept(&mut pending, "cancel_order", &cancel, "s", 1, "cancel order 7", true),
+            Intercept::Proceed(_)
+        ));
+        let Intercept::Reply(r) = gate.intercept(
+            &mut pending,
+            "cancel_order",
+            &cancel,
+            "s",
+            1,
+            "cancela la orden 7",
+            false,
+        ) else {
+            panic!()
+        };
+        assert_eq!(r["summary"], "cancel order 7");
+        let token = r["confirmation_token"].as_str().unwrap().to_string();
+        // The token confirms that cancel, not a placement and not another order.
+        let place = json!({ "side": "buy", "price_usdc": "3000", "quantity_eth": "0.1", "confirmation_token": token });
+        let Intercept::Reply(r) = gate.intercept(&mut pending, "place_limit_order", &place, "s", 2, "sí", true) else {
+            panic!()
+        };
+        assert_eq!(r["code"], "CONFIRMATION_MISMATCH");
+        let other = json!({ "order_id": "8", "confirmation_token": token });
+        let Intercept::Reply(r) = gate.intercept(&mut pending, "cancel_order", &other, "s", 2, "sí", true) else {
+            panic!()
+        };
+        assert_eq!(r["code"], "CONFIRMATION_MISMATCH");
+        let same = json!({ "order_id": "7", "confirmation_token": token });
+        let Intercept::Proceed(args) = gate.intercept(&mut pending, "cancel_order", &same, "s", 2, "sí", true) else {
+            panic!()
+        };
+        assert_eq!(args, json!({ "order_id": "7" }));
+        let Intercept::Reply(r) = gate.intercept(
+            &mut pending,
+            "cancel_all_orders",
+            &json!({}),
+            "s",
+            3,
+            "what's ETH at?",
+            false,
+        ) else {
+            panic!()
+        };
+        assert_eq!(r["summary"], "cancel every open order of the account");
     }
 
     fn placed(price: &str, qty: &str, ok: bool) -> Executed {
@@ -467,6 +618,7 @@ mod tests {
             verify("what's ETH at", std::slice::from_ref(&cancel), false),
             vec!["intent_mismatch:cancel_all_orders"]
         );
+        assert!(verify("sí", std::slice::from_ref(&cancel), true).is_empty());
         assert!(verify("cancel everything", &[cancel], false).is_empty());
         assert!(verify("what's ETH at", &[placed("3000", "0.5", false)], false).is_empty());
     }

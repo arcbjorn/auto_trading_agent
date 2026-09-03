@@ -144,7 +144,7 @@ pub struct Agent {
 
 /// An MCP tool definition has exactly what a Messages API tool needs: name, description, schema.
 /// The list is sorted by name so it is byte-identical on every request (it is the cache prefix),
-/// and `place_limit_order` gains the service's `confirmation_token` field once, here.
+/// and the action tools gain the service's `confirmation_token` field once, here.
 pub fn api_tools(mcp_tools: &[Value]) -> Vec<Value> {
     let mut tools: Vec<Value> = mcp_tools
         .iter()
@@ -152,10 +152,10 @@ pub fn api_tools(mcp_tools: &[Value]) -> Vec<Value> {
         .collect();
     tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     for t in &mut tools {
-        if t["name"] == "place_limit_order" {
+        if ACTION_TOOLS.iter().any(|a| t["name"] == *a) {
             t["input_schema"]["properties"]["confirmation_token"] = json!({
                 "type": "string",
-                "description": "Only after the user confirmed an order that needed confirmation: the token from the needs_confirmation result."
+                "description": "Only after the user confirmed an action that needed confirmation: the token from the needs_confirmation result."
             });
         }
     }
@@ -222,7 +222,8 @@ impl Agent {
         session.turns += 1;
         let turn = session.turns;
         let pending_before = session.pending.is_some();
-        let permissions = Permissions::for_turn(user_text, pending_before, self.cfg.gate_tools);
+        let pending_tool = session.pending.as_ref().map(|p| p.tool.clone());
+        let permissions = Permissions::for_turn(user_text, pending_tool.as_deref(), self.cfg.gate_tools);
         let permitted: Vec<String> = ACTION_TOOLS
             .iter()
             .filter(|t| permissions.allows(t))
@@ -311,23 +312,29 @@ impl Agent {
                             json!({})
                         };
                         let t1 = Instant::now();
-                        let (text, is_error, intercepted) = if !permissions.allows(&name) {
-                            flags.push(format!("tool_not_permitted:{name}"));
-                            (
-                                format!("{name} is not permitted on this turn: the user's message did not ask for it. Do not retry; answer the user."),
-                                true,
-                                true,
-                            )
-                        } else {
+                        let (text, is_error, intercepted) = {
                             if name == "place_limit_order" && args["client_order_id"].as_str().is_none_or(str::is_empty)
                             {
                                 // Idempotency key: a retried tool call can never place a second order.
                                 args["client_order_id"] = json!(format!("{}-{turn}-{id}", session.id));
                             }
-                            match confirm.intercept(&mut session.pending, &name, &args, &session.id, turn, user_text) {
+                            let permitted = permissions.allows(&name);
+                            match confirm.intercept(
+                                &mut session.pending,
+                                &name,
+                                &args,
+                                &session.id,
+                                turn,
+                                user_text,
+                                permitted,
+                            ) {
                                 Intercept::Reply(v) => {
                                     if v["needs_confirmation"] == true {
-                                        flags.push("confirmation_requested".into());
+                                        flags.push(if permitted {
+                                            "confirmation_requested".into()
+                                        } else {
+                                            format!("confirmation_requested:no_intent:{name}")
+                                        });
                                     }
                                     (v.to_string(), false, true)
                                 }

@@ -218,7 +218,7 @@ async fn read_only_question_permits_no_action_tools() {
     assert!(first["content"][1]["text"]
         .as_str()
         .unwrap()
-        .contains("place orders = no, cancel orders = no"));
+        .contains("place orders = confirmation required; cancel orders = confirmation required"));
     let last = requests[1]["messages"].as_array().unwrap().last().unwrap().clone();
     assert_eq!(last["role"], "user");
     assert_eq!(last["content"][0]["type"], "tool_result");
@@ -323,32 +323,95 @@ async fn large_order_needs_confirmation_then_executes() {
         requests[2]["messages"].as_array().unwrap().last().unwrap()["content"][1]["text"]
             .as_str()
             .unwrap()
-            .contains("place orders = yes")
+            .contains("place orders = allowed")
     );
 }
 
 #[tokio::test]
-async fn unrequested_action_is_refused_and_flagged() {
+async fn unrequested_action_becomes_a_confirmation_request() {
     let responder: Responder = Arc::new(|n, _| match n {
         1 => tool_use(
             "place_limit_order",
             json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "0.5" }),
         ),
-        _ => end_turn("Done."),
+        _ => end_turn("Do you want me to buy 0.5 ETH at 2990.00?"),
     });
     let mut s = stack(responder, AgentConfig::default()).await;
     let mut session = Session::new("t4");
     let turn = s.agent.chat_turn(&mut session, "show my orders").await.unwrap();
     assert!(
-        turn.flags.contains(&"tool_not_permitted:place_limit_order".to_string()),
+        turn.flags
+            .contains(&"confirmation_requested:no_intent:place_limit_order".to_string()),
         "{:?}",
         turn.flags
     );
-    assert!(turn.tool_calls[0].is_error && turn.tool_calls[0].intercepted);
-    assert!(turn.tool_calls[0].result.contains("not permitted"));
+    assert!(!turn.tool_calls[0].is_error && turn.tool_calls[0].intercepted);
+    assert!(turn.tool_calls[0].result.contains("did not clearly ask to trade"));
+    assert!(session.pending.is_some(), "the action waits for the user's word");
     assert!(demo_orders(&mut s.engine, OrderStatus::StatusUnspecified)
         .await
         .is_empty());
+}
+
+/// A cancel in a language the keyword gate does not know: it is held, the user confirms in their
+/// own words, and the confirmed call goes through with the token bound to that cancel.
+#[tokio::test]
+async fn unrecognised_cancel_is_confirmed_then_executed() {
+    let responder: Responder = Arc::new(|n, body| match n {
+        1 => tool_use("cancel_order", json!({ "order_id": "4" })),
+        2 => end_turn("¿Confirmas cancelar la orden 4?"),
+        3 => {
+            let token = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["role"] == "user")
+                .filter_map(|m| m["content"].as_array())
+                .flatten()
+                .filter_map(|b| b["content"].as_str())
+                .filter_map(|t| serde_json::from_str::<Value>(t).ok())
+                .filter_map(|v| v["confirmation_token"].as_str().map(str::to_string))
+                .next_back()
+                .expect("token in history");
+            tool_use("cancel_order", json!({ "order_id": "4", "confirmation_token": token }))
+        }
+        _ => end_turn("Cancelada."),
+    });
+    let mut s = stack(responder, AgentConfig::default()).await;
+    // A resting order of the account to cancel (the market maker's are ids 1 to 3).
+    s.engine
+        .place_order(PlaceOrderRequest {
+            account_id: "demo".into(),
+            client_order_id: "mine".into(),
+            side: Side::Buy as i32,
+            price_ticks: 299_000,
+            quantity_lots: 1_000,
+            tif: TimeInForce::Gtc as i32,
+        })
+        .await
+        .unwrap();
+    let mut session = Session::new("t11");
+    let first = s.agent.chat_turn(&mut session, "cancela la orden 4").await.unwrap();
+    assert!(
+        first
+            .flags
+            .contains(&"confirmation_requested:no_intent:cancel_order".to_string()),
+        "{:?}",
+        first.flags
+    );
+    assert_eq!(
+        demo_orders(&mut s.engine, OrderStatus::Open).await.len(),
+        1,
+        "held until confirmed"
+    );
+    let second = s.agent.chat_turn(&mut session, "sí").await.unwrap();
+    assert!(second.flags.is_empty(), "{:?}", second.flags);
+    assert_eq!(
+        second.permitted,
+        vec!["cancel_order".to_string(), "cancel_all_orders".to_string()]
+    );
+    assert!(demo_orders(&mut s.engine, OrderStatus::Open).await.is_empty());
+    assert_eq!(demo_orders(&mut s.engine, OrderStatus::Cancelled).await.len(), 1);
 }
 
 #[tokio::test]
@@ -454,7 +517,7 @@ async fn permission_note_travels_as_a_system_message_on_supporting_models() {
     assert!(m[1]["content"]
         .as_str()
         .unwrap()
-        .contains("place orders = yes, cancel orders = no"));
+        .contains("place orders = allowed; cancel orders = confirmation required"));
     // The second request keeps the same prefix and appends the assistant turn and the results.
     let m2 = requests[1]["messages"].as_array().unwrap();
     assert_eq!(&m2[..2], &m[..2]);
