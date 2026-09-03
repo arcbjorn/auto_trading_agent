@@ -100,6 +100,7 @@ Sessions are in-memory and bounded: an append-only message history, the turn cou
 | `AGENT_BIND` | `127.0.0.1:8080` | |
 | `AUDIT_LOG` | `audit.jsonl` | empty string disables |
 | `CONFIRM_THRESHOLD_ETH` | `1` | orders at or above this size need a confirmation turn |
+| `CONFIRM_UNPRICED` | `1` | an order at a price the user never stated (the model chose it, as for "sell now") needs a confirmation turn whatever its size |
 | `GATE_TOOLS` | `1` | permit action tools only on explicit intent (`0`: everything permitted, the verifier still runs) |
 | `NOTE_CHANNEL` | by model | `system` or `user`: how the per-turn permission note is sent |
 | `PROMPT_CACHE` | `1` | cache breakpoint on the system prompt plus automatic caching of the conversation |
