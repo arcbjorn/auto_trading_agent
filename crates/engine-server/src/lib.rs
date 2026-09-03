@@ -27,6 +27,12 @@ pub struct EngineConfig {
     /// `fsync` the journal once per batch before replying (durable across a crash, at a latency
     /// cost); otherwise each batch is flushed to the OS only.
     pub journal_fsync: bool,
+    /// Every order must be backed by the account's balance (deposits through `Deposit`).
+    pub enforce_balances: bool,
+    /// Accounts credited when the engine starts on an empty book: (account, micro-USDC, lots).
+    /// Journaled like any deposit, and skipped when a journal was replayed, so a restart never
+    /// funds twice. A convenience for demos; production funding goes through `Deposit`.
+    pub fund_at_start: Vec<(String, u64, u64)>,
 }
 
 impl Default for EngineConfig {
@@ -36,23 +42,57 @@ impl Default for EngineConfig {
             snapshot_depth: MAX_DEPTH as usize,
             journal_path: None,
             journal_fsync: false,
+            enforce_balances: true,
+            fund_at_start: Vec::new(),
         }
     }
 }
 
 pub struct Svc {
     engine: EngineHandle,
+    enforced: bool,
 }
 
 impl Svc {
-    pub fn new(engine: EngineHandle) -> Self {
-        Self { engine }
+    pub fn new(engine: EngineHandle, enforced: bool) -> Self {
+        Self { engine, enforced }
     }
+}
+
+fn balances_to_pb(account: &str, b: &engine::Balances, enforced: bool) -> pb::Balances {
+    pb::Balances {
+        account_id: account.to_string(),
+        usdc_available_micro: b.usdc_available.min(u64::MAX as u128) as u64,
+        usdc_reserved_micro: b.usdc_reserved.min(u64::MAX as u128) as u64,
+        eth_available_lots: b.eth_available,
+        eth_reserved_lots: b.eth_reserved,
+        enforced,
+    }
+}
+
+fn micro_to_usdc(micro: u128) -> String {
+    format!("{}.{:02}", micro / 1_000_000, (micro % 1_000_000) / 10_000)
+}
+
+fn lots_to_eth(lots: u128) -> String {
+    format!("{}.{:04}", lots / 10_000, lots % 10_000)
 }
 
 pub fn to_status(e: EngineError) -> Status {
     match e {
         EngineError::Invalid(m) => Status::invalid_argument(m),
+        EngineError::InsufficientFunds {
+            asset,
+            needed,
+            available,
+        } => {
+            let (n, a) = if asset == "USDC" {
+                (micro_to_usdc(needed), micro_to_usdc(available))
+            } else {
+                (lots_to_eth(needed), lots_to_eth(available))
+            };
+            Status::failed_precondition(format!("insufficient {asset}: the order needs {n}, {a} available"))
+        }
         EngineError::NotFound(_) => Status::not_found(e.to_string()),
         EngineError::Precondition(..) => Status::failed_precondition(e.to_string()),
         EngineError::Forbidden(_) => Status::permission_denied(e.to_string()),
@@ -276,6 +316,30 @@ impl Engine for Svc {
         }))
     }
 
+    async fn deposit(&self, req: Request<pb::DepositRequest>) -> Result<Response<pb::Balances>, Status> {
+        let r = req.into_inner();
+        let cmd = Command::Deposit {
+            account: r.account_id.clone(),
+            usdc: r.usdc_micro as u128,
+            eth: r.eth_lots,
+        };
+        match self.engine.submit(cmd).await.map_err(to_status)? {
+            Reply::Balances(b) => Ok(Response::new(balances_to_pb(&r.account_id, &b, self.enforced))),
+            _ => Err(Status::internal("unexpected reply")),
+        }
+    }
+
+    async fn get_balances(&self, req: Request<pb::GetBalancesRequest>) -> Result<Response<pb::Balances>, Status> {
+        let r = req.into_inner();
+        let cmd = Command::Balances {
+            account: r.account_id.clone(),
+        };
+        match self.engine.submit(cmd).await.map_err(to_status)? {
+            Reply::Balances(b) => Ok(Response::new(balances_to_pb(&r.account_id, &b, self.enforced))),
+            _ => Err(Status::internal("unexpected reply")),
+        }
+    }
+
     async fn get_market(&self, _req: Request<pb::GetMarketRequest>) -> Result<Response<pb::Market>, Status> {
         let snap = self.engine.snapshot();
         Ok(Response::new(pb::Market {
@@ -310,8 +374,12 @@ impl ServerHandle {
 pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(SocketAddr, ServerHandle)> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
-    let mut book = Book::new();
-    let journal = match &cfg.journal_path {
+    let mut book = if cfg.enforce_balances {
+        Book::with_balances()
+    } else {
+        Book::new()
+    };
+    let mut journal = match &cfg.journal_path {
         Some(path) => {
             let replayed = Journal::replay(path, &mut book)
                 .map_err(|e| anyhow::anyhow!("cannot replay journal {}: {e}", path.display()))?;
@@ -320,11 +388,33 @@ pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(Socke
         }
         None => None,
     };
+    if book.seq() == 0 && !cfg.fund_at_start.is_empty() {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        for (account, usdc, eth) in &cfg.fund_at_start {
+            book.deposit(account, *usdc as u128, *eth)
+                .map_err(|e| anyhow::anyhow!("cannot fund {account}: {e}"))?;
+            if let Some(j) = journal.as_mut() {
+                j.append(&engine::Record::Deposit {
+                    t,
+                    account: account.clone(),
+                    usdc: *usdc as u128,
+                    eth: *eth,
+                })?;
+            }
+            tracing::info!(account, usdc_micro = usdc, eth_lots = eth, "funded at start");
+        }
+        if let Some(j) = journal.as_mut() {
+            j.commit()?;
+        }
+    }
     let engine = spawn_with_journal(book, cfg.queue_capacity, cfg.snapshot_depth, journal);
     let (tx, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(
         Server::builder()
-            .add_service(EngineServer::new(Svc::new(engine)))
+            .add_service(EngineServer::new(Svc::new(engine, cfg.enforce_balances)))
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 let _ = rx.await;
             }),

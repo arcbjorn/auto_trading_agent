@@ -20,6 +20,10 @@ service Engine {
   // Aggregated price levels, best price first on each side.
   rpc GetOrderBook(GetOrderBookRequest) returns (OrderBook);
   rpc GetMarket(GetMarketRequest) returns (Market);
+  // Credits an account. Every order must be backed: a buy reserves price x quantity in USDC, a
+  // sell reserves the quantity in ETH; fills settle both legs, cancels release the remainder.
+  rpc Deposit(DepositRequest) returns (Balances);
+  rpc GetBalances(GetBalancesRequest) returns (Balances);
 }
 
 enum Side {
@@ -96,6 +100,25 @@ message GetOrderBookRequest {
 }
 
 message GetMarketRequest {}
+
+message DepositRequest {
+  string account_id = 1;
+  uint64 usdc_micro = 2; // 1 unit = 0.000001 USDC (one tick times one lot)
+  uint64 eth_lots = 3;   // 1 lot = 0.0001 ETH
+}
+
+message GetBalancesRequest {
+  string account_id = 1;
+}
+
+message Balances {
+  string account_id = 1;
+  uint64 usdc_available_micro = 2;
+  uint64 usdc_reserved_micro = 3; // backing the account's live buy orders
+  uint64 eth_available_lots = 4;
+  uint64 eth_reserved_lots = 5;   // backing the account's live sell orders
+  bool enforced = 6;              // false when the engine runs without balance checks
+}
 
 message Order {
   string order_id = 1;

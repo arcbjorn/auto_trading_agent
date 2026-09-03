@@ -120,11 +120,27 @@ impl Side {
     }
 }
 
+/// What an account holds: USDC in micro-USDC (one tick times one lot), ETH in lots. Reserved
+/// amounts back the account's live orders and return to available when they fill or cancel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Balances {
+    pub usdc_available: u128,
+    pub usdc_reserved: u128,
+    pub eth_available: Qty,
+    pub eth_reserved: Qty,
+}
+
 /// Append-only history. Order and trade listings are derived from it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Accepted(Order),
     Traded(Trade),
+    Deposited {
+        account: Arc<str>,
+        usdc: u128,
+        eth: Qty,
+        seq: Seq,
+    },
     Cancelled {
         id: OrderId,
         reason: CancelReason,
@@ -149,6 +165,13 @@ pub enum EngineError {
     Forbidden(OrderId),
     #[error("client_order_id was already used with different parameters")]
     AlreadyExists,
+    /// Raw units: micro-USDC or lots; the gRPC layer renders them for people.
+    #[error("insufficient {asset}: needs {needed}, available {available}")]
+    InsufficientFunds {
+        asset: &'static str,
+        needed: u128,
+        available: u128,
+    },
     #[error("engine busy, retry")]
     Busy,
     #[error("engine shut down")]
@@ -222,11 +245,138 @@ pub struct Book {
     next_order: OrderId,
     next_trade: TradeId,
     next_seq: Seq,
+    /// When set, every order must be backed by the account's balance (see [`Book::with_balances`]).
+    enforce_balances: bool,
+    balances: HashMap<Arc<str>, Balances>,
+}
+
+/// Moves `needed` from available to reserved for a new order (the funds check happened first).
+fn reserve(balances: &mut HashMap<Arc<str>, Balances>, account: &Arc<str>, side: Side, price: Price, qty: Qty) {
+    let b = balances.entry(Arc::clone(account)).or_default();
+    match side {
+        Side::Buy => {
+            let usdc = price as u128 * qty as u128;
+            b.usdc_available -= usdc;
+            b.usdc_reserved += usdc;
+        }
+        Side::Sell => {
+            b.eth_available -= qty;
+            b.eth_reserved += qty;
+        }
+    }
+}
+
+/// Gives a cancelled or unfilled remainder back to the account.
+fn release(balances: &mut HashMap<Arc<str>, Balances>, account: &Arc<str>, side: Side, price: Price, remaining: Qty) {
+    let b = balances.entry(Arc::clone(account)).or_default();
+    match side {
+        Side::Buy => {
+            let usdc = price as u128 * remaining as u128;
+            b.usdc_reserved -= usdc;
+            b.usdc_available += usdc;
+        }
+        Side::Sell => {
+            b.eth_reserved -= remaining;
+            b.eth_available += remaining;
+        }
+    }
+}
+
+/// Settles one trade of `q` lots at `px`. The taker reserved at its own limit, so a buy that fills
+/// below the limit gets the difference back; the maker's reservation was at `px` already.
+#[allow(clippy::too_many_arguments)]
+fn settle(
+    balances: &mut HashMap<Arc<str>, Balances>,
+    taker: &Arc<str>,
+    taker_side: Side,
+    taker_limit: Price,
+    maker: &Arc<str>,
+    px: Price,
+    q: Qty,
+) {
+    let paid = px as u128 * q as u128;
+    match taker_side {
+        Side::Buy => {
+            let t = balances.entry(Arc::clone(taker)).or_default();
+            let reserved = taker_limit as u128 * q as u128;
+            t.usdc_reserved -= reserved;
+            t.usdc_available += reserved - paid;
+            t.eth_available += q;
+            let m = balances.entry(Arc::clone(maker)).or_default();
+            m.eth_reserved -= q;
+            m.usdc_available += paid;
+        }
+        Side::Sell => {
+            let t = balances.entry(Arc::clone(taker)).or_default();
+            t.eth_reserved -= q;
+            t.usdc_available += paid;
+            let m = balances.entry(Arc::clone(maker)).or_default();
+            m.usdc_reserved -= paid;
+            m.eth_available += q;
+        }
+    }
 }
 
 impl Book {
+    /// A book that does not check funds: every account may place any order.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A book where every order must be backed: a buy reserves price times quantity in USDC, a
+    /// sell reserves the quantity in ETH, fills settle both legs, cancels release the rest.
+    pub fn with_balances() -> Self {
+        Self {
+            enforce_balances: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn enforces_balances(&self) -> bool {
+        self.enforce_balances
+    }
+
+    fn intern(&self, account: &str) -> Arc<str> {
+        if let Some((k, _)) = self.balances.get_key_value(account) {
+            return Arc::clone(k);
+        }
+        match self.by_account.get_key_value(account) {
+            Some((k, _)) => Arc::clone(k),
+            None => Arc::from(account),
+        }
+    }
+
+    /// Credits an account. Recorded as an event so a replay restores balances too.
+    pub fn deposit(&mut self, account: &str, usdc: u128, eth: Qty) -> Result<Balances, EngineError> {
+        if account.is_empty() || account.len() > MAX_ID_LEN {
+            return Err(EngineError::Invalid(format!(
+                "account_id must be 1 to {MAX_ID_LEN} bytes"
+            )));
+        }
+        let key = self.intern(account);
+        let b = self.balances.entry(Arc::clone(&key)).or_default();
+        b.usdc_available = b
+            .usdc_available
+            .checked_add(usdc)
+            .ok_or_else(|| EngineError::Invalid("deposit overflows the balance".into()))?;
+        b.eth_available = b
+            .eth_available
+            .checked_add(eth)
+            .ok_or_else(|| EngineError::Invalid("deposit overflows the balance".into()))?;
+        let result = *b;
+        let seq = self.bump_seq();
+        self.events.push(Event::Deposited {
+            account: key,
+            usdc,
+            eth,
+            seq,
+        });
+        Ok(result)
+    }
+
+    /// The account's balances; zero for an account that was never funded.
+    pub fn balances(&self, account: &str) -> Balances {
+        self.balances.get(account).copied().unwrap_or_default()
     }
 
     fn bump_seq(&mut self) -> Seq {
@@ -292,11 +442,32 @@ impl Book {
             };
         }
 
+        if self.enforce_balances {
+            let bal = self.balances(&req.account);
+            match req.side {
+                Side::Buy => {
+                    let needed = req.price as u128 * req.qty as u128;
+                    if bal.usdc_available < needed {
+                        return Err(EngineError::InsufficientFunds {
+                            asset: "USDC",
+                            needed,
+                            available: bal.usdc_available,
+                        });
+                    }
+                }
+                Side::Sell => {
+                    if bal.eth_available < req.qty {
+                        return Err(EngineError::InsufficientFunds {
+                            asset: "ETH",
+                            needed: req.qty as u128,
+                            available: bal.eth_available as u128,
+                        });
+                    }
+                }
+            }
+        }
         // Reuse the account's interned name so every order of an account shares one allocation.
-        let account: Arc<str> = match self.by_account.get_key_value(req.account.as_str()) {
-            Some((k, _)) => Arc::clone(k),
-            None => Arc::from(req.account.as_str()),
-        };
+        let account: Arc<str> = self.intern(&req.account);
         let client_order_id: Arc<str> = Arc::from(req.client_order_id.as_str());
         let tif = req.tif;
         self.next_order += 1;
@@ -331,6 +502,9 @@ impl Book {
             return Ok((o, Vec::new()));
         }
         self.events.push(Event::Accepted(o.clone()));
+        if self.enforce_balances {
+            reserve(&mut self.balances, &o.account, o.side, o.price, o.qty);
+        }
 
         let mut fills = Vec::new();
         let mut self_trade = false;
@@ -381,6 +555,9 @@ impl Book {
             }
             let level_empty = level.total == 0;
             let maker_account = Arc::clone(&maker.account);
+            if self.enforce_balances {
+                settle(&mut self.balances, &o.account, o.side, o.price, &maker_account, px, q);
+            }
             self.next_trade += 1;
             self.next_seq += 1;
             let trade = Trade {
@@ -441,6 +618,9 @@ impl Book {
             Status::Open
         };
         if let Some(reason) = cancel {
+            if self.enforce_balances {
+                release(&mut self.balances, &o.account, o.side, o.price, o.remaining);
+            }
             let seq = self.bump_seq();
             self.events.push(Event::Cancelled { id: o.id, reason, seq });
         }
@@ -461,6 +641,10 @@ impl Book {
         }
         o.status = Status::Cancelled;
         let (side, price, remaining) = (o.side, o.price, o.remaining);
+        let owner = Arc::clone(&o.account);
+        if self.enforce_balances {
+            release(&mut self.balances, &owner, side, price, remaining);
+        }
         let same = match side {
             Side::Buy => &mut self.bids,
             Side::Sell => &mut self.asks,
@@ -604,6 +788,67 @@ mod tests {
         assert_eq!(s.last_trade_price, Some(300_200));
         assert_eq!(b.order(a1.id).unwrap().status, Status::Filled);
         assert_eq!(b.order(a2.id).unwrap().status, Status::PartiallyFilled);
+    }
+
+    #[test]
+    fn balances_reserve_settle_and_release() {
+        let mut b = Book::with_balances();
+        assert!(matches!(
+            b.place(gtc("t", "x", Side::Buy, 300_000, 1_000), 0),
+            Err(EngineError::InsufficientFunds { asset: "USDC", .. })
+        ));
+        b.deposit("m", 0, 20_000).unwrap(); // 2 ETH
+        b.deposit("t", 4_000_000_000, 0).unwrap(); // 4,000 USDC
+        assert_eq!(b.balances("nobody"), Balances::default());
+        let (a1, _) = b.place(gtc("m", "a1", Side::Sell, 300_100, 5_000), 0).unwrap(); // 0.5 @ 3001
+        assert_eq!(
+            b.balances("m"),
+            Balances {
+                usdc_available: 0,
+                usdc_reserved: 0,
+                eth_available: 15_000,
+                eth_reserved: 5_000
+            }
+        );
+        assert!(matches!(
+            b.place(gtc("m", "a2", Side::Sell, 300_200, 20_000), 0),
+            Err(EngineError::InsufficientFunds {
+                asset: "ETH",
+                needed: 20_000,
+                available: 15_000
+            })
+        ));
+        // Buy 1.2 @ 3002: reserves 3602.40, fills 0.5 at 3001 (refund 0.50), rests 0.7 at 3002.
+        let (t, fills) = b.place(gtc("t", "t1", Side::Buy, 300_200, 12_000), 0).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!((t.status, t.remaining), (Status::PartiallyFilled, 7_000));
+        let tb = b.balances("t");
+        assert_eq!(tb.eth_available, 5_000);
+        assert_eq!(tb.usdc_reserved, 300_200 * 7_000); // the resting remainder at its limit
+        assert_eq!(
+            tb.usdc_available,
+            4_000_000_000 - 300_200 * 12_000 + (300_200 - 300_100) * 5_000
+        );
+        let mb = b.balances("m");
+        assert_eq!(
+            (mb.eth_available, mb.eth_reserved, mb.usdc_available),
+            (15_000, 0, 300_100 * 5_000)
+        );
+        assert_eq!(b.order(a1.id).unwrap().status, Status::Filled);
+        // Cancel the remainder: the reservation comes back.
+        b.cancel("t", t.id).unwrap();
+        let tb = b.balances("t");
+        assert_eq!(
+            (tb.usdc_reserved, tb.usdc_available),
+            (0, 4_000_000_000 - 300_100 * 5_000)
+        );
+        // An IOC remainder is released too, and a FOK that cannot fill reserves nothing.
+        b.place(gtc("m", "a3", Side::Sell, 300_500, 1_000), 0).unwrap();
+        b.place(req("t", "i", Side::Buy, 300_500, 3_000, Tif::Ioc), 0).unwrap();
+        assert_eq!(b.balances("t").usdc_reserved, 0);
+        b.place(req("t", "f", Side::Buy, 300_500, 3_000, Tif::Fok), 0).unwrap();
+        assert_eq!(b.balances("t").usdc_reserved, 0);
+        assert!(matches!(b.events().first(), Some(Event::Deposited { .. })));
     }
 
     #[test]
@@ -852,7 +1097,7 @@ mod tests {
                 let seqs: Vec<u64> = b.events().iter().map(|e| match e {
                     Event::Accepted(o) => o.seq,
                     Event::Traded(t) => t.seq,
-                    Event::Cancelled { seq, .. } | Event::Rejected { seq, .. } => *seq,
+                    Event::Cancelled { seq, .. } | Event::Rejected { seq, .. } | Event::Deposited { seq, .. } => *seq,
                 }).collect();
                 let mut sorted = seqs.clone();
                 sorted.sort_unstable();
@@ -861,6 +1106,51 @@ mod tests {
                 Ok(b.events().iter().map(|e| format!("{e:?}")).collect::<Vec<_>>())
             };
             proptest::prop_assert_eq!(run(&ops)?, run(&ops)?, "replay produced a different event log");
+        }
+
+        /// With balances enforced: nothing is created or destroyed, reservations equal the live
+        /// orders, and an account can never go negative. One buyer and one seller are funded
+        /// tightly so rejections and partial capacity are exercised.
+        #[test]
+        fn balances_are_conserved_and_back_every_live_order(
+            ops in proptest::collection::vec((0u8..2, 1u64..40, 1u64..500, 0u8..3), 1..300)
+        ) {
+            let mut b = Book::with_balances();
+            let funding = [("b0", 1_000_000_000_000u128, 0u64), ("b1", 3_000_000_000u128, 0), ("s0", 0, 1_000_000), ("s1", 0, 700)];
+            for (a, usdc, eth) in funding { b.deposit(a, usdc, eth).unwrap(); }
+            let total_usdc: u128 = funding.iter().map(|f| f.1).sum();
+            let total_eth: u64 = funding.iter().map(|f| f.2).sum();
+            let mut accepted = 0;
+            let mut refused = 0;
+            for (i, (side, price, qty, tif)) in ops.iter().enumerate() {
+                let side = if *side == 0 { Side::Buy } else { Side::Sell };
+                let tif = match tif { 0 => Tif::Gtc, 1 => Tif::Ioc, _ => Tif::Fok };
+                let account = format!("{}{}", if side == Side::Buy { "b" } else { "s" }, i % 2);
+                match b.place(req(&account, &i.to_string(), side, 299_000 + price * 10, *qty, tif), 0) {
+                    Ok(_) => accepted += 1,
+                    Err(EngineError::InsufficientFunds { .. }) => refused += 1,
+                    Err(e) => return Err(proptest::test_runner::TestCaseError::fail(format!("{e}"))),
+                }
+                if i % 5 == 4 {
+                    let victim = (i as u64 / 2).max(1);
+                    if let Some(o) = b.order(victim).cloned() { let _ = b.cancel(&o.account, victim); }
+                }
+                let mut usdc = 0u128;
+                let mut eth = 0u64;
+                for (a, _, _) in funding {
+                    let bal = b.balances(a);
+                    usdc += bal.usdc_available + bal.usdc_reserved;
+                    eth += bal.eth_available + bal.eth_reserved;
+                    let live = b.open_orders_for(a);
+                    let usdc_backing: u128 = live.iter().filter(|o| o.side == Side::Buy).map(|o| o.price as u128 * o.remaining as u128).sum();
+                    let eth_backing: u64 = live.iter().filter(|o| o.side == Side::Sell).map(|o| o.remaining).sum();
+                    proptest::prop_assert_eq!(bal.usdc_reserved, usdc_backing, "USDC reserved != live buys of {}", a);
+                    proptest::prop_assert_eq!(bal.eth_reserved, eth_backing, "ETH reserved != live sells of {}", a);
+                }
+                proptest::prop_assert_eq!(usdc, total_usdc, "USDC was created or destroyed");
+                proptest::prop_assert_eq!(eth, total_eth, "ETH was created or destroyed");
+            }
+            proptest::prop_assert!(accepted + refused == ops.len());
         }
     }
 }

@@ -9,7 +9,7 @@
 //! The matcher flushes the writer once per batch, so under load one write system call covers many
 //! commands; `fsync` per batch is optional (crash durability at a latency cost, see the README).
 
-use crate::book::{Book, OrderId, PlaceRequest};
+use crate::book::{Book, OrderId, PlaceRequest, Qty};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -26,6 +26,12 @@ pub enum Record {
         t: i64,
         account: String,
         id: OrderId,
+    },
+    Deposit {
+        t: i64,
+        account: String,
+        usdc: u128,
+        eth: Qty,
     },
 }
 
@@ -94,6 +100,9 @@ impl Journal {
                 }
                 Record::Cancel { account, id, .. } => {
                     let _ = book.cancel(&account, id);
+                }
+                Record::Deposit { account, usdc, eth, .. } => {
+                    let _ = book.deposit(&account, usdc, eth);
                 }
             }
             n += 1;

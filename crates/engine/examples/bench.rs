@@ -19,9 +19,12 @@ fn main() {
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(1_000_000);
-    let mut book = Book::new();
+    let mut book = Book::with_balances();
     let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
     let accounts = ["b0", "b1", "s0", "s1"];
+    for a in accounts {
+        book.deposit(a, 1_000_000_000_000_000, 10_000_000_000).unwrap();
+    }
     let start = Instant::now();
     let mut trades = 0usize;
     for i in 0..n {

@@ -3,7 +3,7 @@
 //! Set `ENGINE_JOURNAL=/path/file.jsonl` (and `ENGINE_JOURNAL_FSYNC=1`) to measure with the
 //! write-ahead journal on.
 use clob_proto::v1::engine_client::EngineClient;
-use clob_proto::v1::{PlaceOrderRequest, Side, TimeInForce};
+use clob_proto::v1::{DepositRequest, PlaceOrderRequest, Side, TimeInForce};
 use engine_server::{serve, EngineConfig};
 use std::time::Instant;
 
@@ -28,6 +28,16 @@ async fn main() -> anyhow::Result<()> {
     let (addr, handle) = serve("127.0.0.1:0".parse()?, cfg).await?;
     let url = format!("http://{addr}");
     let mut c = EngineClient::connect(url.clone()).await?;
+    let mut accounts = vec!["b".to_string(), "s".to_string()];
+    accounts.extend((0..16u64).map(|t| if t % 2 == 0 { format!("b{t}") } else { format!("s{t}") }));
+    for a in accounts {
+        c.deposit(DepositRequest {
+            account_id: a,
+            usdc_micro: 1_000_000_000_000_000,
+            eth_lots: 10_000_000_000,
+        })
+        .await?;
+    }
     let n = 5_000u64;
     let mut lat = Vec::with_capacity(n as usize);
     for i in 0..n {

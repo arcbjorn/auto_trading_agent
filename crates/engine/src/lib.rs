@@ -11,8 +11,8 @@ pub mod journal;
 pub mod sequencer;
 
 pub use book::{
-    Book, CancelReason, EngineError, Event, LevelView, Order, OrderId, PlaceRequest, Price, Qty, Seq, Side, Snapshot,
-    Status, Tif, Trade, TradeId,
+    Balances, Book, CancelReason, EngineError, Event, LevelView, Order, OrderId, PlaceRequest, Price, Qty, Seq, Side,
+    Snapshot, Status, Tif, Trade, TradeId,
 };
 pub use journal::{Journal, Record};
 pub use sequencer::{spawn, spawn_with_journal, Command, EngineHandle, Reply};

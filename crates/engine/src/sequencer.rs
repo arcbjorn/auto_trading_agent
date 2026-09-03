@@ -34,6 +34,14 @@ pub enum Command {
         account: Option<String>,
         limit: usize,
     },
+    Deposit {
+        account: String,
+        usdc: u128,
+        eth: Qty,
+    },
+    Balances {
+        account: String,
+    },
 }
 
 pub enum Reply {
@@ -42,6 +50,7 @@ pub enum Reply {
     Order(Order),
     Orders(Vec<Order>),
     Trades(Vec<Trade>),
+    Balances(Balances),
 }
 
 type ReplySender = oneshot::Sender<Result<Reply, EngineError>>;
@@ -78,6 +87,12 @@ fn apply(book: &mut Book, journal: &mut Option<Journal>, cmd: Command, now: i64)
                 account: account.clone(),
                 id: *id,
             }),
+            Command::Deposit { account, usdc, eth } => Some(Record::Deposit {
+                t: now,
+                account: account.clone(),
+                usdc: *usdc,
+                eth: *eth,
+            }),
             _ => None,
         };
         if let Some(r) = record {
@@ -113,6 +128,8 @@ fn apply(book: &mut Book, journal: &mut Option<Journal>, cmd: Command, now: i64)
             limit,
         ))),
         Command::Trades { account, limit } => Ok(Reply::Trades(book.trades(account.as_deref(), limit))),
+        Command::Deposit { account, usdc, eth } => book.deposit(&account, usdc, eth).map(Reply::Balances),
+        Command::Balances { account } => Ok(Reply::Balances(book.balances(&account))),
     }
 }
 

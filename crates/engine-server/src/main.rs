@@ -5,8 +5,30 @@
 //!   ENGINE_QUEUE  bounded command queue length (default 10000)
 //!   ENGINE_JOURNAL       path of the write-ahead journal (default none: in memory only)
 //!   ENGINE_JOURNAL_FSYNC 1 to fsync every batch before replying (default 0: flush to the OS)
+//!   ENGINE_BALANCES      0 to run without balance checks (default 1: every order must be funded)
+//!   ENGINE_FUND          accounts credited on an empty book, whole units: "demo:50000:10,mm:1000000:1000"
+//!                        (account:USDC:ETH); journaled, and skipped when a journal was replayed
 //!   RUST_LOG      tracing filter (default info)
 use engine_server::{serve, EngineConfig};
+
+/// "account:USDC:ETH,..." in whole units -> (account, micro-USDC, lots).
+fn parse_funding(spec: &str) -> anyhow::Result<Vec<(String, u64, u64)>> {
+    spec.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|entry| {
+            let parts: Vec<&str> = entry.split(':').collect();
+            anyhow::ensure!(parts.len() == 3, "ENGINE_FUND entry {entry:?} is not account:USDC:ETH");
+            let usdc: u64 = parts[1]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("bad USDC amount in {entry:?}"))?;
+            let eth: u64 = parts[2]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("bad ETH amount in {entry:?}"))?;
+            Ok((parts[0].to_string(), usdc * 1_000_000, eth * 10_000))
+        })
+        .collect()
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,6 +50,11 @@ async fn main() -> anyhow::Result<()> {
             std::env::var("ENGINE_JOURNAL_FSYNC").as_deref(),
             Ok("1") | Ok("true") | Ok("yes")
         ),
+        enforce_balances: !matches!(
+            std::env::var("ENGINE_BALANCES").as_deref(),
+            Ok("0") | Ok("false") | Ok("no")
+        ),
+        fund_at_start: parse_funding(&std::env::var("ENGINE_FUND").unwrap_or_default())?,
         ..EngineConfig::default()
     };
     let (addr, handle) = serve(bind.parse()?, cfg).await?;

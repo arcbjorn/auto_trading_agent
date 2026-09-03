@@ -3,9 +3,21 @@
 //! is never crossed.
 use clob_proto::v1::engine_client::EngineClient;
 use clob_proto::v1::{
-    CancelOrderRequest, GetOrderBookRequest, ListTradesRequest, PlaceOrderRequest, Side, TimeInForce,
+    CancelOrderRequest, DepositRequest, GetBalancesRequest, GetOrderBookRequest, ListTradesRequest, PlaceOrderRequest,
+    Side, TimeInForce,
 };
 use engine_server::{serve, EngineConfig};
+
+/// Plenty of both assets, so a test is about matching, not funding.
+async fn fund(c: &mut EngineClient<tonic::transport::Channel>, account: &str) {
+    c.deposit(DepositRequest {
+        account_id: account.into(),
+        usdc_micro: 1_000_000_000_000_000, // one billion USDC
+        eth_lots: 10_000_000_000,          // one million ETH
+    })
+    .await
+    .unwrap();
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sixteen_tasks_place_orders_concurrently() {
@@ -25,6 +37,7 @@ async fn sixteen_tasks_place_orders_concurrently() {
             } else {
                 (Side::Sell, format!("seller-{t}"))
             };
+            fund(&mut c, &account).await;
             let mut seqs = Vec::new();
             for i in 0..per_task {
                 let r = c
@@ -51,9 +64,10 @@ async fn sixteen_tasks_place_orders_concurrently() {
     }
     all.sort_unstable();
     assert!(all.len() >= 16 * per_task as usize);
+    // Sixteen deposits took the first sixteen sequence numbers.
     assert_eq!(
         all,
-        (1..=all.len() as u64).collect::<Vec<_>>(),
+        (17..=all.len() as u64 + 16).collect::<Vec<_>>(),
         "sequence numbers must be unique and contiguous"
     );
 
@@ -103,6 +117,7 @@ async fn cancels_race_placements_and_leave_the_book_empty() {
             } else {
                 (Side::Sell, 310_000)
             };
+            fund(&mut c, &format!("acct-{a}")).await;
             let mut ids = Vec::new();
             for i in 0..per_account {
                 let r = c
@@ -179,6 +194,20 @@ async fn restart_replays_the_journal() {
     };
     let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), cfg.clone()).await.unwrap();
     let mut c = EngineClient::connect(format!("http://{addr}")).await.unwrap();
+    c.deposit(DepositRequest {
+        account_id: "a".into(),
+        usdc_micro: 5_000_000_000, // 5,000 USDC
+        eth_lots: 0,
+    })
+    .await
+    .unwrap();
+    c.deposit(DepositRequest {
+        account_id: "b".into(),
+        usdc_micro: 0,
+        eth_lots: 10_000, // 1 ETH
+    })
+    .await
+    .unwrap();
     let order = |cid: &str, side: Side, price: i64, lots: i64| PlaceOrderRequest {
         account_id: "a".into(),
         client_order_id: cid.into(),
@@ -227,6 +256,13 @@ async fn restart_replays_the_journal() {
         .await
         .unwrap()
         .into_inner();
+    let balances_before = c
+        .get_balances(GetBalancesRequest { account_id: "a".into() })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(balances_before.enforced);
+    assert_eq!(balances_before.eth_available_lots, 200, "a bought 0.02 ETH");
     handle.shutdown().await;
 
     let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), cfg).await.unwrap();
@@ -253,6 +289,12 @@ async fn restart_replays_the_journal() {
         (book_after.bids, book_after.asks, book_after.sequence),
         (book_before.bids, book_before.asks, book_before.sequence)
     );
+    let balances_after = c
+        .get_balances(GetBalancesRequest { account_id: "a".into() })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(balances_after, balances_before, "deposits and settlements replay too");
     // Idempotency survives too: the same client id replays the original order rather than a new one.
     let again = c
         .place_order(order("k1", Side::Buy, 299_000, 500))
@@ -277,6 +319,31 @@ async fn idempotent_retry_and_status_codes() {
         .await
         .unwrap();
     let mut c = EngineClient::connect(format!("http://{addr}")).await.unwrap();
+    // An unfunded account cannot place at all; a funded one is bounded by what it holds.
+    let unfunded = c
+        .place_order(PlaceOrderRequest {
+            account_id: "poor".into(),
+            client_order_id: "p".into(),
+            side: Side::Buy as i32,
+            price_ticks: 300_000,
+            quantity_lots: 1,
+            tif: TimeInForce::Gtc as i32,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(unfunded.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        unfunded.message().contains("insufficient USDC"),
+        "{}",
+        unfunded.message()
+    );
+    assert!(
+        unfunded.message().contains("0.30"),
+        "human units: {}",
+        unfunded.message()
+    );
+    fund(&mut c, "a").await;
+    fund(&mut c, "b").await;
     let req = PlaceOrderRequest {
         account_id: "a".into(),
         client_order_id: "k1".into(),
