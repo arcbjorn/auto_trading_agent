@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 300" width="940" height="300" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="Four components in a line: user or eval harness posts to agent-service, which calls mcp-server over MCP, which calls engine-server over gRPC. The harness grades the engine's end state directly.">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#8b949e"/>
+    </marker>
+    <marker id="ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#bc8cff"/>
+    </marker>
+  </defs>
+
+  <rect x="14" y="70" width="150" height="72" rx="8" fill="#6e7681" fill-opacity="0.16" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="89" y="100" text-anchor="middle" font-size="14" font-weight="600" fill="#8b949e">User or</text>
+  <text x="89" y="120" text-anchor="middle" font-size="14" font-weight="600" fill="#8b949e">eval harness</text>
+
+  <rect x="238" y="52" width="196" height="108" rx="8" fill="#1f6feb" fill-opacity="0.16" stroke="#4493f8" stroke-width="1.5"/>
+  <text x="336" y="78" text-anchor="middle" font-size="14" font-weight="700" fill="#4493f8">agent-service</text>
+  <text x="336" y="100" text-anchor="middle" font-size="11.5" fill="#8b949e">Claude tool loop</text>
+  <text x="336" y="118" text-anchor="middle" font-size="11.5" fill="#8b949e">per-turn permissions</text>
+  <text x="336" y="136" text-anchor="middle" font-size="11.5" fill="#8b949e">confirm · verify · audit</text>
+
+  <rect x="508" y="52" width="184" height="108" rx="8" fill="#8957e5" fill-opacity="0.16" stroke="#bc8cff" stroke-width="1.5"/>
+  <text x="600" y="78" text-anchor="middle" font-size="14" font-weight="700" fill="#bc8cff">mcp-server</text>
+  <text x="600" y="100" text-anchor="middle" font-size="11.5" fill="#8b949e">9 tools · 3 resources</text>
+  <text x="600" y="118" text-anchor="middle" font-size="11.5" fill="#8b949e">risk policy</text>
+  <text x="600" y="136" text-anchor="middle" font-size="11.5" fill="#8b949e">unit conversion</text>
+
+  <rect x="766" y="52" width="160" height="108" rx="8" fill="#238636" fill-opacity="0.18" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="846" y="78" text-anchor="middle" font-size="14" font-weight="700" fill="#3fb950">engine-server</text>
+  <text x="846" y="100" text-anchor="middle" font-size="11.5" fill="#8b949e">matcher thread</text>
+  <text x="846" y="118" text-anchor="middle" font-size="11.5" fill="#8b949e">Book · event log</text>
+  <text x="846" y="138" text-anchor="middle" font-size="11.5" font-weight="600" fill="#8b949e">the only state</text>
+
+  <line x1="164" y1="106" x2="230" y2="106" stroke="#8b949e" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="197" y="98" text-anchor="middle" font-size="11" fill="#8b949e">POST</text>
+  <text x="197" y="126" text-anchor="middle" font-size="11" fill="#8b949e">/chat</text>
+
+  <line x1="434" y1="106" x2="500" y2="106" stroke="#8b949e" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="467" y="98" text-anchor="middle" font-size="11" fill="#8b949e">MCP</text>
+  <text x="467" y="126" text-anchor="middle" font-size="11" fill="#8b949e">JSON-RPC</text>
+
+  <line x1="692" y1="106" x2="758" y2="106" stroke="#8b949e" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="725" y="98" text-anchor="middle" font-size="11" fill="#8b949e">gRPC</text>
+  <text x="725" y="126" text-anchor="middle" font-size="11" fill="#8b949e">protobuf</text>
+
+  <path d="M846 160 V236 H89 V150" fill="none" stroke="#bc8cff" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#ad)"/>
+  <text x="467" y="256" text-anchor="middle" font-size="11.5" fill="#bc8cff">the harness grades the engine's end state over gRPC</text>
+</svg>
