@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-6 0 952 330" width="952" height="330" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="Three tonic handler tasks try_send commands into a bounded mpsc channel whose arrival order is the sequence order. One matcher thread owns the Book, mutates it, publishes an ArcSwap snapshot that readers load lock-free, and replies to each handler over a oneshot channel.">
+  <defs>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#8b949e"/>
+    </marker>
+    <marker id="o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#db6d28"/>
+    </marker>
+  </defs>
+
+  <rect x="14" y="26" width="150" height="52" rx="8" fill="#1f6feb" fill-opacity="0.16" stroke="#4493f8" stroke-width="1.5"/>
+  <text x="89" y="48" text-anchor="middle" font-size="12.5" font-weight="600" fill="#4493f8">tonic handler</text>
+  <text x="89" y="66" text-anchor="middle" font-size="12.5" font-weight="600" fill="#4493f8">task 1</text>
+
+  <rect x="14" y="122" width="150" height="52" rx="8" fill="#1f6feb" fill-opacity="0.16" stroke="#4493f8" stroke-width="1.5"/>
+  <text x="89" y="144" text-anchor="middle" font-size="12.5" font-weight="600" fill="#4493f8">tonic handler</text>
+  <text x="89" y="162" text-anchor="middle" font-size="12.5" font-weight="600" fill="#4493f8">task 2</text>
+
+  <rect x="14" y="218" width="150" height="52" rx="8" fill="#1f6feb" fill-opacity="0.16" stroke="#4493f8" stroke-width="1.5"/>
+  <text x="89" y="240" text-anchor="middle" font-size="12.5" font-weight="600" fill="#4493f8">tonic handler</text>
+  <text x="89" y="258" text-anchor="middle" font-size="12.5" font-weight="600" fill="#4493f8">task 3</text>
+
+  <rect x="252" y="96" width="188" height="104" rx="8" fill="#9e6a03" fill-opacity="0.18" stroke="#d29922" stroke-width="1.5"/>
+  <text x="346" y="126" text-anchor="middle" font-size="13" font-weight="700" fill="#d29922">bounded mpsc</text>
+  <text x="346" y="145" text-anchor="middle" font-size="13" font-weight="700" fill="#d29922">channel</text>
+  <text x="346" y="169" text-anchor="middle" font-size="11" fill="#8b949e">arrival order</text>
+  <text x="346" y="186" text-anchor="middle" font-size="11" fill="#8b949e">= sequence order</text>
+
+  <rect x="528" y="96" width="176" height="104" rx="8" fill="#238636" fill-opacity="0.18" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="616" y="128" text-anchor="middle" font-size="13" font-weight="700" fill="#3fb950">matcher thread</text>
+  <text x="616" y="152" text-anchor="middle" font-size="11.5" fill="#8b949e">owns the Book</text>
+  <text x="616" y="174" text-anchor="middle" font-size="11.5" fill="#8b949e">no lock, no unsafe</text>
+
+  <rect x="792" y="26" width="134" height="60" rx="30" fill="#6e7681" fill-opacity="0.16" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="859" y="62" text-anchor="middle" font-size="13" font-weight="700" fill="#8b949e">Book</text>
+
+  <rect x="778" y="204" width="162" height="76" rx="8" fill="#8957e5" fill-opacity="0.16" stroke="#bc8cff" stroke-width="1.5"/>
+  <text x="859" y="230" text-anchor="middle" font-size="12.5" font-weight="700" fill="#bc8cff">ArcSwap snapshot</text>
+  <text x="859" y="252" text-anchor="middle" font-size="11" fill="#8b949e">readers load() it,</text>
+  <text x="859" y="268" text-anchor="middle" font-size="11" fill="#8b949e">no lock</text>
+
+  <path d="M164 52 H208 Q244 52 244 96 V120" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#g)"/>
+  <line x1="164" y1="148" x2="244" y2="148" stroke="#8b949e" stroke-width="1.5" marker-end="url(#g)"/>
+  <path d="M164 244 H208 Q244 244 244 200 V176" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#g)"/>
+  <text x="204" y="112" text-anchor="middle" font-size="10.5" fill="#8b949e">try_send</text>
+
+  <line x1="440" y1="148" x2="520" y2="148" stroke="#8b949e" stroke-width="1.5" marker-end="url(#g)"/>
+  <text x="480" y="140" text-anchor="middle" font-size="10.5" fill="#8b949e">blocking</text>
+  <text x="480" y="167" text-anchor="middle" font-size="10.5" fill="#8b949e">_recv()</text>
+
+  <path d="M704 128 Q750 128 750 76 H784" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#g)"/>
+  <text x="742" y="94" text-anchor="end" font-size="10.5" fill="#8b949e">mutates</text>
+
+  <path d="M704 172 Q750 172 750 238 H770" fill="none" stroke="#8b949e" stroke-width="1.5" marker-end="url(#g)"/>
+  <text x="742" y="206" text-anchor="end" font-size="10.5" fill="#8b949e">publishes</text>
+
+  <path d="M616 200 V300 H8 V44" fill="none" stroke="#db6d28" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#o)"/>
+  <text x="360" y="292" text-anchor="middle" font-size="11.5" fill="#db6d28">oneshot reply, after the batch's snapshot is published</text>
+</svg>
