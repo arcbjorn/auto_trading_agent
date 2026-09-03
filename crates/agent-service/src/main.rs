@@ -13,6 +13,7 @@
 //!   AGENT_BIND             default 127.0.0.1:8080
 //!   AUDIT_LOG              JSON-lines path (default audit.jsonl; empty string disables)
 //!   CONFIRM_THRESHOLD_ETH  orders at or above this size need confirmation (default 1)
+//!   CONFIRM_UNPRICED       1 (default) confirms any order at a price the user did not state
 //!   GATE_TOOLS             1 (default) permits action tools only on explicit intent
 //!   NOTE_CHANNEL           system | user: how the per-turn permission note is sent (default: by model)
 //!   PROMPT_CACHE           1 (default) marks the system prompt and conversation for caching
@@ -44,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let cfg = AgentConfig {
         confirm_threshold_lots: threshold_eth * 10_000,
+        confirm_unpriced: std::env::var("CONFIRM_UNPRICED").map(|v| v != "0").unwrap_or(true),
         confirm_ttl: Duration::from_secs(600),
         gate_tools: std::env::var("GATE_TOOLS").map(|v| v != "0").unwrap_or(true),
         note_channel,

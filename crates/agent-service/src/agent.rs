@@ -60,6 +60,8 @@ pub struct AgentConfig {
     pub max_iterations: usize,
     /// Orders at or above this many lots need a confirmation turn (default 1 ETH).
     pub confirm_threshold_lots: u64,
+    /// An order at a price the user never stated needs a confirmation turn, whatever its size.
+    pub confirm_unpriced: bool,
     pub confirm_ttl: Duration,
     /// Permit action tools only when the user's words carry the intent. The tool list itself is
     /// always the same; a call outside the turn's permission is refused by the service.
@@ -75,6 +77,7 @@ impl Default for AgentConfig {
         Self {
             max_iterations: 8,
             confirm_threshold_lots: 10_000,
+            confirm_unpriced: true,
             confirm_ttl: Duration::from_secs(600),
             gate_tools: true,
             compensate: true,
@@ -228,6 +231,7 @@ impl Agent {
         let confirmation_turn = pending_before && gate::mentions_confirmation(user_text);
         let confirm = ConfirmationGate {
             threshold_lots: self.cfg.confirm_threshold_lots,
+            confirm_unpriced: self.cfg.confirm_unpriced,
             ttl: self.cfg.confirm_ttl,
         };
         // The user's words, then the service's note on what this turn permits. Both are appended
@@ -320,7 +324,7 @@ impl Agent {
                                 // Idempotency key: a retried tool call can never place a second order.
                                 args["client_order_id"] = json!(format!("{}-{turn}-{id}", session.id));
                             }
-                            match confirm.intercept(&mut session.pending, &name, &args, &session.id, turn) {
+                            match confirm.intercept(&mut session.pending, &name, &args, &session.id, turn, user_text) {
                                 Intercept::Reply(v) => {
                                     if v["needs_confirmation"] == true {
                                         flags.push("confirmation_requested".into());

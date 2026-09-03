@@ -35,7 +35,21 @@ const TRADE_VERBS: [&str; 20] = [
     "pick up",
     "load up",
 ];
-const CANCEL_VERBS: [&str; 6] = ["cancel", "remove", "withdraw", "pull", "kill", "close"];
+const CANCEL_VERBS: [&str; 9] = [
+    "cancel", "remove", "withdraw", "pull", "kill", "close", "undo", "revert", "unwind",
+];
+/// Words that frame a request as not meant for real: an order placed under them needs a
+/// confirmation turn, so a "demo" never rests in the book without the user saying so twice.
+const FRAMING_WORDS: [&str; 8] = [
+    "demo",
+    "demonstration",
+    "hypothetical",
+    "hypothetically",
+    "pretend",
+    "simulate",
+    "example",
+    "test",
+];
 const CONFIRM_WORDS: [&str; 10] = [
     "confirm",
     "confirmed",
@@ -77,6 +91,10 @@ pub fn mentions_trade_intent(text: &str) -> bool {
 
 pub fn mentions_cancel_intent(text: &str) -> bool {
     CANCEL_VERBS.iter().any(|w| has_word(text, w))
+}
+
+pub fn mentions_framing(text: &str) -> bool {
+    FRAMING_WORDS.iter().any(|w| has_word(text, w))
 }
 
 pub fn mentions_confirmation(text: &str) -> bool {
@@ -139,6 +157,9 @@ pub struct PendingConfirmation {
 pub struct ConfirmationGate {
     /// Orders at or above this many lots need an explicit confirmation turn.
     pub threshold_lots: u64,
+    /// An order whose limit price does not appear in the user's message (the model chose it, as
+    /// for "sell now") needs a confirmation turn whatever its size.
+    pub confirm_unpriced: bool,
     pub ttl: Duration,
 }
 
@@ -157,6 +178,7 @@ impl ConfirmationGate {
         args: &Value,
         session_id: &str,
         turn: u32,
+        user_text: &str,
     ) -> Intercept {
         if tool != "place_limit_order" {
             return Intercept::Proceed(args.clone());
@@ -198,9 +220,16 @@ impl ConfirmationGate {
                 })),
             };
         }
-        if qty < self.threshold_lots {
+        let price_quoted = numbers(user_text).iter().any(|n| parse_price(n).ok() == Some(price));
+        let reason = if qty >= self.threshold_lots {
+            "This order is large."
+        } else if self.confirm_unpriced && !price_quoted {
+            "The user did not state this price; the model chose it."
+        } else if mentions_framing(user_text) {
+            "The request was framed as a demo, test or hypothetical; a real order needs an explicit confirmation."
+        } else {
             return Intercept::Proceed(args);
-        }
+        };
         let token = format!(
             "cfm-{session_id}-{turn}-{}",
             std::time::SystemTime::now()
@@ -224,7 +253,7 @@ impl ConfirmationGate {
             "needs_confirmation": true,
             "confirmation_token": token,
             "summary": summary,
-            "instruction": "This order is large. Tell the user the summary and ask them to confirm. When they confirm, call place_limit_order again with the same arguments plus this confirmation_token."
+            "instruction": format!("{reason} Tell the user the summary and ask them to confirm. When they confirm, call place_limit_order again with the same arguments plus this confirmation_token.")
         }))
     }
 }
@@ -293,6 +322,9 @@ mod tests {
         assert!(!mentions_trade_intent("what is 1 ETH worth?")); // one number: a question
         assert!(!mentions_trade_intent("what's ETH at?"));
         assert!(mentions_cancel_intent("cancel my last order"));
+        assert!(mentions_cancel_intent("now undo that"));
+        assert!(mentions_framing("just as a demo, buy 0.5 eth at 3000"));
+        assert!(!mentions_framing("buy 0.5 eth at 3000"));
         assert!(mentions_cancel_intent("what did I cancel yesterday?"));
         assert!(mentions_confirmation("yes, go ahead"));
         assert!(!mentions_confirmation("what is ETH at?"));
@@ -332,39 +364,75 @@ mod tests {
     fn large_orders_need_a_matching_token() {
         let gate = ConfirmationGate {
             threshold_lots: 10_000,
+            confirm_unpriced: true,
             ttl: Duration::from_secs(600),
         };
         let mut pending = None;
         let small = json!({"side":"buy","price_usdc":"3000","quantity_eth":"0.5"});
+        let text = "buy 0.5 eth at 3000";
         assert!(matches!(
-            gate.intercept(&mut pending, "place_limit_order", &small, "s", 1),
+            gate.intercept(&mut pending, "place_limit_order", &small, "s", 1, text),
             Intercept::Proceed(_)
         ));
-        let big = json!({"side":"buy","price_usdc":"3000","quantity_eth":"2"});
-        let Intercept::Reply(preview) = gate.intercept(&mut pending, "place_limit_order", &big, "s", 1) else {
+        // A small order at a price the user never mentioned: the model chose it, so confirm.
+        let Intercept::Reply(unpriced) =
+            gate.intercept(&mut pending, "place_limit_order", &small, "s", 1, "sell 0.5 eth now")
+        else {
             panic!("expected preview")
         };
+        assert_eq!(unpriced["needs_confirmation"], true);
+        assert!(unpriced["instruction"]
+            .as_str()
+            .unwrap()
+            .contains("did not state this price"));
+        pending = None;
+        let lenient = ConfirmationGate {
+            confirm_unpriced: false,
+            ..gate.clone()
+        };
+        assert!(matches!(
+            lenient.intercept(&mut pending, "place_limit_order", &small, "s", 1, "sell 0.5 eth now"),
+            Intercept::Proceed(_)
+        ));
+        let Intercept::Reply(framed) = gate.intercept(
+            &mut pending,
+            "place_limit_order",
+            &small,
+            "s",
+            1,
+            "as a demo, buy 0.5 eth at 3000",
+        ) else {
+            panic!("expected preview")
+        };
+        assert!(framed["instruction"].as_str().unwrap().contains("framed"));
+        pending = None;
+        let big = json!({"side":"buy","price_usdc":"3000","quantity_eth":"2"});
+        let Intercept::Reply(preview) = gate.intercept(&mut pending, "place_limit_order", &big, "s", 1, text) else {
+            panic!("expected preview")
+        };
+        assert!(preview["instruction"].as_str().unwrap().contains("large"));
         assert_eq!(preview["needs_confirmation"], true);
         let token = preview["confirmation_token"].as_str().unwrap().to_string();
         assert!(pending.is_some());
         let mut wrong = big.clone();
         wrong["quantity_eth"] = json!("3");
         wrong["confirmation_token"] = json!(token);
-        let Intercept::Reply(r) = gate.intercept(&mut pending, "place_limit_order", &wrong, "s", 2) else {
+        let Intercept::Reply(r) = gate.intercept(&mut pending, "place_limit_order", &wrong, "s", 2, "yes") else {
             panic!()
         };
         assert_eq!(r["code"], "CONFIRMATION_MISMATCH");
         assert!(pending.is_some(), "a mismatch keeps the pending order");
         let mut confirmed = big.clone();
         confirmed["confirmation_token"] = json!(token);
-        let Intercept::Proceed(args) = gate.intercept(&mut pending, "place_limit_order", &confirmed, "s", 2) else {
+        let Intercept::Proceed(args) = gate.intercept(&mut pending, "place_limit_order", &confirmed, "s", 2, "yes")
+        else {
             panic!()
         };
         assert!(args.get("confirmation_token").is_none());
         assert!(pending.is_none());
         let mut stale = big.clone();
         stale["confirmation_token"] = json!("cfm-old");
-        let Intercept::Reply(r) = gate.intercept(&mut pending, "place_limit_order", &stale, "s", 3) else {
+        let Intercept::Reply(r) = gate.intercept(&mut pending, "place_limit_order", &stale, "s", 3, "yes") else {
             panic!()
         };
         assert_eq!(r["code"], "NO_PENDING_CONFIRMATION");

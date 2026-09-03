@@ -364,6 +364,7 @@ async fn unrequested_action_is_compensated_when_the_gate_is_off() {
         responder,
         AgentConfig {
             gate_tools: false,
+            confirm_unpriced: false,
             ..AgentConfig::default()
         },
     )
