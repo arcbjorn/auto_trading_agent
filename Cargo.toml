@@ -4,6 +4,7 @@ members = [
     "crates/clob-proto",
     "crates/engine",
     "crates/engine-server",
+    "crates/mcp-server",
 ]
 
 [workspace.package]

@@ -1,0 +1,26 @@
+[package]
+name = "mcp-server"
+description = "Model Context Protocol server for the CLOB, hand-rolled JSON-RPC over stdio and Streamable HTTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clob-proto = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+engine-server = { workspace = true }
+reqwest = { workspace = true }
