@@ -1,0 +1,50 @@
+# 08 · Dependencies
+
+## Policy
+
+Every runtime dependency must be a crate with years of production use at scale, judged by adoption and maintenance rather than by version number, since Rust convention keeps many foundational crates below 1.0. Young or fast-moving crates are replaced by hand-written code when the surface is small enough (the MCP protocol layer). Nothing is `unsafe` in this repository.
+
+## Runtime dependencies
+
+Download counts are from crates.io on 2026-09-03; "since" is the first release.
+
+| Crate | Version | Since | Total downloads | Last 90 days | Used for |
+|---|---|---|---|---|---|
+| tokio | 1.53 | 2016 | 932M | 213M | async runtime, channels, I/O |
+| tokio-stream | 0.1 | 2020 | 451M | 99M | `TcpListenerStream` for tonic's incoming |
+| hyper | 1.11 | 2014 | 886M | 192M | HTTP/1.1 servers for the MCP endpoint and the chat API |
+| hyper-util | 0.1 | 2022 | 451M | 133M | tokio adapter for hyper |
+| http-body-util | 0.1 | 2022 | 435M | 132M | body collection with a size limit |
+| bytes | 1.12 | 2015 | 999M | 232M | byte buffers |
+| tonic, tonic-prost | 0.14 | 2018 | 377M | 84M | gRPC server and client |
+| prost | 0.14 | 2017 | 564M | 125M | protobuf runtime |
+| tonic-prost-build, protoc-bin-vendored | 0.14, 3.2 | 2018, 2020 | – | – | build-time code generation with the real protoc |
+| serde, serde_json | 1.0 | 2015 | 1.25B (json) | 292M | every JSON boundary |
+| reqwest | 0.13 | 2016 | 686M | 172M | HTTPS client for the Messages API and the MCP endpoint |
+| arc-swap | 1.9 | 2018 | 311M | 77M | lock-free snapshot publication |
+| thiserror, anyhow | 2.0, 1.0 | 2019 | – | – | error types |
+| tracing, tracing-subscriber | 0.1, 0.3 | 2017 | 816M | 180M | structured logging |
+| proptest (dev) | 1.11 | 2017 | 180M | 45M | property-based tests |
+
+## What was deliberately left out
+
+| Crate | Why not |
+|---|---|
+| rmcp (official MCP SDK) | First published March 2025; API changes between minor versions, deprecations within months. Replaced by ~400 lines of hand-written JSON-RPC |
+| axum, actix-web | Two routes per server do not justify a framework; hyper is already present |
+| rust_decimal | Exact decimal parsing and formatting for two fixed scales is 60 lines in `units.rs` |
+| schemars | Seven hand-written schemas give full control over what the model reads |
+| criterion | Two small benchmark binaries with `std::time::Instant` avoid a heavy dev dependency |
+| governor | The per-account rate limit is a sliding window in `policy.rs` |
+| rand | The benchmarks and the simulation use a seeded xorshift generator |
+| protox | A pure-Rust protobuf compiler; the real protoc is vendored instead |
+
+## gRPC in Rust, for the record
+
+| Crate | First release | Total downloads | Last 90 days | Latest release |
+|---|---|---|---|---|
+| tonic | 2018 | 377M | 84M | 2026-05 |
+| grpcio (gRPC C-core binding) | 2017 | 1.6M | 0.17M | 2023-08 |
+| grpc (pure Rust) | 2016 | 1.0M | 0.03M | 2026-05 |
+
+Verified from their manifests and lockfiles: the Linkerd2 proxy, Apache Arrow Flight, the OpenTelemetry Rust OTLP exporter, InfluxDB 3, the Solana Agave validator and Materialize all ship tonic.
