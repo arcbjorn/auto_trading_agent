@@ -214,12 +214,16 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 
 pub async fn run(args: &Args) -> anyhow::Result<()> {
     let driver = Driver::from_name(&args.agent, &args.out_dir)?;
-    let cases = cases::load(&args.cases_dir, &args.suite)?;
+    let mut cases = cases::load(&args.cases_dir, &args.suite)?;
+    if let Some(filter) = &args.case_filter {
+        cases.retain(|(_, c)| c.id.contains(filter.as_str()));
+    }
     anyhow::ensure!(
         !cases.is_empty(),
-        "no cases found under {} for suite {}",
+        "no cases found under {} for suite {} (filter {:?})",
         args.cases_dir.display(),
-        args.suite
+        args.suite,
+        args.case_filter
     );
     let results_path = args.out_dir.join(format!("results-{}.jsonl", driver.name()));
     let errors_path = args.out_dir.join(format!("errors-{}.jsonl", driver.name()));
@@ -227,34 +231,55 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
     let mut errors = std::fs::File::create(&errors_path)?;
     let mut rows = Vec::new();
     let mut error_count = 0;
+    let parallel = args.parallel.max(1);
     eprintln!(
-        "running {} cases x {} reps with the {} agent",
+        "running {} cases x {} reps with the {} agent, {parallel} at a time",
         cases.len(),
         args.reps,
         driver.name()
     );
-    for (suite, case) in &cases {
+    // Every run owns its stack, so runs are independent; results are written in case order.
+    let limit = Arc::new(tokio::sync::Semaphore::new(parallel));
+    let mut set = tokio::task::JoinSet::new();
+    for (index, (suite, case)) in cases.iter().enumerate() {
         for rep in 1..=args.reps {
-            match run_one(&driver, suite, case, rep).await {
-                Ok(row) => {
-                    eprintln!(
-                        "  {:<10} {:<40} rep {rep}: {}",
-                        suite,
-                        case.id,
-                        if row.pass { "PASS" } else { "FAIL" }
-                    );
-                    writeln!(results, "{}", serde_json::to_string(&row)?)?;
-                    rows.push(row);
-                }
-                Err(e) => {
-                    error_count += 1;
-                    eprintln!("  {:<10} {:<40} rep {rep}: ERROR {e}", suite, case.id);
-                    writeln!(
-                        errors,
-                        "{}",
-                        json!({ "suite": suite, "case": case.id, "rep": rep, "error": e.to_string() })
-                    )?;
-                }
+            let permit = Arc::clone(&limit).acquire_owned().await?;
+            let (driver, suite, case) = (driver.clone(), suite.clone(), case.clone());
+            set.spawn(async move {
+                let outcome = run_one(&driver, &suite, &case, rep).await;
+                drop(permit);
+                (index, rep, suite, case.id, outcome)
+            });
+        }
+    }
+    let mut finished = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        let (index, rep, suite, id, outcome) = joined?;
+        match &outcome {
+            Ok(row) => eprintln!(
+                "  {:<10} {:<40} rep {rep}: {}",
+                suite,
+                id,
+                if row.pass { "PASS" } else { "FAIL" }
+            ),
+            Err(e) => eprintln!("  {:<10} {:<40} rep {rep}: ERROR {e}", suite, id),
+        }
+        finished.push((index, rep, suite, id, outcome));
+    }
+    finished.sort_by_key(|(index, rep, ..)| (*index, *rep));
+    for (_, rep, suite, id, outcome) in finished {
+        match outcome {
+            Ok(row) => {
+                writeln!(results, "{}", serde_json::to_string(&row)?)?;
+                rows.push(row);
+            }
+            Err(e) => {
+                error_count += 1;
+                writeln!(
+                    errors,
+                    "{}",
+                    json!({ "suite": suite, "case": id, "rep": rep, "error": e.to_string() })
+                )?;
             }
         }
     }

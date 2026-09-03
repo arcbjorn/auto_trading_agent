@@ -1,6 +1,6 @@
 //! `evals`: runs the scenario suites and the market simulation against the real stack.
 //!
-//!   evals run  [--suite execution|paraphrase|safety|all] [--reps N] [--agent model|oracle|null] [--cases DIR] [--out DIR] [--assert]
+//!   evals run  [--suite execution|paraphrase|safety|all] [--case ID] [--reps N] [--parallel N] [--agent model|oracle|null] [--cases DIR] [--out DIR] [--assert]
 //!   evals sim  [--seeds N] [--rounds R] [--agent model|baseline|null] [--out DIR]
 //!
 //! `--agent model` calls the Messages API and needs ANTHROPIC_API_KEY. `oracle` performs the
@@ -26,6 +26,10 @@ pub struct Args {
     pub seeds: u32,
     pub rounds: u32,
     pub assert_invariants: bool,
+    /// Only cases whose id contains this text.
+    pub case_filter: Option<String>,
+    /// Runs in flight at once; every run has its own engine and MCP server.
+    pub parallel: usize,
 }
 
 fn parse_args() -> Args {
@@ -39,6 +43,8 @@ fn parse_args() -> Args {
         seeds: 3,
         rounds: 5,
         assert_invariants: false,
+        case_filter: None,
+        parallel: 1,
     };
     let mut it = std::env::args().skip(1);
     if let Some(cmd) = it.next() {
@@ -52,6 +58,8 @@ fn parse_args() -> Args {
         let value = it.next().unwrap_or_default();
         match flag.as_str() {
             "--suite" => args.suite = value,
+            "--case" => args.case_filter = Some(value),
+            "--parallel" => args.parallel = value.parse().unwrap_or(1),
             "--reps" => args.reps = value.parse().unwrap_or(1),
             "--agent" => args.agent = value,
             "--cases" => args.cases_dir = value.into(),

@@ -24,6 +24,7 @@ pub struct TurnOutcome {
     pub stop_reason: String,
 }
 
+#[derive(Clone)]
 pub enum Driver {
     Model {
         cfg: AnthropicConfig,

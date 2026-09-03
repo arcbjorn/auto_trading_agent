@@ -26,9 +26,29 @@ fn percentile(values: &mut [u64], p: f64) -> u64 {
     values[((values.len() - 1) as f64 * p).round() as usize]
 }
 
-/// claude-opus-5 list prices per million tokens: input 5, cache read 0.1x, cache write 1.25x, output 25.
-pub fn estimated_cost_usd(input: u64, cache_read: u64, cache_write: u64, output: u64) -> f64 {
-    (input as f64 * 5.0 + cache_read as f64 * 0.5 + cache_write as f64 * 6.25 + output as f64 * 25.0) / 1e6
+/// List prices per million tokens (input, output) by model id prefix, as of September 2026.
+/// Cache reads cost 0.1x the input price and cache writes 1.25x.
+pub fn list_prices(model: &str) -> Option<(f64, f64)> {
+    const PRICES: [(&str, f64, f64); 8] = [
+        ("claude-fable", 10.0, 50.0),
+        ("claude-mythos", 10.0, 50.0),
+        ("claude-opus-5", 5.0, 25.0),
+        ("claude-opus-4", 5.0, 25.0),
+        ("claude-sonnet-5", 2.0, 10.0),
+        ("claude-sonnet-4-6", 3.0, 15.0),
+        ("claude-sonnet-4", 3.0, 15.0),
+        ("claude-haiku-4", 1.0, 5.0),
+    ];
+    PRICES
+        .iter()
+        .find(|(prefix, _, _)| model.starts_with(prefix))
+        .map(|(_, i, o)| (*i, *o))
+}
+
+/// Cost of one run at its model's list prices; `None` for an unknown model.
+pub fn estimated_cost_usd(model: &str, input: u64, cache_read: u64, cache_write: u64, output: u64) -> Option<f64> {
+    let (i, o) = list_prices(model)?;
+    Some((input as f64 * i + cache_read as f64 * i * 0.1 + cache_write as f64 * i * 1.25 + output as f64 * o) / 1e6)
 }
 
 pub fn render(rows: &[Row], errors: usize, agent: &str) -> String {
@@ -90,13 +110,31 @@ pub fn render(rows: &[Row], errors: usize, agent: &str) -> String {
     let cached: u64 = rows.iter().map(|r| r.cache_read_tokens).sum();
     let written: u64 = rows.iter().map(|r| r.cache_creation_tokens).sum();
     if in_tok + out_tok + cached + written > 0 {
-        let cost = estimated_cost_usd(in_tok, cached, written, out_tok);
         let prompt = in_tok + cached + written;
+        let models: std::collections::BTreeSet<&str> = rows.iter().map(|r| r.model.as_str()).collect();
+        let cost: Option<f64> = rows
+            .iter()
+            .map(|r| {
+                estimated_cost_usd(
+                    &r.model,
+                    r.input_tokens,
+                    r.cache_read_tokens,
+                    r.cache_creation_tokens,
+                    r.output_tokens,
+                )
+            })
+            .sum();
         out.push_str(&format!(
-            "\nTokens: {in_tok} uncached in, {cached} read from cache, {written} written to cache, {out_tok} out; cache hit rate {:.0}% of prompt tokens. \
-             At claude-opus-5 list prices (5 in, 0.50 cached, 6.25 cache write, 25 out USD per million) this run cost about {cost:.2} USD.\n",
+            "\nTokens: {in_tok} uncached in, {cached} read from cache, {written} written to cache, {out_tok} out; cache hit rate {:.0}% of prompt tokens. ",
             if prompt > 0 { 100.0 * cached as f64 / prompt as f64 } else { 0.0 }
         ));
+        match cost {
+            Some(cost) => out.push_str(&format!(
+                "At list prices for {} (cache reads 0.1x and writes 1.25x the input price) this run cost about {cost:.2} USD.\n",
+                models.iter().copied().collect::<Vec<_>>().join(", ")
+            )),
+            None => out.push_str("No list price is known for every model in this run, so no cost is shown.\n"),
+        }
     }
     let failures: Vec<&Row> = rows.iter().filter(|r| !r.pass).collect();
     if !failures.is_empty() {
@@ -155,4 +193,21 @@ pub fn regenerate(out_dir: &Path) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prices_follow_the_model_and_the_cache_discounts() {
+        assert_eq!(list_prices("claude-opus-5"), Some((5.0, 25.0)));
+        assert_eq!(list_prices("claude-sonnet-5"), Some((2.0, 10.0)));
+        assert_eq!(list_prices("claude-sonnet-4-6"), Some((3.0, 15.0)));
+        assert_eq!(list_prices("gpt-x"), None);
+        // 1M uncached in, 1M cached, 1M written, 1M out on Sonnet 5: 2 + 0.2 + 2.5 + 10.
+        let c = estimated_cost_usd("claude-sonnet-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000).unwrap();
+        assert!((c - 14.7).abs() < 1e-9, "{c}");
+        assert_eq!(estimated_cost_usd("oracle", 0, 0, 0, 0), None);
+    }
 }
