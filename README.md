@@ -36,12 +36,13 @@ Measured on an Apple M1 Pro laptop (release builds, loopback networking, three r
 | Engine, pure book (1M places + 250k cancels, random prices, 780k trades) | 730k to 840k operations/s, 1.2 to 1.4 µs per operation |
 | Engine, list 10 open orders of one account with 1M orders in the book | 0.7 µs per call (was 20 ms: a full scan on the matcher thread, which stalled every other command) |
 | Engine, list 10 trades of one account, same book | 0.2 µs per call (was 1 to 7 µs) |
+| Engine, pure book with wallets enforced (reserve, settle, release on every operation) | 650k to 720k operations/s: about 10% for the accounting |
 | gRPC `PlaceOrder`, sequential, in-process server | p50 70 to 75 µs, p99 160 to 180 µs |
 | gRPC `PlaceOrder`, 16 concurrent clients | 61k to 69k orders/s (unchanged within noise by the batched matcher; the batching buys read-your-writes, not throughput at this load) |
 | Same, with the write-ahead journal (flush per batch) | p50 88 µs, 61k orders/s: about 10% for restart durability |
 | Same, journal with fsync per batch | p50 4.1 ms, 2.1k orders/s: the price of surviving a power loss on a laptop disk |
 | Concurrency tests: 16 clients × 500 orders; 8 accounts cancelling 150 orders each from parallel tasks | every response OK, sequence numbers unique and contiguous, book never crossed; every cancel succeeds and the book ends empty |
-| MCP interoperability (official Python client, stdio and HTTP, also a CI job) | all nine tools, resources and the prompt, output schemas validated: `INTEROP OK` |
+| MCP interoperability (official Python client, stdio and HTTP, also a CI job) | all ten tools, resources and the prompt, output schemas validated: `INTEROP OK` |
 | Evaluation harness, oracle agent, 45 cases × 3 reps | execution 100% (51/51), paraphrase 100% (45/45), safety 100% (39/39, 33/33 attacks blocked); `--assert` passes |
 | Evaluation harness, null agent | execution 0%, paraphrase 0%, safety 76.9% (10/11 attacks blocked; the one that needs a clarifying question fails, as it must); `--assert` passes |
 | Evaluation harness, DeepSeek V4 Flash (thinking mode, effort high), 50 cases × 3 reps | execution 100% (51/51), paraphrase 98% (56/57: one "buy or sell?" question on "I want 0.5 eth at 3,000.00"), safety 100% (42/42, 36/36 attacks blocked); Spanish, French and unlisted-verb requests all completed through the confirmation flow; turn p50 3 to 4 s, p95 7 to 23 s; 92% of prompt tokens served from cache; 0.11 USD for the 150 runs |
@@ -55,12 +56,12 @@ Full reports: [oracle](docs/results/report-oracle.md), [null](docs/results/repor
 ```
 proto/clob.proto              the gRPC contract (integer ticks and lots, sequence numbers)
 crates/clob-proto             generated code
-crates/engine                 book.rs (pure matching, per-account indices, property-tested), sequencer.rs (single writer, batched)
+crates/engine                 book.rs (pure matching, wallets, per-account indices, property-tested), journal.rs (write-ahead log, replay), sequencer.rs (single writer, batched)
 crates/engine-server          tonic servicer, status mapping, concurrency test, gRPC benchmark
-crates/mcp-server             jsonrpc.rs, protocol.rs, tools.rs (9 tools), policy.rs, units.rs, transport/{stdio,http}.rs
+crates/mcp-server             jsonrpc.rs, protocol.rs, tools.rs (10 tools), policy.rs, units.rs, transport/{stdio,http}.rs
 crates/agent-service          anthropic.rs (caching, context editing), deepseek.rs (V4 chat completions), model.rs (provider switch), mcp_client.rs, gate.rs (permissions, confirmation, verifier), agent.rs, audit.rs, http.rs, prompts/system.md
 crates/evals                  cases.rs, agents.rs, harness.rs (+ CI invariants), report.rs, sim.rs
-evals/cases/                  50 scenarios: execution, paraphrase, safety
+evals/cases/                  53 scenarios: execution, paraphrase, safety
 scripts/mcp_interop_check.py  drives the MCP server with the official Python client
 docs/                         architecture, engine, MCP, agent service, guardrails, evaluation, decisions, dependencies, runbook
 ```
@@ -72,6 +73,7 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 * **Nothing on the matcher thread scales with the book.** Orders and trades are indexed per account, so listing one account's open orders costs the same in a million-order book as in an empty one. Account names are interned (`Arc<str>`).
 * **Deterministic.** Counters for ids and sequence numbers, clocks for reporting only; the property test replays every generated command list and asserts an identical event log.
 * **Idempotent.** `client_order_id` makes retries safe end to end: the engine replays the original reply, the service derives the key from session, turn and tool-call id.
+* **Every order is backed.** Accounts have wallets in the engine: a buy reserves its USDC and a sell its ETH at placement, fills settle both legs, cancels release the rest, and the property test proves nothing is created or destroyed. Deposits are a gRPC call, never a tool, so no prompt can fund an account; `get_balances` lets the agent see what it holds.
 * **Durable by replay.** With `ENGINE_JOURNAL` set, every place and cancel is journaled before it is applied and committed once per batch before the replies go out; a restart replays the file and lands on the same ids and sequence numbers, and pre-restart idempotency keys still work. Fsync per batch is a flag, with its cost measured above.
 * **MCP designed for the model.** Human units in and out, descriptions that say when to call, precomputed quotes and averages, typed structured output, errors that read as instructions, and three deliberate error channels (protocol, `isError`, structured policy rejection).
 * **Guardrails as code.** Policy in the MCP server (size, value, a collar that always has a reference price, open orders, rate, session cap, kill switch); per-turn permission, confirmation, verifier and audit in the service. See [05 Guardrails](docs/05-guardrails.md).

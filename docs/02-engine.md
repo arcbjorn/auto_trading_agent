@@ -79,6 +79,22 @@ tonic runs each RPC as a tokio task, so many `PlaceOrder` calls arrive at once. 
 
 `crates/engine-server/tests/concurrency.rs` runs a real tonic server with sixteen concurrent clients placing 500 orders each. Every response succeeds, every event's sequence number is unique and contiguous, and the book is never crossed. A second test has eight accounts rest 150 orders each at shared price levels and cancel all of them from parallel tasks while the others are still placing: every cancel succeeds and the book ends empty, which checks the lazily dropped cancelled ids and the per-level totals under interleaving.
 
+## Balances and settlement
+
+Every account has a wallet: USDC in micro-USDC (one tick times one lot, so notionals need no rounding) and ETH in lots, each split into *available* and *reserved*. A buy reserves price times quantity in USDC at placement, a sell reserves the quantity in ETH; an order that the wallet cannot back is refused before it gets an id (`FAILED_PRECONDITION`, "insufficient USDC: the order needs 1500.00, 1000.00 available"). Every fill settles both legs at the maker's price: the buyer's reservation at its own limit is charged at the trade price and the difference returns to available, the seller's reserved ETH moves to the buyer, the buyer's USDC to the seller. A cancel, an IOC remainder, a self-trade-prevention cancel and a FOK that never rested all release what they held. Deposits (`Deposit`) are events with a sequence number, so a replayed journal restores wallets as well as orders. `ENGINE_FUND=demo:50000:10` credits accounts when the engine starts on an empty book, journaled like any deposit and skipped after a replay, so a restart never funds twice. `ENGINE_FUND=demo:50000:10` credits accounts when the engine starts on an empty book, journaled like any deposit and skipped after a replay, so a restart never funds twice.
+
+The property test funds two buyers and two sellers, one of each tightly, runs random places and cancels, and checks after every step that no USDC or ETH was created or destroyed, that each account's reserved USDC equals price times remaining over its live buys and its reserved ETH equals the remaining of its live sells, and that nothing went negative (the unsigned arithmetic would panic). The market maker, the simulation bot and the benchmarks are funded with effectively unlimited balances so they measure matching, not funding; `ENGINE_BALANCES=0` turns the checks off entirely.
+
+The accounting costs about 10% of pure-book throughput (650k to 720k operations/s against 690k to 850k without it).
+
+## Balances and settlement
+
+Every account has a wallet: USDC in micro-USDC (one tick times one lot, so notionals need no rounding) and ETH in lots, each split into *available* and *reserved*. A buy reserves price times quantity in USDC at placement, a sell reserves the quantity in ETH; an order that the wallet cannot back is refused before it gets an id (`FAILED_PRECONDITION`, "insufficient USDC: the order needs 1500.00, 1000.00 available"). Every fill settles both legs at the maker's price: the buyer's reservation at its own limit is charged at the trade price and the difference returns to available, the seller's reserved ETH moves to the buyer, the buyer's USDC to the seller. A cancel, an IOC remainder, a self-trade-prevention cancel and a FOK that never rested all release what they held. Deposits (`Deposit`) are events with a sequence number, so a replayed journal restores wallets as well as orders.
+
+The property test funds two buyers and two sellers, one of each tightly, runs random places and cancels, and checks after every step that no USDC or ETH was created or destroyed, that each account's reserved USDC equals price times remaining over its live buys and its reserved ETH equals the remaining of its live sells, and that nothing went negative (the unsigned arithmetic would panic). The market maker, the simulation bot and the benchmarks are funded with effectively unlimited balances so they measure matching, not funding; `ENGINE_BALANCES=0` turns the checks off entirely.
+
+The accounting costs about 10% of pure-book throughput (650k to 720k operations/s against 690k to 850k without it).
+
 ## Durability: a journal of commands, replayed
 
 The book is deterministic, so durability needs only its inputs. With `ENGINE_JOURNAL=/path/file.jsonl` every place and cancel is appended to a write-ahead journal (one JSON line: the request and the wall-clock timestamp it was accepted with) *before* it is applied, and the journal is committed once per matcher batch, before that batch's replies are sent. Reads are never journaled. On start the engine replays the file through the same code and arrives at the same orders, trades, ids and sequence numbers; the next order id and sequence continue from there, and an idempotent retry of a pre-restart `client_order_id` still returns the original order. A corrupt line fails startup rather than silently losing data.
@@ -97,7 +113,7 @@ The batching is what keeps the fsync variant usable under concurrency: one `fsyn
 
 ## gRPC contract
 
-`proto/clob.proto` defines seven unary RPCs: `PlaceOrder`, `CancelOrder`, `GetOrder`, `ListOrders`, `ListTrades`, `GetOrderBook`, `GetMarket`. The generated code lives in `crates/clob-proto`; `build.rs` runs the real `protoc` (a system one when `PROTOC` is set, otherwise the binary vendored by `protoc-bin-vendored`), so a fresh checkout builds with nothing but cargo.
+`proto/clob.proto` defines nine unary RPCs: `PlaceOrder`, `CancelOrder`, `GetOrder`, `ListOrders`, `ListTrades`, `GetOrderBook`, `GetMarket`, `Deposit`, `GetBalances`. The generated code lives in `crates/clob-proto`; `build.rs` runs the real `protoc` (a system one when `PROTOC` is set, otherwise the binary vendored by `protoc-bin-vendored`), so a fresh checkout builds with nothing but cargo.
 
 `Trade` carries `taker_side`, `maker_account` and `taker_account`. An account-scoped `ListTrades` fills in only the requesting account's id and leaves the counterparty blank; an unscoped listing (the harness, an operator) carries both.
 
@@ -106,6 +122,8 @@ The batching is what keeps the fsync variant usable under concurrency: one `fsyn
 | Quantity or price not positive, unknown side, non-numeric id, empty account or client id, account or client id longer than 128 bytes | `INVALID_ARGUMENT` |
 | Unknown order id | `NOT_FOUND` |
 | Cancel of an order that is filled, cancelled or rejected | `FAILED_PRECONDITION` |
+| Order not backed by the account's available USDC or ETH | `FAILED_PRECONDITION`, message in human units with what is available |
+| Order not backed by the account's available USDC or ETH | `FAILED_PRECONDITION`, message in human units with what is available |
 | Order belongs to another account | `PERMISSION_DENIED` |
 | Same `client_order_id` with different parameters | `ALREADY_EXISTS` |
 | Command queue full | `RESOURCE_EXHAUSTED` |
@@ -116,7 +134,7 @@ The batching is what keeps the fsync variant usable under concurrency: one `fsyn
 
 | What | Where | Command |
 |---|---|---|
-| 11 unit tests (rules, cancel, idempotency, IOC/FOK, self-trade, listings, indexed listings against a log scan) and 1 property test | `crates/engine/src/book.rs` | `cargo test -p engine` |
+| 12 unit tests (rules, cancel, idempotency, IOC/FOK, self-trade, listings, indexed listings against a log scan, reserve/settle/release) and 2 property tests (book invariants and replay; balance conservation) | `crates/engine/src/book.rs` | `cargo test -p engine` |
 | Concurrency (placements, racing cancels), restart from the journal, and status-code integration tests over a real tonic server | `crates/engine-server/tests/concurrency.rs` | `cargo test -p engine-server` |
 | Journal replay identity | `crates/engine/src/journal.rs` | `cargo test -p engine` |
 | Pure book throughput and listing cost in a million-order book | `crates/engine/examples/bench.rs` | `cargo run --release -p engine --example bench` |

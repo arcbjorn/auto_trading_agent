@@ -36,7 +36,7 @@ curl -s localhost:8080/chat -H 'content-type: application/json' \
   -d '{"session_id":"me","message":"buy 0.5 ETH at 3000"}'
 ```
 
-The book starts empty. Seed it by placing orders under another account through gRPC (`grpcurl` works: the server does not enable reflection, so pass `-proto proto/clob.proto`), or run the evaluation harness, which seeds the book for every case.
+The book starts empty and unfunded. `make run-engine` funds the demo account (50,000 USDC, 10 ETH) and a market maker through `ENGINE_FUND`; without it, deposit over gRPC (`grpcurl -plaintext -proto proto/clob.proto -d '{"account_id":"demo","usdc_micro":50000000000,"eth_lots":100000}' localhost:50051 clob.v1.Engine/Deposit`; the server does not enable reflection). Seed liquidity by placing orders under a funded market-maker account, or run the evaluation harness, which funds and seeds for every case.
 
 ## Environment variables
 
@@ -46,6 +46,8 @@ The book starts empty. Seed it by placing orders under another account through g
 | | `ENGINE_QUEUE` | `10000` |
 | | `ENGINE_JOURNAL` | unset (in memory only); a path enables the write-ahead journal and replay on start |
 | | `ENGINE_JOURNAL_FSYNC` | `0`; `1` fsyncs every batch before replying |
+| | `ENGINE_BALANCES` | `1`; `0` runs without wallet checks |
+| | `ENGINE_FUND` | unset; `demo:50000:10,mm:1000000:1000` credits accounts (whole USDC and ETH) on an empty book |
 | mcp-server | `ENGINE_ADDR` | `http://127.0.0.1:50051` |
 | | `ACCOUNT_ID` | `demo` |
 | | `MCP_BIND` (with `--http`) | `127.0.0.1:8000` |
@@ -92,6 +94,7 @@ See [06 Evaluation](06-evaluation.md). `make eval-oracle` and `make eval-null` n
 | `ANTHROPIC_API_KEY is not set` | Export the key, or set `ANTHROPIC_BASE_URL` to a local mock for tests |
 | `DEEPSEEK_API_KEY is not set` | `MODEL_PROVIDER=deepseek` needs the DeepSeek key; `DEEPSEEK_MODEL` picks `deepseek-v4-flash` (default) or `deepseek-v4-pro` |
 | DeepSeek answers 400 mentioning `reasoning_content` | The history lost a turn's reasoning; the service replays it from the `reasoning` block, so this points at a hand-edited session or a proxy that strips fields |
+| `insufficient USDC` or `insufficient ETH` from a tool | The wallet cannot back the order; `get_balances` shows what is available. Fund the account with `Deposit` (or `ENGINE_FUND` on a fresh engine) |
 | `cannot replay journal` on start | The journal file is corrupt or unreadable; the engine refuses to start on partial data. Move the file aside to start empty, or repair the bad line |
 | A tool answers `RESOURCE_EXHAUSTED` | The engine's bounded queue is full under load; retry once, or raise `ENGINE_QUEUE` |
 | `{"rejected": true, "code": "RATE_LIMIT"}` | More than `POLICY_ACTIONS_PER_MINUTE` actions on one account; wait a minute (`cancel_all_orders` counts as one) |

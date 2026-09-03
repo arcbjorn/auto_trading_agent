@@ -66,6 +66,10 @@ Adding DeepSeek V4 could have meant a second loop or an abstract "message" type.
 
 Durability for a deterministic book needs only its inputs: the journal holds every place and cancel with its timestamp, and replay recomputes orders, trades, ids and sequence numbers through the same code. Alternatives: journaling events (more data, and a second code path that must agree with the matcher) or a snapshot per interval (loses everything since the last one). The journal is committed once per matcher batch before the replies go out, which is why the fsync variant stays usable under load; flush-only is the default because a power-loss guarantee costs two orders of magnitude of latency on a laptop disk, and the README shows both numbers.
 
-## ADR-17 No Docker in this slice
+## ADR-17 Wallets in the engine, deposits outside the model's reach
+
+An agent that can sell what it does not hold is not trading infrastructure. Balances live in the book, next to the orders they back, so reservation, settlement and release happen inside the same deterministic step as matching and are journaled with it; a separate ledger service would need two-phase coordination for something the single writer does for free. Amounts are integers in the engine's own units, so a notional is a multiplication with no rounding. `Deposit` is a gRPC method the operator, the harness and the simulation call; it is not an MCP tool, so no prompt can fund an account. Alternatives: a policy-level notional cap only (what the MCP server already has, and it cannot know what was filled), or balances in the MCP server (one more source of truth, and desktop hosts would bypass it).
+
+## ADR-18 No Docker in this slice
 
 Every component is a cargo binary with environment-variable configuration; the runbook has the three commands. A compose file would add an untested surface without changing the design.
