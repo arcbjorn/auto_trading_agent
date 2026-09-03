@@ -27,7 +27,7 @@ jobs:
       - name: official MCP client over stdio and HTTP
         run: |
           set -e
-          ENGINE_BIND=127.0.0.1:50051 ./target/debug/engine-server &
+          ENGINE_BIND=127.0.0.1:50051 ENGINE_FUND=demo:50000:10 ./target/debug/engine-server &
           sleep 1
           export ENGINE_ADDR=http://127.0.0.1:50051
           uv run --with mcp python scripts/mcp_interop_check.py --stdio target/debug/mcp-server

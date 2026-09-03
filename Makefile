@@ -18,7 +18,7 @@ bench:
 	cargo run --release -p engine-server --example grpc_bench
 
 run-engine:
-	cargo run --release -p engine-server
+	ENGINE_FUND=demo:50000:10,mm:1000000:1000 cargo run --release -p engine-server
 
 run-mcp:
 	cargo run --release -p mcp-server -- --http
