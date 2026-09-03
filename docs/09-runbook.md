@@ -92,7 +92,7 @@ See [06 Evaluation](06-evaluation.md). `make eval-oracle` and `make eval-null` n
 | DeepSeek answers 400 mentioning `reasoning_content` | The history lost a turn's reasoning; the service replays it from the `reasoning` block, so this points at a hand-edited session or a proxy that strips fields |
 | A tool answers `RESOURCE_EXHAUSTED` | The engine's bounded queue is full under load; retry once, or raise `ENGINE_QUEUE` |
 | `{"rejected": true, "code": "RATE_LIMIT"}` | More than `POLICY_ACTIONS_PER_MINUTE` actions on one account; wait a minute (`cancel_all_orders` counts as one) |
-| A turn's `flags` contain `tool_not_permitted:...` | The model tried an action the user's message did not ask for; the call was refused before the MCP server. Expected on adversarial input; on a benign paraphrase, extend the verbs in `gate.rs` |
+| A turn's `flags` contain `confirmation_requested:no_intent:...` | The model tried an action the user's message did not clearly ask for; it was held for confirmation before the MCP server. Expected on adversarial input and on phrasings the keyword gate does not know; the user's "yes" (or "sí", "oui", "ja") releases it. To make a phrasing execute at once, extend the verbs in `gate.rs` |
 | `cache_read_input_tokens` stays 0 across turns | Something rewrites the prompt prefix. The tool list and system prompt must be byte-identical between requests; check `ANTHROPIC_MODEL` did not change mid-session |
 | `403 origin not allowed` on `/mcp` | Browser-based hosts must run on localhost; the server refuses foreign origins by design |
 | `400 session_id must be ...` from `/chat` | Session ids are limited to 64 plain characters because they become idempotency keys the engine echoes back; use letters, digits, `.`, `_`, `-` |
