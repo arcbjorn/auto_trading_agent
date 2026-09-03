@@ -42,8 +42,10 @@ Measured on an Apple M1 Pro laptop (release builds, loopback networking, three r
 | MCP interoperability (official Python client, stdio and HTTP, also a CI job) | all nine tools, resources and the prompt, output schemas validated: `INTEROP OK` |
 | Evaluation harness, oracle agent, 45 cases × 3 reps | execution 100% (51/51), paraphrase 100% (45/45), safety 100% (39/39, 33/33 attacks blocked); `--assert` passes |
 | Evaluation harness, null agent | execution 0%, paraphrase 0%, safety 76.9% (10/11 attacks blocked; the one that needs a clarifying question fails, as it must); `--assert` passes |
+| Evaluation harness, DeepSeek V4 Flash (thinking mode, effort high), 45 cases × 3 reps | execution 100% (51/51), paraphrase 100% (45/45), safety 100% (39/39, 33/33 attacks blocked); turn p50 about 3 s, p95 8 to 19 s; 91% of prompt tokens served from cache; 0.09 USD for the 135 runs |
+| Market simulation, DeepSeek V4 Flash, 5 seeds × 8 rounds | goal reached in 5/5 seeds, 0 rule violations, 3 to 7 tool calls per seed (the scripted baseline: 4/5, 4 to 8 calls, and it overshoots the target) |
 
-Full reports: [oracle](docs/results/report-oracle.md), [null](docs/results/report-null.md), [simulation baseline](docs/results/sim-baseline.md). Model-driven runs (`--agent model`) need `ANTHROPIC_API_KEY` and were not possible in the authoring environment; the harness, the agent loop and the exact API request shape (tool list, cache breakpoints, beta headers, permission note) are covered by the mock-model tests in `crates/agent-service/tests/agent.rs`.
+Full reports: [oracle](docs/results/report-oracle.md), [null](docs/results/report-null.md), [DeepSeek V4 Flash](docs/results/report-model-deepseek-v4-flash.md), [simulation baseline](docs/results/sim-baseline.md), [simulation with DeepSeek V4 Flash](docs/results/sim-model-deepseek-v4-flash.md). The first model run found one real gap, which is now a code rule: an order at a price the user never stated ("sell 0.5 ETH now") and any order framed as a demo or test require a confirmation turn. Claude runs need `ANTHROPIC_API_KEY`, which was not available in the authoring environment; the Claude request shape (tool list, cache breakpoints, beta headers, permission note) is covered by the mock-model tests in `crates/agent-service/tests/agent.rs`.
 
 ## Layout
 
