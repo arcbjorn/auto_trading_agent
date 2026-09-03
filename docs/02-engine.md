@@ -1,0 +1,108 @@
+# 02 · The engine
+
+An order book is two sorted lists: bids highest price first, asks lowest first. A new limit
+order trades against the other side at any price satisfying its limit; the remainder waits at
+its own price, behind orders already there. Cancel removes a waiting order. That is the whole
+business logic — everything below is data structures, determinism and concurrency.
+
+## Matching rules
+
+| Rule | Behaviour |
+|---|---|
+| Price-time priority | Best price first; at the same price, first in, first out |
+| Crossing | A buy at P matches asks priced at or below P; a sell at P matches bids at or above P |
+| Maker price | Trades execute at the resting order's price; the taker gets the price improvement |
+| GTC | The unfilled remainder rests at the order's own limit |
+| IOC | The unfilled remainder is cancelled |
+| FOK | Availability is checked first; the order is rejected without touching the book if the full quantity is not there |
+| Self-trade prevention | "Cancel newest": an incoming order never trades with its own account's resting order; matching stops there and the remainder is cancelled |
+| Idempotency | `client_order_id` is unique per account. The same request again returns the original reply (order and fills); the same key with different parameters is `ALREADY_EXISTS` |
+
+### Worked example
+
+Resting: asks 3001.00 × 0.5 (A1), 3002.00 × 1.0 (A2); bid 2999.00 × 0.8. Incoming: buy 1.2 @ 3002.00.
+
+1. 0.5 trades at **3001.00** (A1's price, not 3002.00). A1 is filled and removed.
+2. 0.7 trades at 3002.00. A2 has 0.3 left.
+3. The incoming order is filled: 1.2 ETH for 3601.90 USDC, average 3001.58.
+
+This scenario is the first unit test in `crates/engine/src/book.rs` and is replayed through gRPC and MCP in the other crates' tests.
+
+## Data structures
+
+```rust
+pub struct Book {
+    bids: BTreeMap<Price, Level>,                      // best bid = last key
+    asks: BTreeMap<Price, Level>,                      // best ask = first key
+    orders: HashMap<OrderId, Order>,                   // O(1) cancel and lookup
+    by_account: HashMap<Arc<str>, Vec<OrderId>>,       // one account's orders, placement order
+    by_client_id: HashMap<Arc<str>, HashMap<Arc<str>, OrderId>>, // idempotency: account -> client id
+    original_replies: HashMap<OrderId, (Order, Vec<Trade>)>,
+    events: Vec<Event>,                                // append-only history
+    trades: Vec<Trade>,                                // sequence order
+    trades_by_account: HashMap<Arc<str>, Vec<usize>>,  // positions in `trades`
+    last_trade_price: Option<Price>,
+    next_order: u64, next_trade: u64, next_seq: u64,   // counters, never clocks or UUIDs
+}
+struct Level { total: Qty, live: u32, queue: VecDeque<OrderId> }  // FIFO of ids = time priority
+```
+
+Each level holds a FIFO of order ids, so an order lives in exactly one place. Cancel is O(1): mark the order, subtract its remaining quantity from the level total, drop the level when the total reaches zero; the matcher skips cancelled ids lazily when it reaches them.
+
+**Listings never scan the book.** Every read command runs on the matcher thread, so its cost is added latency for every other command. `ListOrders` walks one account's id list backwards and stops at the limit; `ListTrades` walks that account's positions in the trade vector. With a million orders in the book, listing ten open orders of one account takes 0.7 µs; the previous full scan took 20 ms, and the MCP server issues that listing before every order it places (to count open orders for the policy). Account and client ids are `Arc<str>`, interned per account, so the many clones an order goes through (event, reply cache, reply) are refcount bumps.
+
+A trade records both order ids, both account ids and the taker's side, so a listing can say which side an account traded on and whether it was maker or taker; the gRPC layer blanks the counterparty's account in account-scoped listings.
+
+## Determinism
+
+The same input sequence always produces the same output, which makes the engine replayable and
+the evaluations reproducible.
+
+* One thread applies commands in arrival order, and that order is the sequence number.
+* Order ids, trade ids and sequence numbers are counters.
+* Wall-clock timestamps are passed in by the caller (`now_ns`), recorded for reporting, and never used for ordering.
+
+The property test in `book.rs` generates random sequences of places (GTC, IOC, FOK) and cancels across four accounts and asserts after every step: the book is never crossed, displayed depth equals the open quantity, every trade is at the maker's price and within the taker's limit, no self-trade occurs, sequence numbers are unique, and a replay of the same sequence yields an identical event log.
+
+## Thread safety and concurrency: the single writer
+
+tonic runs each RPC as a tokio task, so many `PlaceOrder` calls arrive at once. Instead of `Arc<Mutex<Book>>`, the book is *moved* into one matcher thread:
+
+![Three tonic handler tasks send commands into a bounded channel; one matcher thread owns the Book, publishes an ArcSwap snapshot and replies over oneshot channels](assets/single-writer.svg)
+
+* Handlers hold an `EngineHandle`: a channel sender and a pointer to the latest snapshot. Nothing else can reach the book; the compiler enforces it.
+* Contention is one channel send. The book itself has no lock and no `unsafe`.
+* Reads of the top of book (`GetOrderBook`, `GetMarket`) never enter the queue: readers swap to the latest published snapshot lock-free.
+* The matcher works in batches: it blocks for one command, then drains whatever else is already queued (up to 256), applies them all in arrival order, publishes one snapshot, and only then sends the replies. Under a burst this amortises the snapshot over many commands; publishing before replying means a client that reads the book after its own reply always sees its own order. At the load of the benchmarks the queue rarely holds more than a few commands, so throughput is unchanged within noise; the guarantee is the point.
+* The channel is bounded (10,000 by default). When it is full, `try_send` fails and the handler answers `RESOURCE_EXHAUSTED` instead of growing memory.
+* Unlike an interpreter with a global lock, the matcher thread and the tokio worker threads run on different cores, so encoding, networking and matching overlap.
+
+`crates/engine-server/tests/concurrency.rs` runs a real tonic server with sixteen concurrent clients placing 500 orders each. Every response succeeds, every event's sequence number is unique and contiguous, and the book is never crossed. A second test has eight accounts rest 150 orders each at shared price levels and cancel all of them from parallel tasks while the others are still placing: every cancel succeeds and the book ends empty, which checks the lazily dropped cancelled ids and the per-level totals under interleaving.
+
+## gRPC contract
+
+`proto/clob.proto` defines seven unary RPCs: `PlaceOrder`, `CancelOrder`, `GetOrder`, `ListOrders`, `ListTrades`, `GetOrderBook`, `GetMarket`. The generated code lives in `crates/clob-proto`; `build.rs` runs the real `protoc` (a system one when `PROTOC` is set, otherwise the binary vendored by `protoc-bin-vendored`), so a fresh checkout builds with nothing but cargo.
+
+`Trade` carries `taker_side`, `maker_account` and `taker_account`. An account-scoped `ListTrades` fills in only the requesting account's id and leaves the counterparty blank; an unscoped listing (the harness, an operator) carries both.
+
+| Situation | Status |
+|---|---|
+| Quantity or price not positive, unknown side, non-numeric id, empty account or client id, account or client id longer than 128 bytes | `INVALID_ARGUMENT` |
+| Unknown order id | `NOT_FOUND` |
+| Cancel of an order that is filled, cancelled or rejected | `FAILED_PRECONDITION` |
+| Order belongs to another account | `PERMISSION_DENIED` |
+| Same `client_order_id` with different parameters | `ALREADY_EXISTS` |
+| Command queue full | `RESOURCE_EXHAUSTED` |
+
+`ListOrders` with `status = OPEN` returns every live order (open or partially filled); `STATUS_UNSPECIFIED` returns all.
+
+## Tests and benchmarks
+
+| What | Where | Command |
+|---|---|---|
+| 11 unit tests (rules, cancel, idempotency, IOC/FOK, self-trade, listings, indexed listings against a log scan) and 1 property test | `crates/engine/src/book.rs` | `cargo test -p engine` |
+| Concurrency (placements, racing cancels) and status-code integration tests over a real tonic server | `crates/engine-server/tests/concurrency.rs` | `cargo test -p engine-server` |
+| Pure book throughput and listing cost in a million-order book | `crates/engine/examples/bench.rs` | `cargo run --release -p engine --example bench` |
+| gRPC round trip and concurrent throughput | `crates/engine-server/examples/grpc_bench.rs` | `cargo run --release -p engine-server --example grpc_bench` |
+
+Numbers are in the README. The book benchmark deliberately includes the idempotency bookkeeping and the per-account indices; the remaining cost per operation is dominated by the `BTreeMap` walk and the hash maps, not by allocation.
