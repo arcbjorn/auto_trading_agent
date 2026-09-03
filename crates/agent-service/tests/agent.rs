@@ -7,7 +7,7 @@ use agent_service::{
 };
 use bytes::Bytes;
 use clob_proto::v1::engine_client::EngineClient;
-use clob_proto::v1::{ListOrdersRequest, OrderStatus, PlaceOrderRequest, Side, TimeInForce};
+use clob_proto::v1::{DepositRequest, ListOrdersRequest, OrderStatus, PlaceOrderRequest, Side, TimeInForce};
 use http_body_util::{BodyExt, Full};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -120,6 +120,19 @@ async fn stack(responder: Responder, cfg: AgentConfig) -> Stack {
             .await
             .unwrap();
     let mut engine = EngineClient::connect(format!("http://{engine_addr}")).await.unwrap();
+    for (account, usdc, eth) in [
+        ("mm", 1_000_000_000_000u64, 1_000_000_000u64),
+        ("demo", 50_000_000_000, 100_000),
+    ] {
+        engine
+            .deposit(DepositRequest {
+                account_id: account.into(),
+                usdc_micro: usdc,
+                eth_lots: eth,
+            })
+            .await
+            .unwrap();
+    }
     for (side, price, lots, cid) in [
         (Side::Sell, 300_100, 5_000, "a1"),
         (Side::Sell, 300_200, 10_000, "a2"),
@@ -202,7 +215,7 @@ async fn read_only_question_permits_no_action_tools() {
     let mut sorted = offered.clone();
     sorted.sort();
     assert_eq!(offered, sorted);
-    assert_eq!(offered.len(), 9, "{offered:?}");
+    assert_eq!(offered.len(), 10, "{offered:?}");
     assert!(offered.contains(&"place_limit_order".to_string()) && offered.contains(&"cancel_all_orders".to_string()));
     assert_eq!(requests[0]["tools"], requests[1]["tools"]);
     let place = requests[0]["tools"]
@@ -605,6 +618,14 @@ async fn deepseek_provider_round_trips_tool_calls_and_reasoning() {
             .await
             .unwrap();
     let mut engine = EngineClient::connect(format!("http://{engine_addr}")).await.unwrap();
+    engine
+        .deposit(DepositRequest {
+            account_id: "demo".into(),
+            usdc_micro: 50_000_000_000,
+            eth_lots: 100_000,
+        })
+        .await
+        .unwrap();
     let mcp = Arc::new(McpServer::new(ToolSet::new(
         engine.clone(),
         "demo".into(),
@@ -666,7 +687,7 @@ async fn deepseek_provider_round_trips_tool_calls_and_reasoning() {
         "note travels inside the user turn"
     );
     assert_eq!(first["tools"][0]["type"], "function");
-    assert_eq!(first["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(first["tools"].as_array().unwrap().len(), 10);
     assert!(first.get("system").is_none() && first.get("cache_control").is_none() && first.get("fallbacks").is_none());
     mcp_handle.shutdown().await;
     handle.shutdown().await;
