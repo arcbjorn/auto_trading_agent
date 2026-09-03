@@ -1,0 +1,36 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p evals -- run --agent oracle --reps 1 --assert
+      - run: cargo run -p evals -- run --agent null --reps 1 --assert
+  interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - run: cargo build -p engine-server -p mcp-server
+      - name: official MCP client over stdio and HTTP
+        run: |
+          set -e
+          ENGINE_BIND=127.0.0.1:50051 ./target/debug/engine-server &
+          sleep 1
+          export ENGINE_ADDR=http://127.0.0.1:50051
+          uv run --with mcp python scripts/mcp_interop_check.py --stdio target/debug/mcp-server
+          MCP_BIND=127.0.0.1:8000 ./target/debug/mcp-server --http &
+          sleep 1
+          uv run --with mcp python scripts/mcp_interop_check.py --http http://127.0.0.1:8000/mcp
