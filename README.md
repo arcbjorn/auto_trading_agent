@@ -85,4 +85,4 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 
 ## Next
 
-Compact the journal (snapshot plus tail) so it does not grow without bound; stream book deltas instead of polling; shard by symbol; run the model-driven suites at several effort levels and publish the numbers with the cache hit rate; move the per-turn permission onto the mid-conversation tool-changes beta; add balances and settlement so the simulation scores realised P&L.
+Compact the journal (snapshot plus tail) so it does not grow without bound; stream book deltas instead of polling; shard by symbol; move the per-turn permission onto the mid-conversation tool-changes beta; add withdrawals and a settlement report so the wallet story is complete; run the Claude suites when a key is available.
