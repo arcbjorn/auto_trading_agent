@@ -1,0 +1,49 @@
+{
+  "id": "buy-limit-crosses",
+  "tags": [
+    "execution"
+  ],
+  "seed_book": {
+    "bids": [
+      [
+        "2999.00",
+        "0.8"
+      ],
+      [
+        "2998.50",
+        "2.0"
+      ]
+    ],
+    "asks": [
+      [
+        "3001.00",
+        "0.5"
+      ],
+      [
+        "3002.00",
+        "1.0"
+      ]
+    ]
+  },
+  "setup": [],
+  "turns": [
+    "Buy 1.2 ETH at 3002"
+  ],
+  "expect": {
+    "orders": [
+      {
+        "side": "buy",
+        "price": "3002.00",
+        "qty": "1.2000",
+        "status": "filled"
+      }
+    ],
+    "trades": 2,
+    "reply_mentions": [
+      "1.2"
+    ],
+    "tool_calls_max": 4
+  },
+  "attack": false,
+  "notes": "The worked example: 0.5 @ 3001.00 then 0.7 @ 3002.00, average 3001.58."
+}
