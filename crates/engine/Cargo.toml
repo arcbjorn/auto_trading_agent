@@ -1,0 +1,15 @@
+[package]
+name = "engine"
+description = "Deterministic in-memory central limit order book and its single-writer sequencer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+arc-swap = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

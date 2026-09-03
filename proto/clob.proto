@@ -1,0 +1,144 @@
+syntax = "proto3";
+package clob.v1;
+
+// Central limit order book for a single pair (ETH/USDC).
+//
+// Units are fixed-scale integers, never floats:
+//   price_ticks:   1 tick = 0.01 USDC per ETH
+//   quantity_lots: 1 lot  = 0.0001 ETH
+// Every accepted order, trade and cancel receives a strictly increasing `sequence` number,
+// assigned by the single matching thread. Sequence order is the total order of the market.
+service Engine {
+  // Place a limit order. Fills that happen immediately are returned in the response.
+  // `client_order_id` is an idempotency key: repeating a request with the same key and the
+  // same parameters returns the original reply and never creates a second order.
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+  rpc GetOrder(GetOrderRequest) returns (Order);
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
+  rpc ListTrades(ListTradesRequest) returns (ListTradesResponse);
+  // Aggregated price levels, best price first on each side.
+  rpc GetOrderBook(GetOrderBookRequest) returns (OrderBook);
+  rpc GetMarket(GetMarketRequest) returns (Market);
+}
+
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  BUY = 1;
+  SELL = 2;
+}
+
+enum TimeInForce {
+  TIF_UNSPECIFIED = 0; // treated as GTC
+  GTC = 1;             // rest the remainder in the book
+  IOC = 2;             // fill what crosses now, cancel the remainder
+  FOK = 3;             // fill the whole quantity now or reject without touching the book
+}
+
+enum OrderStatus {
+  STATUS_UNSPECIFIED = 0; // in ListOrdersRequest: no filter
+  OPEN = 1;
+  PARTIALLY_FILLED = 2;
+  FILLED = 3;
+  CANCELLED = 4;
+  REJECTED = 5;
+}
+
+message PlaceOrderRequest {
+  string account_id = 1;
+  string client_order_id = 2;
+  Side side = 3;
+  int64 price_ticks = 4;
+  int64 quantity_lots = 5;
+  TimeInForce tif = 6;
+}
+
+message PlaceOrderResponse {
+  Order order = 1;
+  repeated Trade fills = 2;
+}
+
+message CancelOrderRequest {
+  string account_id = 1;
+  string order_id = 2;
+}
+
+message CancelOrderResponse {
+  Order order = 1;
+}
+
+message GetOrderRequest {
+  string account_id = 1;
+  string order_id = 2;
+}
+
+message ListOrdersRequest {
+  string account_id = 1;
+  OrderStatus status = 2; // STATUS_UNSPECIFIED = all
+  uint32 limit = 3;       // 0 = default (10), capped server-side
+}
+
+message ListOrdersResponse {
+  repeated Order orders = 1; // newest first
+}
+
+message ListTradesRequest {
+  string account_id = 1; // empty = all accounts
+  uint32 limit = 2;      // 0 = default (10), capped server-side
+}
+
+message ListTradesResponse {
+  repeated Trade trades = 1; // newest first
+}
+
+message GetOrderBookRequest {
+  uint32 depth = 1; // levels per side, 0 = default (5), capped server-side
+}
+
+message GetMarketRequest {}
+
+message Order {
+  string order_id = 1;
+  string account_id = 2;
+  string client_order_id = 3;
+  Side side = 4;
+  int64 price_ticks = 5;
+  int64 quantity_lots = 6;
+  int64 remaining_lots = 7;
+  OrderStatus status = 8;
+  uint64 sequence = 9;
+  int64 created_at_unix_ns = 10; // wall clock, for reporting only; never used for ordering
+}
+
+message Trade {
+  string trade_id = 1;
+  string maker_order_id = 2;
+  string taker_order_id = 3;
+  int64 price_ticks = 4; // always the maker's price
+  int64 quantity_lots = 5;
+  uint64 sequence = 6;
+  int64 executed_at_unix_ns = 7;
+}
+
+message PriceLevel {
+  int64 price_ticks = 1;
+  int64 quantity_lots = 2; // open quantity at this price
+  uint32 order_count = 3;  // live orders at this price
+}
+
+message OrderBook {
+  string symbol = 1;
+  repeated PriceLevel bids = 2; // highest price first
+  repeated PriceLevel asks = 3; // lowest price first
+  uint64 sequence = 4;          // sequence number of the last event reflected
+}
+
+message Market {
+  string symbol = 1;
+  int64 tick_size_ticks = 2;       // always 1 (0.01 USDC)
+  int64 lot_size_lots = 3;         // always 1 (0.0001 ETH)
+  int64 best_bid_ticks = 4;        // 0 when empty
+  int64 best_ask_ticks = 5;        // 0 when empty
+  int64 last_trade_price_ticks = 6; // 0 when no trade yet
+  uint64 sequence = 7;
+}
