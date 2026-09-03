@@ -314,6 +314,8 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "proptest",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
