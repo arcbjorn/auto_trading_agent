@@ -235,7 +235,7 @@ impl AnthropicClient {
     }
 }
 
-fn backoff(attempt: u32) -> Duration {
+pub(crate) fn backoff(attempt: u32) -> Duration {
     let base = Duration::from_millis(500 * 2u64.pow(attempt.saturating_sub(1)));
     let jitter = Duration::from_millis(
         (std::time::SystemTime::now()
