@@ -5,3 +5,4 @@ audit.jsonl
 *.log
 .env
 *.pdf
+/evals/out-*/
