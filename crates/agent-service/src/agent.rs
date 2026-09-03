@@ -2,10 +2,11 @@
 //! its tool calls are gated and executed against the MCP server, results are fed back, and the
 //! loop ends when the model answers in text. Sessions hold the append-only message history.
 
-use crate::anthropic::{AnthropicClient, ApiError};
+use crate::anthropic::ApiError;
 use crate::audit::Audit;
 use crate::gate::{self, ConfirmationGate, Executed, Intercept, PendingConfirmation, Permissions, ACTION_TOOLS};
 use crate::mcp_client::{McpClient, McpError};
+use crate::model::ModelClient;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -128,7 +129,7 @@ pub struct TurnResult {
 }
 
 pub struct Agent {
-    claude: AnthropicClient,
+    model: ModelClient,
     mcp: McpClient,
     tools: Vec<Value>,
     cfg: AgentConfig,
@@ -160,14 +161,14 @@ pub fn api_tools(mcp_tools: &[Value]) -> Vec<Value> {
 
 impl Agent {
     pub async fn new(
-        claude: AnthropicClient,
+        model: impl Into<ModelClient>,
         mcp: McpClient,
         cfg: AgentConfig,
         audit: Audit,
     ) -> Result<Self, AgentError> {
         let tools = api_tools(&mcp.list_tools().await?);
         Ok(Self {
-            claude,
+            model: model.into(),
             mcp,
             tools,
             cfg,
@@ -203,6 +204,10 @@ impl Agent {
 
     pub fn tools(&self) -> &[Value] {
         &self.tools
+    }
+
+    pub fn model(&self) -> &ModelClient {
+        &self.model
     }
 
     pub fn config(&self) -> &AgentConfig {
@@ -257,7 +262,7 @@ impl Agent {
             }
             iterations += 1;
             let t0 = Instant::now();
-            let msg = match self.claude.create(&self.system, &session.messages, &self.tools).await {
+            let msg = match self.model.create(&self.system, &session.messages, &self.tools).await {
                 Ok(m) => m,
                 // A model that does not accept system-role messages says so with a 400 before
                 // producing anything, so the turn can be re-sent on the user channel. The request
@@ -269,13 +274,13 @@ impl Agent {
                         && body.contains("system")
                         && body.contains("role") =>
                 {
-                    tracing::warn!(model = %self.claude.config().model, "model rejects system-role messages; using the user channel from now on");
+                    tracing::warn!(model = %self.model.model_id(), "model rejects system-role messages; using the user channel from now on");
                     self.system_channel_rejected.store(true, Ordering::Relaxed);
                     flags.push("note_channel_downgraded".into());
                     channel = NoteChannel::User;
                     session.messages.truncate(turn_start);
                     self.push_user_turn(session, user_text, note.as_deref(), channel);
-                    self.claude.create(&self.system, &session.messages, &self.tools).await?
+                    self.model.create(&self.system, &session.messages, &self.tools).await?
                 }
                 Err(e) => return Err(e.into()),
             };

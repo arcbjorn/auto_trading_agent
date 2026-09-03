@@ -1,8 +1,12 @@
 //! `agent-service`: natural-language interaction with the order book.
 //!
 //! Environment:
-//!   ANTHROPIC_API_KEY      required (unless ANTHROPIC_BASE_URL points at a local mock)
+//!   MODEL_PROVIDER         anthropic (default) | deepseek
+//!   ANTHROPIC_API_KEY      required with the anthropic provider (unless ANTHROPIC_BASE_URL points at a local mock)
 //!   ANTHROPIC_MODEL        default claude-opus-5
+//!   DEEPSEEK_API_KEY       required with the deepseek provider
+//!   DEEPSEEK_MODEL         default deepseek-v4-flash (or deepseek-v4-pro)
+//!   DEEPSEEK_THINKING      1 (default) enables thinking mode; EFFORT maps onto low/high/max
 //!   EFFORT                 low | medium | high (default medium)
 //!   MAX_TOKENS             default 16000
 //!   MCP_URL                default http://127.0.0.1:8000/mcp
@@ -16,7 +20,7 @@
 //!   MAX_SESSIONS           sessions kept in memory (default 1000)
 //!   SESSION_IDLE_SECS      idle sessions are dropped first when the store is full (default 3600)
 use agent_service::http::{serve, SessionLimits, State};
-use agent_service::{Agent, AgentConfig, AnthropicClient, AnthropicConfig, Audit, McpClient, NoteChannel};
+use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, NoteChannel};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
-    let model_cfg = AnthropicConfig::from_env()?;
+    let model = ModelClient::from_env()?;
     let mcp_url = std::env::var("MCP_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/mcp".into());
     let bind = std::env::var("AGENT_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let audit_path = std::env::var("AUDIT_LOG").unwrap_or_else(|_| "audit.jsonl".into());
@@ -36,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     let note_channel = match std::env::var("NOTE_CHANNEL").as_deref() {
         Ok("system") => NoteChannel::System,
         Ok("user") => NoteChannel::User,
-        _ => NoteChannel::for_model(&model_cfg.model),
+        _ => NoteChannel::for_model(model.model_id()),
     };
     let cfg = AgentConfig {
         confirm_threshold_lots: threshold_eth * 10_000,
@@ -57,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or(3_600),
         ),
     };
-    tracing::info!(model = %model_cfg.model, effort = %model_cfg.effort, cache = model_cfg.cache, context_editing = model_cfg.context_editing, %mcp_url, ?cfg, ?limits, "agent-service starting");
+    tracing::info!(model = %model.describe(), %mcp_url, ?cfg, ?limits, "agent-service starting");
     let mcp = McpClient::connect(&mcp_url)
         .await
         .map_err(|e| anyhow::anyhow!("cannot reach MCP server at {mcp_url}: {e}"))?;
@@ -66,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         Some(audit_path.into())
     });
-    let agent = Agent::new(AnthropicClient::new(model_cfg)?, mcp, cfg, audit).await?;
+    let agent = Agent::new(model, mcp, cfg, audit).await?;
     tracing::info!(tools = ?agent.tools().iter().filter_map(|t| t["name"].as_str()).collect::<Vec<_>>(), "tools loaded from MCP");
     let (addr, handle) = serve(bind.parse()?, Arc::new(State::with_limits(agent, limits))).await?;
     tracing::info!(%addr, "POST /chat ready");

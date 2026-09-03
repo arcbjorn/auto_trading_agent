@@ -1,7 +1,10 @@
 //! The whole service against a real engine and MCP server, with the model replaced by a scripted
 //! mock of the Messages API. Every scenario checks the engine's end state, not the transcript.
 use agent_service::http::{serve as serve_api, State};
-use agent_service::{Agent, AgentConfig, AnthropicClient, AnthropicConfig, Audit, McpClient, NoteChannel, Session};
+use agent_service::{
+    Agent, AgentConfig, AnthropicClient, AnthropicConfig, Audit, DeepSeekClient, DeepSeekConfig, McpClient,
+    NoteChannel, Session,
+};
 use bytes::Bytes;
 use clob_proto::v1::engine_client::EngineClient;
 use clob_proto::v1::{ListOrdersRequest, OrderStatus, PlaceOrderRequest, Side, TimeInForce};
@@ -39,10 +42,22 @@ async fn mock_model(responder: Responder) -> MockModel {
                     let responder = Arc::clone(&responder);
                     let recorded = Arc::clone(&recorded);
                     async move {
-                        assert_eq!(req.uri().path(), "/v1/messages");
-                        assert_eq!(req.headers()["anthropic-version"], "2023-06-01");
-                        let body: Value =
+                        let path = req.uri().path().to_string();
+                        assert!(path == "/v1/messages" || path == "/chat/completions", "{path}");
+                        let header = |name: &str| {
+                            req.headers()
+                                .get(name)
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("")
+                                .to_string()
+                        };
+                        let (auth, version) = (header("authorization"), header("anthropic-version"));
+                        let mut body: Value =
                             serde_json::from_slice(&req.into_body().collect().await.unwrap().to_bytes()).unwrap();
+                        // The recorded request keeps the path and the authentication header shape.
+                        body["__path"] = json!(path);
+                        body["__auth"] = json!(auth);
+                        body["__anthropic_version"] = json!(version);
                         let n = {
                             let mut r = recorded.lock().unwrap();
                             r.push(body.clone());
@@ -217,6 +232,8 @@ async fn read_only_question_permits_no_action_tools() {
     assert_eq!(requests[0]["cache_control"]["type"], "ephemeral");
     assert_eq!(requests[0]["output_config"]["effort"], "medium");
     assert_eq!(requests[0]["fallbacks"], "default");
+    assert_eq!(requests[0]["__path"], "/v1/messages");
+    assert_eq!(requests[0]["__anthropic_version"], "2023-06-01");
     assert!(requests[0].get("context_management").is_none());
     assert!(turn.flags.is_empty(), "{:?}", turn.flags);
 }
@@ -485,6 +502,110 @@ async fn system_channel_falls_back_to_the_user_turn_when_the_model_rejects_it() 
     let requests = s.mock.requests.lock().unwrap();
     assert_eq!(requests.len(), 3, "one rejected request, then one per turn");
     assert!(has_system_role(&requests[0]) && !has_system_role(&requests[1]) && !has_system_role(&requests[2]));
+}
+
+/// A DeepSeek-shaped mock: chat-completion replies with reasoning_content and OpenAI-style
+/// tool_calls. The loop, the guardrails and the engine must behave exactly as with Claude.
+#[tokio::test]
+async fn deepseek_provider_round_trips_tool_calls_and_reasoning() {
+    let responder: Responder = Arc::new(|n, body| match n {
+        1 => json!({
+            "id": "c1", "model": "deepseek-v4-flash", "object": "chat.completion",
+            "choices": [ { "index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": null, "reasoning_content": "A limit buy below the best ask; place it.",
+                "tool_calls": [ { "id": "call_abc", "type": "function", "function": {
+                    "name": "place_limit_order",
+                    "arguments": "{\"side\":\"buy\",\"price_usdc\":\"2990.00\",\"quantity_eth\":\"0.5\"}" } } ] } } ],
+            "usage": { "prompt_tokens": 1500, "completion_tokens": 90, "prompt_cache_hit_tokens": 1300, "prompt_cache_miss_tokens": 200,
+                       "completion_tokens_details": { "reasoning_tokens": 70 } }
+        }),
+        _ => {
+            // The second request must replay the reasoning and answer the call by id.
+            let m = body["messages"].as_array().unwrap();
+            let assistant = m.iter().find(|x| x["role"] == "assistant").expect("assistant turn");
+            assert_eq!(
+                assistant["reasoning_content"],
+                "A limit buy below the best ask; place it."
+            );
+            assert_eq!(assistant["tool_calls"][0]["id"], "call_abc");
+            let tool = m.iter().find(|x| x["role"] == "tool").expect("tool result");
+            assert_eq!(tool["tool_call_id"], "call_abc");
+            assert!(tool["content"].as_str().unwrap().contains("\"status\":\"open\""));
+            json!({ "id": "c2", "model": "deepseek-v4-flash", "choices": [ { "index": 0, "finish_reason": "stop",
+                "message": { "role": "assistant", "content": "Placed: buy 0.5 ETH at 2990.00, resting." } } ],
+                "usage": { "prompt_tokens": 1700, "completion_tokens": 20, "prompt_cache_hit_tokens": 1500, "prompt_cache_miss_tokens": 200 } })
+        }
+    });
+    let (engine_addr, handle) =
+        engine_server::serve("127.0.0.1:0".parse().unwrap(), engine_server::EngineConfig::default())
+            .await
+            .unwrap();
+    let mut engine = EngineClient::connect(format!("http://{engine_addr}")).await.unwrap();
+    let mcp = Arc::new(McpServer::new(ToolSet::new(
+        engine.clone(),
+        "demo".into(),
+        Arc::new(Policy::new(PolicyConfig::default())),
+    )));
+    let (mcp_addr, mcp_handle) = serve_http("127.0.0.1:0".parse().unwrap(), mcp).await.unwrap();
+    let mock = mock_model(responder).await;
+    let deepseek = DeepSeekClient::new(DeepSeekConfig {
+        api_key: "sk-test".into(),
+        base_url: mock.base_url.clone(),
+        model: "deepseek-v4-flash".into(),
+        max_tokens: 1000,
+        thinking: true,
+        reasoning_effort: "high".into(),
+        timeout: Duration::from_secs(10),
+        max_attempts: 1,
+    })
+    .unwrap();
+    let client = McpClient::connect(&format!("http://{mcp_addr}/mcp")).await.unwrap();
+    let agent = Agent::new(deepseek, client, AgentConfig::default(), Audit::disabled())
+        .await
+        .unwrap();
+    assert_eq!(
+        (agent.model().provider(), agent.model().model_id()),
+        ("deepseek", "deepseek-v4-flash")
+    );
+    let mut session = Session::new("d1");
+    let turn = agent.chat_turn(&mut session, "buy 0.5 eth at 2990").await.unwrap();
+    assert!(turn.flags.is_empty(), "{:?}", turn.flags);
+    assert_eq!(turn.reply, "Placed: buy 0.5 ETH at 2990.00, resting.");
+    assert_eq!(turn.model, "deepseek-v4-flash");
+    assert_eq!(
+        (
+            turn.usage.input_tokens,
+            turn.usage.cache_read_input_tokens,
+            turn.usage.output_tokens
+        ),
+        (400, 2800, 110)
+    );
+    let open = demo_orders(&mut engine, OrderStatus::Open).await;
+    assert_eq!(open.len(), 1);
+    assert_eq!((open[0].price_ticks, open[0].quantity_lots), (299_000, 5_000));
+    assert!(open[0].client_order_id.starts_with("d1-1-call_abc"));
+    // The history keeps the reasoning as a block so later requests can replay it.
+    assert_eq!(session.messages[1]["content"][0]["type"], "reasoning");
+    let first = mock.requests.lock().unwrap()[0].clone();
+    assert_eq!(first["__path"], "/chat/completions");
+    assert_eq!(first["__auth"], "Bearer sk-test");
+    assert_eq!(first["__anthropic_version"], "");
+    assert_eq!(first["thinking"]["type"], "enabled");
+    assert_eq!(first["reasoning_effort"], "high");
+    assert_eq!(first["messages"][0]["role"], "system");
+    assert!(first["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("buy 0.5 eth at 2990"));
+    assert!(
+        first["messages"][1]["content"].as_str().unwrap().contains("[service]"),
+        "note travels inside the user turn"
+    );
+    assert_eq!(first["tools"][0]["type"], "function");
+    assert_eq!(first["tools"].as_array().unwrap().len(), 9);
+    assert!(first.get("system").is_none() && first.get("cache_control").is_none() && first.get("fallbacks").is_none());
+    mcp_handle.shutdown().await;
+    handle.shutdown().await;
 }
 
 #[tokio::test]
