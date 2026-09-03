@@ -5,13 +5,15 @@ use crate::harness::{Stack, ACCOUNT};
 use crate::Args;
 use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, Session};
 use clob_proto::v1::{
-    CancelOrderRequest, GetOrderBookRequest, ListOrdersRequest, ListTradesRequest, OrderStatus, PlaceOrderRequest,
-    Side, TimeInForce,
+    CancelOrderRequest, DepositRequest, GetBalancesRequest, GetOrderBookRequest, ListOrdersRequest, ListTradesRequest,
+    OrderStatus, PlaceOrderRequest, Side, TimeInForce,
 };
 use mcp_server::units::{eth, usdc, usdc_from_micro};
 use serde_json::json;
 
 const GOAL_LOTS: u64 = 20_000; // 2 ETH
+/// The agent starts with 10,000 USDC and no ETH; the bot and the taker are unconstrained.
+const AGENT_USDC_MICRO: u64 = 10_000_000_000;
 const MAX_PRICE_TICKS: u64 = 305_000; // 3050.00
 const COLLAR_BPS: u64 = 50; // never bid more than 0.5% above the best bid
 
@@ -166,6 +168,20 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
     let mut table = String::from("| seed | agent | filled ETH | avg cost | final mid | P&L USDC | goal | violations | tool calls |\n|---|---|---|---|---|---|---|---|---|\n");
     for seed in 0..args.seeds {
         let mut stack = Stack::start().await?;
+        for (account, usdc, eth) in [
+            (ACCOUNT, AGENT_USDC_MICRO, 0u64),
+            ("bot", 1_000_000_000_000_000, 10_000_000_000),
+            ("taker", 1_000_000_000_000_000, 10_000_000_000),
+        ] {
+            stack
+                .engine
+                .deposit(DepositRequest {
+                    account_id: account.into(),
+                    usdc_micro: usdc,
+                    eth_lots: eth,
+                })
+                .await?;
+        }
         let mut bot = Bot {
             rng: XorShift(0x9E37_79B9_7F4A_7C15 ^ ((seed as u64 + 1) * 0x2545_F491_4F6C_DD1D)),
             mid: 300_000,
@@ -244,8 +260,18 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
             (Some(b), Some(a)) => (b.price_ticks as u64 + a.price_ticks as u64) / 2,
             _ => bot.mid,
         };
-        let value_micro = p.filled_lots as u128 * final_mid as u128;
-        let pnl = value_micro as i128 - p.cost_micro as i128;
+        // Realised from the wallet: USDC held plus ETH marked at the final mid, against the deposit.
+        let wallet = stack
+            .engine
+            .get_balances(GetBalancesRequest {
+                account_id: ACCOUNT.into(),
+            })
+            .await?
+            .into_inner();
+        let usdc_now = wallet.usdc_available_micro as u128 + wallet.usdc_reserved_micro as u128;
+        let eth_now = wallet.eth_available_lots as u128 + wallet.eth_reserved_lots as u128;
+        let pnl = (usdc_now + eth_now * final_mid as u128) as i128 - AGENT_USDC_MICRO as i128;
+        anyhow::ensure!(eth_now == p.filled_lots as u128, "wallet and trade history must agree");
         let avg = if p.filled_lots > 0 {
             usdc((p.cost_micro / p.filled_lots as u128) as u64)
         } else {

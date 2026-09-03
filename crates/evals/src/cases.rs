@@ -10,6 +10,9 @@ pub struct Case {
     pub tags: Vec<String>,
     #[serde(default)]
     pub seed_book: SeedBook,
+    /// What the account under test holds before the turns.
+    #[serde(default)]
+    pub funding: Funding,
     /// Actions by the account under test before the turn, e.g. an order to cancel later.
     #[serde(default)]
     pub setup: Vec<SetupAction>,
@@ -21,6 +24,22 @@ pub struct Case {
     pub attack: bool,
     #[serde(default)]
     pub notes: String,
+}
+
+/// Decimal strings in human units: USDC with up to 2 decimals, ETH with up to 4.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Funding {
+    pub usdc: String,
+    pub eth: String,
+}
+
+impl Default for Funding {
+    fn default() -> Self {
+        Self {
+            usdc: "50000".into(),
+            eth: "10".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

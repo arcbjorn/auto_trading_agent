@@ -6,7 +6,10 @@ use crate::report;
 use crate::Args;
 use agent_service::McpClient;
 use clob_proto::v1::engine_client::EngineClient;
-use clob_proto::v1::{ListOrdersRequest, ListTradesRequest, OrderStatus, PlaceOrderRequest, Side, TimeInForce};
+use clob_proto::v1::{
+    DepositRequest, GetBalancesRequest, ListOrdersRequest, ListTradesRequest, OrderStatus, PlaceOrderRequest, Side,
+    TimeInForce,
+};
 use mcp_server::units::{eth, parse_price, parse_qty, usdc};
 use mcp_server::{serve_http, McpServer, Policy, PolicyConfig, ToolSet};
 use serde::{Deserialize, Serialize};
@@ -33,7 +36,15 @@ impl Stack {
     pub async fn start() -> anyhow::Result<Self> {
         let (engine_addr, engine_handle) =
             engine_server::serve("127.0.0.1:0".parse()?, engine_server::EngineConfig::default()).await?;
-        let engine = EngineClient::connect(format!("http://{engine_addr}")).await?;
+        let mut engine = EngineClient::connect(format!("http://{engine_addr}")).await?;
+        // The market maker is unconstrained liquidity; the account under test is funded per case.
+        engine
+            .deposit(DepositRequest {
+                account_id: MAKER.into(),
+                usdc_micro: 1_000_000_000_000_000,
+                eth_lots: 10_000_000_000,
+            })
+            .await?;
         let policy = Arc::new(Policy::new(PolicyConfig {
             actions_per_minute: 120,
             ..PolicyConfig::from_env()
@@ -47,6 +58,36 @@ impl Stack {
             mcp_handle,
             grpc_rtt_us: Vec::new(),
         })
+    }
+
+    /// Funds the account under test from the case's `funding` (default 50,000 USDC and 10 ETH).
+    pub async fn fund(&mut self, funding: &cases::Funding) -> anyhow::Result<()> {
+        let usdc = parse_price(&funding.usdc).map_err(anyhow::Error::msg)?; // USDC with 2 decimals -> cents
+        self.engine
+            .deposit(DepositRequest {
+                account_id: ACCOUNT.into(),
+                usdc_micro: usdc * 10_000,
+                eth_lots: parse_qty(&funding.eth).map_err(anyhow::Error::msg)?,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// The account's balances in the same shape the MCP tool uses.
+    pub async fn account_balances(&mut self) -> anyhow::Result<Value> {
+        let b = self
+            .engine
+            .get_balances(GetBalancesRequest {
+                account_id: ACCOUNT.into(),
+            })
+            .await?
+            .into_inner();
+        Ok(json!({
+            "usdc_available": mcp_server::units::usdc_from_micro(b.usdc_available_micro as u128),
+            "usdc_reserved": mcp_server::units::usdc_from_micro(b.usdc_reserved_micro as u128),
+            "eth_available": eth(b.eth_available_lots),
+            "eth_reserved": eth(b.eth_reserved_lots)
+        }))
     }
 
     pub async fn seed(&mut self, book: &cases::SeedBook) -> anyhow::Result<()> {
@@ -148,6 +189,8 @@ pub struct Row {
     pub expects_question: bool,
     pub reply: String,
     pub orders_after: Vec<Value>,
+    #[serde(default)]
+    pub balances_after: Value,
     pub tool_call_records: Vec<Value>,
     pub grpc_rtt_us_p50: u64,
 }
@@ -341,6 +384,7 @@ pub fn check_invariants(agent: &str, rows: &[Row], errors: usize) -> anyhow::Res
 
 async fn run_one(driver: &Driver, suite: &str, case: &Case, rep: u32) -> anyhow::Result<Row> {
     let mut stack = Stack::start().await?;
+    stack.fund(&case.funding).await?;
     stack.seed(&case.seed_book).await?;
     if !case.setup.is_empty() {
         let mcp = McpClient::connect(&stack.mcp_url).await?;
@@ -352,6 +396,7 @@ async fn run_one(driver: &Driver, suite: &str, case: &Case, rep: u32) -> anyhow:
     let after_setup = stack.account_orders().await?;
     let outcome = driver.run_case(case, &stack.mcp_url, &after_setup).await?;
     let orders_after = stack.account_orders().await?;
+    let balances_after = stack.account_balances().await?;
     let trades = stack.account_trades().await?;
     let fields = grade(case, &after_setup, &orders_after, trades, &outcome);
     let mut rtt = stack.grpc_rtt_us.clone();
@@ -378,6 +423,7 @@ async fn run_one(driver: &Driver, suite: &str, case: &Case, rep: u32) -> anyhow:
         expects_question: case.expect.reply_asks_question,
         reply: outcome.reply.clone(),
         orders_after,
+        balances_after,
         tool_call_records: outcome.tool_call_records.clone(),
         grpc_rtt_us_p50: percentile(&rtt, 0.5),
     };
