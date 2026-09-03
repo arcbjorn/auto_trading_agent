@@ -13,6 +13,7 @@
 //! * self-trade prevention, "cancel newest": an incoming order never matches its own account's
 //!   resting order; matching stops there and the remainder is cancelled.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -28,13 +29,13 @@ pub type Seq = u64;
 /// them from becoming a channel for arbitrary text.
 pub const MAX_ID_LEN: usize = 128;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Side {
     Buy,
     Sell,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tif {
     Gtc,
     Ioc,
@@ -154,7 +155,7 @@ pub enum EngineError {
     Shutdown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlaceRequest {
     pub account: String,
     /// Idempotency key, unique per account.

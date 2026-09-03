@@ -7,6 +7,7 @@
 //! touch it.
 
 use crate::book::*;
+use crate::journal::{Journal, Record};
 use arc_swap::ArcSwap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -63,9 +64,32 @@ fn now_ns() -> i64 {
         .unwrap_or(0)
 }
 
-fn apply(book: &mut Book, cmd: Command) -> Result<Reply, EngineError> {
+/// Journals a write command (reads are not journaled) and applies it. The record goes to the
+/// journal's buffer first; the batch loop commits the buffer before any reply is sent.
+fn apply(book: &mut Book, journal: &mut Option<Journal>, cmd: Command, now: i64) -> Result<Reply, EngineError> {
+    if let Some(j) = journal {
+        let record = match &cmd {
+            Command::Place(req) => Some(Record::Place {
+                t: now,
+                req: req.clone(),
+            }),
+            Command::Cancel { account, id } => Some(Record::Cancel {
+                t: now,
+                account: account.clone(),
+                id: *id,
+            }),
+            _ => None,
+        };
+        if let Some(r) = record {
+            if let Err(e) = j.append(&r) {
+                // A journal that cannot be written must not silently become a non-durable engine.
+                tracing_error(&e);
+                return Err(EngineError::Shutdown);
+            }
+        }
+    }
     match cmd {
-        Command::Place(req) => book.place(req, now_ns()).map(|(o, f)| Reply::Placed(o, f)),
+        Command::Place(req) => book.place(req, now).map(|(o, f)| Reply::Placed(o, f)),
         Command::Cancel { account, id } => book.cancel(&account, id).map(Reply::Cancelled),
         Command::Get { account, id } => match book.order(id) {
             Some(o) if *o.account == *account => Ok(Reply::Order(o.clone())),
@@ -95,6 +119,10 @@ fn apply(book: &mut Book, cmd: Command) -> Result<Reply, EngineError> {
 /// Largest number of queued commands applied between two snapshot publications.
 pub const MAX_BATCH: usize = 256;
 
+fn tracing_error(e: &std::io::Error) {
+    eprintln!("engine journal write failed: {e}");
+}
+
 /// Starts the matcher thread. `capacity` bounds the command queue (backpressure); `depth` is the
 /// number of levels per side kept in the published snapshot.
 ///
@@ -103,7 +131,14 @@ pub const MAX_BATCH: usize = 256;
 /// replies. Under load this amortises the snapshot over many commands instead of rebuilding it per
 /// command; publishing before replying means a client that reads the book after its own reply
 /// always sees its own order.
-pub fn spawn(mut book: Book, capacity: usize, depth: usize) -> EngineHandle {
+pub fn spawn(book: Book, capacity: usize, depth: usize) -> EngineHandle {
+    spawn_with_journal(book, capacity, depth, None)
+}
+
+/// [`spawn`] with a write-ahead journal: every place and cancel is appended before it is applied
+/// and the journal is committed once per batch, before the batch's replies are sent. Replay the
+/// journal into the `book` before calling this to recover a previous run.
+pub fn spawn_with_journal(mut book: Book, capacity: usize, depth: usize, mut journal: Option<Journal>) -> EngineHandle {
     let (tx, mut rx) = mpsc::channel::<Envelope>(capacity.max(1));
     let snapshot = Arc::new(ArcSwap::from_pointee(book.snapshot(depth)));
     let published = Arc::clone(&snapshot);
@@ -113,11 +148,21 @@ pub fn spawn(mut book: Book, capacity: usize, depth: usize) -> EngineHandle {
             // The only code that ever touches `book`.
             let mut pending: Vec<(ReplySender, Result<Reply, EngineError>)> = Vec::with_capacity(MAX_BATCH);
             while let Some(env) = rx.blocking_recv() {
-                pending.push((env.reply, apply(&mut book, env.cmd)));
+                let now = now_ns();
+                pending.push((env.reply, apply(&mut book, &mut journal, env.cmd, now)));
                 while pending.len() < MAX_BATCH {
                     match rx.try_recv() {
-                        Ok(env) => pending.push((env.reply, apply(&mut book, env.cmd))),
+                        Ok(env) => pending.push((env.reply, apply(&mut book, &mut journal, env.cmd, now))),
                         Err(_) => break,
+                    }
+                }
+                if let Some(j) = journal.as_mut() {
+                    if let Err(e) = j.commit() {
+                        tracing_error(&e);
+                        for (reply, _) in pending.drain(..) {
+                            let _ = reply.send(Err(EngineError::Shutdown));
+                        }
+                        continue;
                     }
                 }
                 published.store(Arc::new(book.snapshot(depth)));

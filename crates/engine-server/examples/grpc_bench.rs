@@ -1,5 +1,7 @@
 //! gRPC round-trip latency and throughput against an in-process server:
 //! `cargo run --release -p engine-server --example grpc_bench`.
+//! Set `ENGINE_JOURNAL=/path/file.jsonl` (and `ENGINE_JOURNAL_FSYNC=1`) to measure with the
+//! write-ahead journal on.
 use clob_proto::v1::engine_client::EngineClient;
 use clob_proto::v1::{PlaceOrderRequest, Side, TimeInForce};
 use engine_server::{serve, EngineConfig};
@@ -11,7 +13,19 @@ fn percentile(sorted: &[u128], p: f64) -> u128 {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
-    let (addr, handle) = serve("127.0.0.1:0".parse()?, EngineConfig::default()).await?;
+    let cfg = EngineConfig {
+        journal_path: std::env::var("ENGINE_JOURNAL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(Into::into),
+        journal_fsync: std::env::var("ENGINE_JOURNAL_FSYNC").is_ok_and(|v| v == "1"),
+        ..EngineConfig::default()
+    };
+    if let Some(p) = &cfg.journal_path {
+        let _ = std::fs::remove_file(p);
+        println!("journal: {} (fsync {})", p.display(), cfg.journal_fsync);
+    }
+    let (addr, handle) = serve("127.0.0.1:0".parse()?, cfg).await?;
     let url = format!("http://{addr}");
     let mut c = EngineClient::connect(url.clone()).await?;
     let n = 5_000u64;

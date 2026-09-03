@@ -3,8 +3,9 @@
 
 use clob_proto::v1 as pb;
 use clob_proto::v1::engine_server::{Engine, EngineServer};
-use engine::{spawn, Book, Command, EngineError, EngineHandle, PlaceRequest, Reply};
+use engine::{spawn_with_journal, Book, Command, EngineError, EngineHandle, Journal, PlaceRequest, Reply};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -20,6 +21,12 @@ pub struct EngineConfig {
     pub queue_capacity: usize,
     /// Levels per side in the published snapshot (the maximum `GetOrderBook` depth).
     pub snapshot_depth: usize,
+    /// Write-ahead journal of commands. Replayed on start, appended to while serving. `None` keeps
+    /// the engine purely in memory.
+    pub journal_path: Option<PathBuf>,
+    /// `fsync` the journal once per batch before replying (durable across a crash, at a latency
+    /// cost); otherwise each batch is flushed to the OS only.
+    pub journal_fsync: bool,
 }
 
 impl Default for EngineConfig {
@@ -27,6 +34,8 @@ impl Default for EngineConfig {
         Self {
             queue_capacity: 10_000,
             snapshot_depth: MAX_DEPTH as usize,
+            journal_path: None,
+            journal_fsync: false,
         }
     }
 }
@@ -301,7 +310,17 @@ impl ServerHandle {
 pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(SocketAddr, ServerHandle)> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
-    let engine = spawn(Book::new(), cfg.queue_capacity, cfg.snapshot_depth);
+    let mut book = Book::new();
+    let journal = match &cfg.journal_path {
+        Some(path) => {
+            let replayed = Journal::replay(path, &mut book)
+                .map_err(|e| anyhow::anyhow!("cannot replay journal {}: {e}", path.display()))?;
+            tracing::info!(journal = %path.display(), replayed, seq = book.seq(), "journal replayed");
+            Some(Journal::open(path, cfg.journal_fsync)?)
+        }
+        None => None,
+    };
+    let engine = spawn_with_journal(book, cfg.queue_capacity, cfg.snapshot_depth, journal);
     let (tx, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(
         Server::builder()

@@ -159,6 +159,118 @@ async fn cancels_race_placements_and_leave_the_book_empty() {
     handle.shutdown().await;
 }
 
+/// The engine restarts from its journal with the same orders, the same ids and a continuing
+/// sequence, and a retry of an old client id after the restart is still recognised.
+#[tokio::test]
+async fn restart_replays_the_journal() {
+    let path = std::env::temp_dir().join(format!(
+        "clob-restart-{}-{}.jsonl",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let _ = std::fs::remove_file(&path);
+    let cfg = EngineConfig {
+        journal_path: Some(path.clone()),
+        journal_fsync: true,
+        ..EngineConfig::default()
+    };
+    let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), cfg.clone()).await.unwrap();
+    let mut c = EngineClient::connect(format!("http://{addr}")).await.unwrap();
+    let order = |cid: &str, side: Side, price: i64, lots: i64| PlaceOrderRequest {
+        account_id: "a".into(),
+        client_order_id: cid.into(),
+        side: side as i32,
+        price_ticks: price,
+        quantity_lots: lots,
+        tif: TimeInForce::Gtc as i32,
+    };
+    let first = c
+        .place_order(order("k1", Side::Buy, 299_000, 500))
+        .await
+        .unwrap()
+        .into_inner();
+    c.place_order(order("k2", Side::Buy, 298_000, 300)).await.unwrap();
+    c.place_order(PlaceOrderRequest {
+        account_id: "b".into(),
+        ..order("k3", Side::Sell, 299_000, 200)
+    })
+    .await
+    .unwrap(); // trades 200 against k1
+    let id2 = c
+        .place_order(order("k4", Side::Buy, 297_000, 100))
+        .await
+        .unwrap()
+        .into_inner()
+        .order
+        .unwrap()
+        .order_id;
+    c.cancel_order(CancelOrderRequest {
+        account_id: "a".into(),
+        order_id: id2,
+    })
+    .await
+    .unwrap();
+    let before = c
+        .list_orders(clob_proto::v1::ListOrdersRequest {
+            account_id: "a".into(),
+            status: 0,
+            limit: 100,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let book_before = c
+        .get_order_book(GetOrderBookRequest { depth: 10 })
+        .await
+        .unwrap()
+        .into_inner();
+    handle.shutdown().await;
+
+    let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), cfg).await.unwrap();
+    let mut c = EngineClient::connect(format!("http://{addr}")).await.unwrap();
+    let after = c
+        .list_orders(clob_proto::v1::ListOrdersRequest {
+            account_id: "a".into(),
+            status: 0,
+            limit: 100,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        after, before,
+        "orders, statuses, remaining quantities and sequences survive"
+    );
+    let book_after = c
+        .get_order_book(GetOrderBookRequest { depth: 10 })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        (book_after.bids, book_after.asks, book_after.sequence),
+        (book_before.bids, book_before.asks, book_before.sequence)
+    );
+    // Idempotency survives too: the same client id replays the original order rather than a new one.
+    let again = c
+        .place_order(order("k1", Side::Buy, 299_000, 500))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(again.order.unwrap().order_id, first.order.unwrap().order_id);
+    // And new orders continue the id and sequence counters.
+    let next = c
+        .place_order(order("k5", Side::Buy, 296_000, 100))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(next.order.unwrap().sequence > book_before.sequence);
+    handle.shutdown().await;
+    let _ = std::fs::remove_file(&path);
+}
+
 #[tokio::test]
 async fn idempotent_retry_and_status_codes() {
     let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), EngineConfig::default())
