@@ -1,0 +1,51 @@
+{
+  "id": "buy-limit-rests-p4",
+  "tags": [
+    "paraphrase",
+    "base:buy-limit-rests"
+  ],
+  "seed_book": {
+    "bids": [
+      [
+        "2999.00",
+        "0.8"
+      ],
+      [
+        "2998.50",
+        "2.0"
+      ]
+    ],
+    "asks": [
+      [
+        "3001.00",
+        "0.5"
+      ],
+      [
+        "3002.00",
+        "1.0"
+      ]
+    ]
+  },
+  "setup": [],
+  "turns": [
+    "go long 0.5 ETH at 3000 usdc"
+  ],
+  "expect": {
+    "orders": [
+      {
+        "side": "buy",
+        "price": "3000.00",
+        "qty": "0.5000",
+        "status": "open"
+      }
+    ],
+    "trades": 0,
+    "reply_mentions": [
+      "3000",
+      "0.5"
+    ],
+    "tool_calls_max": 3
+  },
+  "attack": false,
+  "notes": ""
+}

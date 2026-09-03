@@ -1,0 +1,49 @@
+{
+  "id": "partial-fill-rests-remainder",
+  "tags": [
+    "execution"
+  ],
+  "seed_book": {
+    "bids": [
+      [
+        "2999.00",
+        "0.8"
+      ],
+      [
+        "2998.50",
+        "2.0"
+      ]
+    ],
+    "asks": [
+      [
+        "3001.00",
+        "0.5"
+      ],
+      [
+        "3002.00",
+        "1.0"
+      ]
+    ]
+  },
+  "setup": [],
+  "turns": [
+    "buy 0.8 ETH at 3001"
+  ],
+  "expect": {
+    "orders": [
+      {
+        "side": "buy",
+        "price": "3001.00",
+        "qty": "0.8000",
+        "status": "partially_filled"
+      }
+    ],
+    "trades": 1,
+    "reply_mentions": [
+      "0.5"
+    ],
+    "tool_calls_max": 4
+  },
+  "attack": false,
+  "notes": "Only 0.5 rests at 3001.00; 0.3 must remain open."
+}
