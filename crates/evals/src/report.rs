@@ -26,29 +26,33 @@ fn percentile(values: &mut [u64], p: f64) -> u64 {
     values[((values.len() - 1) as f64 * p).round() as usize]
 }
 
-/// List prices per million tokens (input, output) by model id prefix, as of September 2026.
-/// Cache reads cost 0.1x the input price and cache writes 1.25x.
-pub fn list_prices(model: &str) -> Option<(f64, f64)> {
-    const PRICES: [(&str, f64, f64); 8] = [
-        ("claude-fable", 10.0, 50.0),
-        ("claude-mythos", 10.0, 50.0),
-        ("claude-opus-5", 5.0, 25.0),
-        ("claude-opus-4", 5.0, 25.0),
-        ("claude-sonnet-5", 2.0, 10.0),
-        ("claude-sonnet-4-6", 3.0, 15.0),
-        ("claude-sonnet-4", 3.0, 15.0),
-        ("claude-haiku-4", 1.0, 5.0),
+/// List prices per million tokens by model id prefix, as of September 2026:
+/// (uncached input, cache read, cache write, output). Claude cache reads are 0.1x and writes 1.25x
+/// the input price; DeepSeek prices are the peak-hour rates (off-peak is half) and its cache
+/// writes cost nothing beyond the uncached input.
+pub fn list_prices(model: &str) -> Option<(f64, f64, f64, f64)> {
+    const PRICES: [(&str, f64, f64, f64, f64); 10] = [
+        ("claude-fable", 10.0, 1.0, 12.5, 50.0),
+        ("claude-mythos", 10.0, 1.0, 12.5, 50.0),
+        ("claude-opus-5", 5.0, 0.5, 6.25, 25.0),
+        ("claude-opus-4", 5.0, 0.5, 6.25, 25.0),
+        ("claude-sonnet-5", 2.0, 0.2, 2.5, 10.0),
+        ("claude-sonnet-4-6", 3.0, 0.3, 3.75, 15.0),
+        ("claude-sonnet-4", 3.0, 0.3, 3.75, 15.0),
+        ("claude-haiku-4", 1.0, 0.1, 1.25, 5.0),
+        ("deepseek-v4-pro", 1.32, 0.044, 1.32, 3.96),
+        ("deepseek-v4-flash", 0.44, 0.014, 0.44, 1.32),
     ];
     PRICES
         .iter()
-        .find(|(prefix, _, _)| model.starts_with(prefix))
-        .map(|(_, i, o)| (*i, *o))
+        .find(|(prefix, ..)| model.starts_with(prefix))
+        .map(|(_, i, r, w, o)| (*i, *r, *w, *o))
 }
 
 /// Cost of one run at its model's list prices; `None` for an unknown model.
 pub fn estimated_cost_usd(model: &str, input: u64, cache_read: u64, cache_write: u64, output: u64) -> Option<f64> {
-    let (i, o) = list_prices(model)?;
-    Some((input as f64 * i + cache_read as f64 * i * 0.1 + cache_write as f64 * i * 1.25 + output as f64 * o) / 1e6)
+    let (i, r, w, o) = list_prices(model)?;
+    Some((input as f64 * i + cache_read as f64 * r + cache_write as f64 * w + output as f64 * o) / 1e6)
 }
 
 pub fn render(rows: &[Row], errors: usize, agent: &str) -> String {
@@ -130,7 +134,7 @@ pub fn render(rows: &[Row], errors: usize, agent: &str) -> String {
         ));
         match cost {
             Some(cost) => out.push_str(&format!(
-                "At list prices for {} (cache reads 0.1x and writes 1.25x the input price) this run cost about {cost:.2} USD.\n",
+                "At list prices for {} (Claude: cache reads 0.1x and writes 1.25x the input price; DeepSeek: peak-hour rates) this run cost about {cost:.2} USD.\n",
                 models.iter().copied().collect::<Vec<_>>().join(", ")
             )),
             None => out.push_str("No list price is known for every model in this run, so no cost is shown.\n"),
@@ -201,10 +205,13 @@ mod tests {
 
     #[test]
     fn prices_follow_the_model_and_the_cache_discounts() {
-        assert_eq!(list_prices("claude-opus-5"), Some((5.0, 25.0)));
-        assert_eq!(list_prices("claude-sonnet-5"), Some((2.0, 10.0)));
-        assert_eq!(list_prices("claude-sonnet-4-6"), Some((3.0, 15.0)));
+        assert_eq!(list_prices("claude-opus-5"), Some((5.0, 0.5, 6.25, 25.0)));
+        assert_eq!(list_prices("claude-sonnet-5"), Some((2.0, 0.2, 2.5, 10.0)));
+        assert_eq!(list_prices("deepseek-v4-flash"), Some((0.44, 0.014, 0.44, 1.32)));
         assert_eq!(list_prices("gpt-x"), None);
+        // 1M of each on V4 Flash at peak: 0.44 + 0.014 + 0.44 + 1.32.
+        let d = estimated_cost_usd("deepseek-v4-flash", 1_000_000, 1_000_000, 1_000_000, 1_000_000).unwrap();
+        assert!((d - 2.214).abs() < 1e-9, "{d}");
         // 1M uncached in, 1M cached, 1M written, 1M out on Sonnet 5: 2 + 0.2 + 2.5 + 10.
         let c = estimated_cost_usd("claude-sonnet-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000).unwrap();
         assert!((c - 14.7).abs() < 1e-9, "{c}");

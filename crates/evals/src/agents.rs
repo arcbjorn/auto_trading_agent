@@ -2,7 +2,7 @@
 //! oracle and null agents exercise the same path as the model minus the model.
 
 use crate::cases::Case;
-use agent_service::{Agent, AgentConfig, AnthropicClient, AnthropicConfig, Audit, McpClient, Session};
+use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, Session};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -26,8 +26,9 @@ pub struct TurnOutcome {
 
 #[derive(Clone)]
 pub enum Driver {
+    /// The provider and model come from the environment (`MODEL_PROVIDER`, then the provider's
+    /// own variables); a fresh client is built per run.
     Model {
-        cfg: AnthropicConfig,
         agent_cfg: AgentConfig,
         audit: Option<PathBuf>,
     },
@@ -39,13 +40,12 @@ impl Driver {
     pub fn from_name(name: &str, out_dir: &std::path::Path) -> anyhow::Result<Self> {
         Ok(match name {
             "model" => {
-                let cfg = AnthropicConfig::from_env()?;
+                let model = ModelClient::from_env()?; // fails early when the key is missing
                 let agent_cfg = AgentConfig {
-                    note_channel: agent_service::NoteChannel::for_model(&cfg.model),
+                    note_channel: agent_service::NoteChannel::for_model(model.model_id()),
                     ..AgentConfig::default()
                 };
                 Driver::Model {
-                    cfg,
                     agent_cfg,
                     audit: Some(out_dir.join("audit.jsonl")),
                 }
@@ -72,10 +72,10 @@ impl Driver {
         orders_after_setup: &[Value],
     ) -> anyhow::Result<TurnOutcome> {
         match self {
-            Driver::Model { cfg, agent_cfg, audit } => {
-                let claude = AnthropicClient::new(cfg.clone())?;
+            Driver::Model { agent_cfg, audit } => {
+                let model = ModelClient::from_env()?;
                 let mcp = McpClient::connect(mcp_url).await?;
-                let agent = Agent::new(claude, mcp, agent_cfg.clone(), Audit::new(audit.clone())).await?;
+                let agent = Agent::new(model, mcp, agent_cfg.clone(), Audit::new(audit.clone())).await?;
                 let mut session = Session::new(format!("eval-{}", case.id));
                 let mut total = TurnOutcome::default();
                 for text in &case.turns {

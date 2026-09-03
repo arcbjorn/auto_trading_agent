@@ -3,7 +3,7 @@
 
 use crate::harness::{Stack, ACCOUNT};
 use crate::Args;
-use agent_service::{Agent, AgentConfig, AnthropicClient, AnthropicConfig, Audit, McpClient, Session};
+use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, Session};
 use clob_proto::v1::{
     CancelOrderRequest, GetOrderBookRequest, ListOrdersRequest, ListTradesRequest, OrderStatus, PlaceOrderRequest,
     Side, TimeInForce,
@@ -181,7 +181,7 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
                 let mcp = McpClient::connect(&stack.mcp_url).await?;
                 Some(
                     Agent::new(
-                        AnthropicClient::new(AnthropicConfig::from_env()?)?,
+                        ModelClient::from_env()?,
                         mcp,
                         AgentConfig {
                             gate_tools: false,
