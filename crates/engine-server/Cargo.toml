@@ -1,0 +1,17 @@
+[package]
+name = "engine-server"
+description = "gRPC (tonic) front for the matching engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clob-proto = { workspace = true }
+engine = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
