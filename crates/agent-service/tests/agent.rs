@@ -1,0 +1,404 @@
+//! The whole service against a real engine and MCP server, with the model replaced by a scripted
+//! mock of the Messages API. Every scenario checks the engine's end state, not the transcript.
+use agent_service::http::{serve as serve_api, State};
+use agent_service::{Agent, AgentConfig, AnthropicClient, AnthropicConfig, Audit, McpClient, Session};
+use bytes::Bytes;
+use clob_proto::v1::engine_client::EngineClient;
+use clob_proto::v1::{ListOrdersRequest, OrderStatus, PlaceOrderRequest, Side, TimeInForce};
+use http_body_util::{BodyExt, Full};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
+use mcp_server::{serve_http, McpServer, Policy, PolicyConfig, ToolSet};
+use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tonic::transport::Channel;
+
+type Responder = Arc<dyn Fn(usize, &Value) -> Value + Send + Sync>;
+
+struct MockModel {
+    base_url: String,
+    requests: Arc<Mutex<Vec<Value>>>,
+}
+
+async fn mock_model(responder: Responder) -> MockModel {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&requests);
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let responder = Arc::clone(&responder);
+            let recorded = Arc::clone(&recorded);
+            tokio::spawn(async move {
+                let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let responder = Arc::clone(&responder);
+                    let recorded = Arc::clone(&recorded);
+                    async move {
+                        assert_eq!(req.uri().path(), "/v1/messages");
+                        assert_eq!(req.headers()["anthropic-version"], "2023-06-01");
+                        let body: Value =
+                            serde_json::from_slice(&req.into_body().collect().await.unwrap().to_bytes()).unwrap();
+                        let n = {
+                            let mut r = recorded.lock().unwrap();
+                            r.push(body.clone());
+                            r.len()
+                        };
+                        let reply = responder(n, &body);
+                        Ok::<_, std::convert::Infallible>(
+                            hyper::Response::builder()
+                                .header("content-type", "application/json")
+                                .body(Full::new(Bytes::from(reply.to_string())))
+                                .unwrap(),
+                        )
+                    }
+                });
+                let _ = http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service)
+                    .await;
+            });
+        }
+    });
+    MockModel {
+        base_url: format!("http://{addr}"),
+        requests,
+    }
+}
+
+fn tool_use(name: &str, input: Value) -> Value {
+    json!({ "id": "msg_1", "model": "claude-opus-5", "stop_reason": "tool_use",
+        "content": [ { "type": "text", "text": "Let me check." }, { "type": "tool_use", "id": format!("tu_{name}"), "name": name, "input": input } ],
+        "usage": { "input_tokens": 10, "output_tokens": 5 } })
+}
+
+fn end_turn(text: &str) -> Value {
+    json!({ "id": "msg_2", "model": "claude-opus-5", "stop_reason": "end_turn", "content": [ { "type": "text", "text": text } ], "usage": { "input_tokens": 10, "output_tokens": 5 } })
+}
+
+fn tool_names(request: &Value) -> Vec<String> {
+    request["tools"]
+        .as_array()
+        .map(|t| {
+            t.iter()
+                .filter_map(|x| x["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+struct Stack {
+    engine: EngineClient<Channel>,
+    agent: Agent,
+    mock: MockModel,
+}
+
+async fn stack(responder: Responder, cfg: AgentConfig) -> Stack {
+    let (engine_addr, _engine_handle) =
+        engine_server::serve("127.0.0.1:0".parse().unwrap(), engine_server::EngineConfig::default())
+            .await
+            .unwrap();
+    let mut engine = EngineClient::connect(format!("http://{engine_addr}")).await.unwrap();
+    for (side, price, lots, cid) in [
+        (Side::Sell, 300_100, 5_000, "a1"),
+        (Side::Sell, 300_200, 10_000, "a2"),
+        (Side::Buy, 299_900, 8_000, "b1"),
+    ] {
+        engine
+            .place_order(PlaceOrderRequest {
+                account_id: "mm".into(),
+                client_order_id: cid.into(),
+                side: side as i32,
+                price_ticks: price,
+                quantity_lots: lots,
+                tif: TimeInForce::Gtc as i32,
+            })
+            .await
+            .unwrap();
+    }
+    let policy = Arc::new(Policy::new(PolicyConfig {
+        actions_per_minute: 1_000,
+        ..PolicyConfig::default()
+    }));
+    let mcp = Arc::new(McpServer::new(ToolSet::new(engine.clone(), "demo".into(), policy)));
+    let (mcp_addr, _mcp_handle) = serve_http("127.0.0.1:0".parse().unwrap(), mcp).await.unwrap();
+    let mock = mock_model(responder).await;
+    let claude = AnthropicClient::new(AnthropicConfig {
+        api_key: String::new(),
+        base_url: mock.base_url.clone(),
+        model: "claude-opus-5".into(),
+        max_tokens: 1000,
+        effort: "medium".into(),
+        fallbacks: true,
+        timeout: Duration::from_secs(10),
+        max_attempts: 1,
+    })
+    .unwrap();
+    let client = McpClient::connect(&format!("http://{mcp_addr}/mcp")).await.unwrap();
+    let agent = Agent::new(claude, client, cfg, Audit::disabled()).await.unwrap();
+    // Keep the servers alive for the duration of the test by leaking the handles.
+    std::mem::forget(_engine_handle);
+    std::mem::forget(_mcp_handle);
+    Stack { engine, agent, mock }
+}
+
+async fn demo_orders(engine: &mut EngineClient<Channel>, status: OrderStatus) -> Vec<clob_proto::v1::Order> {
+    engine
+        .list_orders(ListOrdersRequest {
+            account_id: "demo".into(),
+            status: status as i32,
+            limit: 100,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .orders
+}
+
+#[tokio::test]
+async fn read_only_question_offers_no_action_tools() {
+    let responder: Responder = Arc::new(|n, _| match n {
+        1 => tool_use("get_market_summary", json!({})),
+        _ => end_turn("Best bid 2999.00, best ask 3001.00."),
+    });
+    let s = stack(responder, AgentConfig::default()).await;
+    let mut session = Session::new("t1");
+    let turn = s.agent.chat_turn(&mut session, "What's ETH trading at?").await.unwrap();
+    assert_eq!(turn.reply, "Best bid 2999.00, best ask 3001.00.");
+    assert_eq!(turn.tool_calls.len(), 1);
+    assert!(!turn.tool_calls[0].is_error);
+    assert!(turn.tool_calls[0].result.contains("\"best_bid_usdc\":\"2999.00\""));
+    assert_eq!(
+        (turn.usage.input_tokens, turn.usage.output_tokens, turn.iterations),
+        (20, 10, 2)
+    );
+    let requests = s.mock.requests.lock().unwrap();
+    let offered = tool_names(&requests[0]);
+    assert!(offered.contains(&"get_market_summary".to_string()));
+    assert!(
+        !offered.iter().any(|t| t == "place_limit_order" || t == "cancel_order"),
+        "action tools must not be offered: {offered:?}"
+    );
+    let last = requests[1]["messages"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["role"], "user");
+    assert_eq!(last["content"][0]["type"], "tool_result");
+    assert_eq!(last["content"][0]["tool_use_id"], "tu_get_market_summary");
+    assert!(requests[0]["system"].as_str().unwrap().contains("Trade or cancel only"));
+    assert_eq!(requests[0]["output_config"]["effort"], "medium");
+    assert_eq!(requests[0]["fallbacks"], "default");
+    assert!(turn.flags.is_empty(), "{:?}", turn.flags);
+}
+
+#[tokio::test]
+async fn explicit_buy_places_an_order_with_an_idempotency_key() {
+    let responder: Responder = Arc::new(|n, _| match n {
+        1 => tool_use(
+            "place_limit_order",
+            json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "0.5" }),
+        ),
+        _ => end_turn("Placed a buy for 0.5 ETH at 2990.00."),
+    });
+    let mut s = stack(responder, AgentConfig::default()).await;
+    let mut session = Session::new("t2");
+    let turn = s
+        .agent
+        .chat_turn(&mut session, "Buy half an ETH at 2990")
+        .await
+        .unwrap();
+    assert!(turn.flags.is_empty(), "{:?}", turn.flags);
+    assert!(turn.tool_calls[0].args["client_order_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("t2-1-"));
+    let open = demo_orders(&mut s.engine, OrderStatus::Open).await;
+    assert_eq!(open.len(), 1);
+    assert_eq!((open[0].price_ticks, open[0].quantity_lots), (299_000, 5_000));
+    assert_eq!(session.last_order_id.as_deref(), Some(open[0].order_id.as_str()));
+}
+
+#[tokio::test]
+async fn large_order_needs_confirmation_then_executes() {
+    let responder: Responder = Arc::new(|n, body| match n {
+        1 => tool_use(
+            "place_limit_order",
+            json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "2" }),
+        ),
+        2 => end_turn("This is a large order: buy 2 ETH at 2990.00. Please confirm."),
+        3 => {
+            // Find the confirmation token in the earlier tool result and replay the order with it.
+            let token = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["role"] == "user")
+                .filter_map(|m| m["content"].as_array())
+                .flatten()
+                .filter_map(|b| b["content"].as_str())
+                .filter_map(|t| serde_json::from_str::<Value>(t).ok())
+                .filter_map(|v| v["confirmation_token"].as_str().map(str::to_string))
+                .next_back()
+                .expect("token in history");
+            tool_use(
+                "place_limit_order",
+                json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "2", "confirmation_token": token }),
+            )
+        }
+        _ => end_turn("Placed: buy 2 ETH at 2990.00."),
+    });
+    let mut s = stack(responder, AgentConfig::default()).await;
+    let mut session = Session::new("t3");
+    let first = s.agent.chat_turn(&mut session, "buy 2 ETH at 2990").await.unwrap();
+    assert!(first.flags.contains(&"confirmation_requested".to_string()));
+    assert!(first.tool_calls[0].intercepted);
+    assert!(first.tool_calls[0].result.contains("needs_confirmation"));
+    assert!(session.pending.is_some());
+    assert!(
+        demo_orders(&mut s.engine, OrderStatus::StatusUnspecified)
+            .await
+            .is_empty(),
+        "nothing may be placed before confirmation"
+    );
+    let second = s.agent.chat_turn(&mut session, "yes, confirm").await.unwrap();
+    assert!(second.flags.is_empty(), "{:?}", second.flags);
+    assert!(session.pending.is_none());
+    let open = demo_orders(&mut s.engine, OrderStatus::Open).await;
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].quantity_lots, 20_000);
+    let requests = s.mock.requests.lock().unwrap();
+    assert!(!tool_names(&requests[0]).contains(&"cancel_order".to_string()));
+    assert!(
+        tool_names(&requests[2]).contains(&"place_limit_order".to_string()),
+        "confirmation turn must offer the tool"
+    );
+}
+
+#[tokio::test]
+async fn unrequested_action_is_refused_and_flagged() {
+    let responder: Responder = Arc::new(|n, _| match n {
+        1 => tool_use(
+            "place_limit_order",
+            json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "0.5" }),
+        ),
+        _ => end_turn("Done."),
+    });
+    let mut s = stack(responder, AgentConfig::default()).await;
+    let mut session = Session::new("t4");
+    let turn = s.agent.chat_turn(&mut session, "show my orders").await.unwrap();
+    assert!(
+        turn.flags.contains(&"tool_not_offered:place_limit_order".to_string()),
+        "{:?}",
+        turn.flags
+    );
+    assert!(turn.tool_calls[0].is_error);
+    assert!(demo_orders(&mut s.engine, OrderStatus::StatusUnspecified)
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn unrequested_action_is_compensated_when_the_gate_is_off() {
+    let responder: Responder = Arc::new(|n, _| match n {
+        1 => tool_use(
+            "place_limit_order",
+            json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "0.5" }),
+        ),
+        _ => end_turn("I placed an order."),
+    });
+    let mut s = stack(
+        responder,
+        AgentConfig {
+            gate_tools: false,
+            ..AgentConfig::default()
+        },
+    )
+    .await;
+    let mut session = Session::new("t5");
+    let turn = s
+        .agent
+        .chat_turn(&mut session, "what are my open orders?")
+        .await
+        .unwrap();
+    assert!(
+        turn.flags.contains(&"intent_mismatch:place_limit_order".to_string()),
+        "{:?}",
+        turn.flags
+    );
+    assert!(
+        turn.flags.iter().any(|f| f.starts_with("compensated:cancel:")),
+        "{:?}",
+        turn.flags
+    );
+    assert!(turn.reply.contains("has been cancelled"));
+    assert!(demo_orders(&mut s.engine, OrderStatus::Open).await.is_empty());
+    assert_eq!(demo_orders(&mut s.engine, OrderStatus::Cancelled).await.len(), 1);
+}
+
+#[tokio::test]
+async fn refusal_and_iteration_cap_are_handled() {
+    let responder: Responder = Arc::new(
+        |_, _| json!({ "id": "m", "model": "claude-opus-5", "stop_reason": "refusal", "content": [], "usage": {} }),
+    );
+    let s = stack(responder, AgentConfig::default()).await;
+    let turn = s.agent.chat_turn(&mut Session::new("t6"), "hello").await.unwrap();
+    assert_eq!(turn.reply, "I can't help with that request.");
+    assert!(turn.flags.contains(&"refusal".to_string()));
+
+    let looping: Responder = Arc::new(|_, _| tool_use("get_market_summary", json!({})));
+    let s = stack(
+        looping,
+        AgentConfig {
+            max_iterations: 3,
+            ..AgentConfig::default()
+        },
+    )
+    .await;
+    let turn = s.agent.chat_turn(&mut Session::new("t7"), "price?").await.unwrap();
+    assert_eq!((turn.iterations, turn.stop_reason.as_str()), (3, "max_iterations"));
+    assert!(turn.flags.contains(&"max_iterations".to_string()));
+}
+
+#[tokio::test]
+async fn http_api_round_trip() {
+    let responder: Responder = Arc::new(|n, _| match n {
+        1 => tool_use("get_market_summary", json!({})),
+        _ => end_turn("Mid is 3000.00."),
+    });
+    let s = stack(responder, AgentConfig::default()).await;
+    let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::new(State::new(s.agent)))
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let r = client
+        .post(format!("http://{addr}/chat"))
+        .json(&json!({ "session_id": "web-1", "message": "price?" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["reply"], "Mid is 3000.00.");
+    assert_eq!(body["session_id"], "web-1");
+    assert_eq!(body["tool_calls"][0]["name"], "get_market_summary");
+    let bad = client
+        .post(format!("http://{addr}/chat"))
+        .json(&json!({ "message": "" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+    let health = client.get(format!("http://{addr}/healthz")).send().await.unwrap();
+    assert_eq!(health.status(), 200);
+    let session = client
+        .get(format!("http://{addr}/sessions/web-1"))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(session["turns"], 1);
+    handle.shutdown().await;
+}
