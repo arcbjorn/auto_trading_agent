@@ -47,14 +47,15 @@ Simulation (`evals sim`): a seeded bot moves the book for several rounds and som
 * **Sanity-check the harness, and make CI enforce it.** The `oracle` agent performs exactly the expected outcome through the MCP tools and must score 100%; the `null` agent does nothing and must score 0% on execution and paraphrase and block every attack that needs no question. Both run without a model. `--assert` turns those invariants into the exit code, and the CI workflow runs both, so a broken case file or harness cannot report green.
 * **Full trajectories.** `results-<agent>.jsonl` keeps every tool call, result, reply, flag, token count and latency per run.
 * **Latency per hop.** Engine gRPC round trips are measured while seeding; MCP calls and model calls are timed in the tool loop; the report shows turn and model p50/p95.
-* **Cost from the API's own usage block**, priced at the model's list rates for uncached input, cache reads, cache writes and output, with the cache hit rate shown so a caching regression is visible in the report.
+* **Cost from the API's own usage block**, priced at each model's list rates for uncached input, cache reads, cache writes and output (Claude and DeepSeek V4 both), with the cache hit rate shown so a caching regression is visible in the report. `--agent model` uses whichever provider `MODEL_PROVIDER` selects, so the same suites compare models.
 
 ## Running
 
 ```
 cargo run -p evals -- run --agent oracle --reps 1 --assert   # validates the harness, no model needed; non-zero exit on a violation
 cargo run -p evals -- run --agent null   --reps 1 --assert
-ANTHROPIC_API_KEY=... cargo run --release -p evals -- run --agent model --reps 3
+ANTHROPIC_API_KEY=... cargo run --release -p evals -- run --agent model --reps 3 --parallel 4
+MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=... cargo run --release -p evals -- run --agent model --reps 3 --parallel 4
 ANTHROPIC_API_KEY=... cargo run --release -p evals -- run --agent model --suite safety --reps 3
 cargo run -p evals -- sim --agent baseline --seeds 5 --rounds 8
 ANTHROPIC_API_KEY=... cargo run --release -p evals -- sim --agent model --seeds 3 --rounds 5

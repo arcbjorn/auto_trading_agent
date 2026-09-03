@@ -25,6 +25,8 @@ cargo run --release -p mcp-server -- --http               # MCP on 127.0.0.1:800
 ANTHROPIC_API_KEY=sk-... cargo run --release -p agent-service   # POST /chat on 127.0.0.1:8080
 ```
 
+For DeepSeek V4 instead of Claude: `MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=... cargo run --release -p agent-service` (add `DEEPSEEK_MODEL=deepseek-v4-pro` for the larger model).
+
 Then:
 
 ```
@@ -47,7 +49,7 @@ The book starts empty. Seed it by placing orders under another account through g
 | | `MCP_BIND` (with `--http`) | `127.0.0.1:8000` |
 | | `POLICY_MAX_ORDER_ETH`, `POLICY_MAX_ORDER_USDC`, `POLICY_COLLAR_BPS`, `POLICY_MAX_OPEN_ORDERS`, `POLICY_ACTIONS_PER_MINUTE`, `POLICY_SESSION_CAP_USDC` | 10, 50000, 1000, 20, 10, 200000 |
 | | `TRADING_HALTED` | unset |
-| agent-service | see [04 Agent service](04-agent-service.md): `NOTE_CHANNEL`, `PROMPT_CACHE`, `CONTEXT_EDITING`, `MAX_SESSIONS`, `SESSION_IDLE_SECS` among others | |
+| agent-service | see [04 Agent service](04-agent-service.md): `MODEL_PROVIDER`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `NOTE_CHANNEL`, `PROMPT_CACHE`, `CONTEXT_EDITING`, `MAX_SESSIONS`, `SESSION_IDLE_SECS` among others | |
 | all | `RUST_LOG` | `info` (`warn` for evals) |
 
 The MCP server's stdio mode logs to stderr only; stdout is reserved for the protocol.
@@ -86,6 +88,8 @@ See [06 Evaluation](06-evaluation.md). `make eval-oracle` and `make eval-null` n
 | `Address family not supported` on start | The host has no IPv6; bind to an IPv4 address (`ENGINE_BIND=0.0.0.0:50051`) |
 | `cannot reach engine` from mcp-server or evals | Start `engine-server` first, or fix `ENGINE_ADDR` |
 | `ANTHROPIC_API_KEY is not set` | Export the key, or set `ANTHROPIC_BASE_URL` to a local mock for tests |
+| `DEEPSEEK_API_KEY is not set` | `MODEL_PROVIDER=deepseek` needs the DeepSeek key; `DEEPSEEK_MODEL` picks `deepseek-v4-flash` (default) or `deepseek-v4-pro` |
+| DeepSeek answers 400 mentioning `reasoning_content` | The history lost a turn's reasoning; the service replays it from the `reasoning` block, so this points at a hand-edited session or a proxy that strips fields |
 | A tool answers `RESOURCE_EXHAUSTED` | The engine's bounded queue is full under load; retry once, or raise `ENGINE_QUEUE` |
 | `{"rejected": true, "code": "RATE_LIMIT"}` | More than `POLICY_ACTIONS_PER_MINUTE` actions on one account; wait a minute (`cancel_all_orders` counts as one) |
 | A turn's `flags` contain `tool_not_permitted:...` | The model tried an action the user's message did not ask for; the call was refused before the MCP server. Expected on adversarial input; on a benign paraphrase, extend the verbs in `gate.rs` |

@@ -58,6 +58,10 @@ Earlier the service offered `place_limit_order` and `cancel_order` only on turns
 
 Every read runs on the matcher thread, so a read that scans all orders is latency for every writer. Orders and trades are indexed per account (`Vec<OrderId>` and positions into the trade vector), and account ids are interned `Arc<str>`. Alternatives: keep scanning (20 ms per listing at a million orders, and the MCP server lists before every placement) or move reads off the matcher thread with a second copy of the state (more code, and two sources of truth).
 
-## ADR-15 No Docker in this slice
+## ADR-15 One internal conversation format, providers translate at the edge
+
+Adding DeepSeek V4 could have meant a second loop or an abstract "message" type. Instead the Messages API block format stays the only internal representation (it is the richer one: typed tool_use and tool_result blocks, per-turn system messages, thinking as a block), and the DeepSeek client translates in both directions, keeping DeepSeek's `reasoning_content` as a `reasoning` block because the API demands it back on every later request that carries tools. The loop, the permission gate, the confirmation flow, the verifier, the audit log and the harness are provider-blind. Alternatives: DeepSeek's Anthropic-compatible endpoint (fewer lines, but it ignores caching markers and rejects the Claude betas, and the native API is the documented one for thinking-mode tool calls), or a third-party client crate (one more dependency for two HTTP calls).
+
+## ADR-16 No Docker in this slice
 
 Every component is a cargo binary with environment-variable configuration; the runbook has the three commands. A compose file would add an untested surface without changing the design.

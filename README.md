@@ -4,7 +4,7 @@ A vertical slice of infrastructure for autonomous AI agents trading on a market,
 
 1. **A deterministic matching engine** for ETH/USDC behind gRPC (tonic). One matcher thread owns the book; handlers send commands over a bounded channel, so the engine is thread-safe without a lock on the book and every event has a total order.
 2. **An MCP server** so a model can perceive the book and act on it. The Model Context Protocol layer is written by hand as JSON-RPC 2.0 on `serde_json`, over stdio (Claude Desktop, Claude Code) and Streamable HTTP, and verified against the official MCP client.
-3. **A natural-language service** that runs Claude in a tool loop over those MCP tools through the Messages API, with layered guardrails: schema and unit validation, a deterministic risk policy, per-turn permission of action tools on explicit intent (enforced in code, with a tool list that never changes so the prompt stays cacheable), confirmation of large orders, idempotency keys, a post-turn verifier and an audit log.
+3. **A natural-language service** that runs Claude (or DeepSeek V4, selected by one variable) in a tool loop over those MCP tools, with layered guardrails: schema and unit validation, a deterministic risk policy, per-turn permission of action tools on explicit intent (enforced in code, with a tool list that never changes so the prompt stays cacheable), confirmation of large orders, idempotency keys, a post-turn verifier and an audit log.
 4. **An evaluation harness** that seeds a fresh engine per case, drives the real service, and grades the engine's end state, with oracle and null agents bounding the harness from above and below, plus a market simulation.
 
 ![User or eval harness posts to agent-service, which calls mcp-server over MCP, which calls engine-server over gRPC; the harness grades the engine's end state](docs/assets/architecture.svg)
@@ -20,6 +20,8 @@ cargo run -p evals -- run --agent oracle --assert        # validates the harness
 cargo run --release -p engine-server                     # gRPC on 0.0.0.0:50051
 cargo run --release -p mcp-server -- --http              # MCP on 127.0.0.1:8000/mcp   (no flag = stdio)
 ANTHROPIC_API_KEY=... cargo run --release -p agent-service     # POST /chat on 127.0.0.1:8080
+MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=... cargo run --release -p agent-service   # same service on DeepSeek V4
+MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=... cargo run --release -p agent-service   # same service on DeepSeek V4
 curl -s localhost:8080/chat -H 'content-type: application/json' -d '{"session_id":"me","message":"buy 0.5 ETH at 3000"}'
 ```
 
@@ -51,7 +53,7 @@ crates/clob-proto             generated code
 crates/engine                 book.rs (pure matching, per-account indices, property-tested), sequencer.rs (single writer, batched)
 crates/engine-server          tonic servicer, status mapping, concurrency test, gRPC benchmark
 crates/mcp-server             jsonrpc.rs, protocol.rs, tools.rs (9 tools), policy.rs, units.rs, transport/{stdio,http}.rs
-crates/agent-service          anthropic.rs (caching, context editing), mcp_client.rs, gate.rs (permissions, confirmation, verifier), agent.rs, audit.rs, http.rs, prompts/system.md
+crates/agent-service          anthropic.rs (caching, context editing), deepseek.rs (V4 chat completions), model.rs (provider switch), mcp_client.rs, gate.rs (permissions, confirmation, verifier), agent.rs, audit.rs, http.rs, prompts/system.md
 crates/evals                  cases.rs, agents.rs, harness.rs (+ CI invariants), report.rs, sim.rs
 evals/cases/                  45 scenarios: execution, paraphrase, safety
 scripts/mcp_interop_check.py  drives the MCP server with the official Python client
@@ -68,6 +70,8 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 * **MCP designed for the model.** Human units in and out, descriptions that say when to call, precomputed quotes and averages, typed structured output, errors that read as instructions, and three deliberate error channels (protocol, `isError`, structured policy rejection).
 * **Guardrails as code.** Policy in the MCP server (size, value, a collar that always has a reference price, open orders, rate, session cap, kill switch); per-turn permission, confirmation, verifier and audit in the service. See [05 Guardrails](docs/05-guardrails.md).
 * **A prompt that never rewrites itself.** The system prompt and name-sorted tool list are fixed per session and marked for caching; what a turn may do is appended after the user's message and enforced when a tool is called. The cached prefix stays valid and the history append-only, which the newest models require for the thinking blocks they bind to the conversation.
+* **One loop, two providers.** The conversation is kept in Messages API blocks; the DeepSeek client translates to chat-completion messages at the edge, replays each turn's `reasoning_content` (which DeepSeek requires whenever tools are present), and maps its cache-hit accounting onto the same usage fields, so guardrails, evaluation and pricing work unchanged across providers.
+* **One loop, two providers.** The conversation is kept in Messages API blocks; the DeepSeek client translates to chat-completion messages at the edge, replays each turn's `reasoning_content` (which DeepSeek requires whenever tools are present), and maps its cache-hit accounting onto the same usage fields, so guardrails, evaluation and pricing work unchanged across providers.
 * **No text reaches the model that anything wrote into the book.** Session ids and client order ids are the only free-form strings that come back in tool results; both are bounded and restricted to a plain character set at every layer.
 * **Battle-tested dependencies only.** tokio, hyper, tonic, prost, serde, reqwest, arc-swap, tracing; the MCP SDK, web frameworks and decimal, schema, benchmark and RNG crates were left out on purpose. See [08 Dependencies](docs/08-dependencies.md).
 

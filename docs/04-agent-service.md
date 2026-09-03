@@ -1,6 +1,6 @@
 # 04 · The agent service
 
-`POST /chat` runs Claude in a loop: it reads the message, decides which tools to call, the
+`POST /chat` runs a model in a loop (Claude by default, DeepSeek V4 with `MODEL_PROVIDER=deepseek`): it reads the message, decides which tools to call, the
 service runs them against the MCP server and feeds the results back, and the loop ends when
 Claude answers in text. The service owns the conversation-level guardrails: per-turn tool
 permission, confirmation of large orders, idempotency keys, a post-turn verifier, an audit log.
@@ -23,6 +23,22 @@ There is no official Anthropic SDK for Rust, so `crates/agent-service/src/anthro
 Headers: `x-api-key`, `anthropic-version: 2023-06-01`, and one `anthropic-beta` header listing the enabled betas. Transient failures (429, 529, 5xx, connection errors) are retried up to three times with jittered exponential backoff. `temperature` is not sent: current Opus models reject sampling parameters, which is why the evaluation harness measures variance with repeated runs instead.
 
 Usage is recorded per turn as uncached input, cache reads, cache writes and output tokens, so the evaluation report can show the cache hit rate and price the run correctly.
+
+## DeepSeek V4 as a second provider
+
+`crates/agent-service/src/deepseek.rs` speaks DeepSeek's native chat-completions API (`POST https://api.deepseek.com/chat/completions`, bearer authentication) for `deepseek-v4-flash` (default) and `deepseek-v4-pro`: 1M context, up to 384K output, tool calls in thinking mode. `crates/agent-service/src/model.rs` is the switch; everything above it sees one `create` call and one `Message` type.
+
+| Concern | How it is handled |
+|---|---|
+| Conversation format | The service keeps Messages API blocks as its only internal format. Going out: system and user text become `system`/`user` messages, each `tool_result` block becomes its own `tool` message with the `tool_call_id`, the per-turn note becomes a `user` text (the note channel is `user` for DeepSeek), `tool_use` blocks become `tool_calls` with the input serialised as the JSON string the API expects. Coming back: `reasoning_content`, `content` and `tool_calls` become `reasoning`, `text` and `tool_use` blocks; arguments are parsed from the JSON string, anything unparsable becomes `{}` so the tool layer reports the missing fields |
+| Thinking mode | `thinking: {type: "enabled"}` plus top-level `reasoning_effort` (`low`, `high`, `max`; the service's `EFFORT` maps low to low, medium and high to high, xhigh and max to max). DeepSeek requires the `reasoning_content` of every earlier assistant turn to be sent back whenever the request carries tools, and answers 400 otherwise; the `reasoning` block in the history is exactly that, replayed on every request |
+| Stop reasons | `tool_calls` to `tool_use`, `stop` to `end_turn`, `length` to `max_tokens`, `content_filter` to `refusal`; `insufficient_system_resource` is retried with backoff like a 5xx |
+| Usage and cost | `prompt_cache_miss_tokens` is the uncached input, `prompt_cache_hit_tokens` the cache read (DeepSeek caches prefixes automatically, no markers), `completion_tokens` the output; the evaluation report prices DeepSeek runs at its peak-hour list rates |
+| Not sent | `cache_control`, `fallbacks`, `context_management`, `output_config` and system-role messages mid-conversation are Claude features; the DeepSeek request carries none of them |
+
+DeepSeek also offers an Anthropic-compatible endpoint (`https://api.deepseek.com/anthropic`, mapping `claude-opus-*` to V4-Pro and the others to V4-Flash). Pointing `ANTHROPIC_BASE_URL` there works for a quick look, but it ignores `cache_control` and rejects the beta features the Claude path uses, so the native client is the supported route.
+
+Environment for the DeepSeek provider: `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` (default `deepseek-v4-flash`), `DEEPSEEK_BASE_URL`, `DEEPSEEK_THINKING` (default `1`), `DEEPSEEK_REASONING_EFFORT` (overrides the `EFFORT` mapping), plus the shared `EFFORT`, `MAX_TOKENS` and `MODEL_TIMEOUT_SECS`.
 
 ## Why the tool list never changes
 
@@ -74,6 +90,7 @@ Sessions are in-memory and bounded: an append-only message history, the turn cou
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `MODEL_PROVIDER` | `anthropic` | `anthropic` or `deepseek`; the DeepSeek variables are listed above |
 | `ANTHROPIC_API_KEY` | required | unless `ANTHROPIC_BASE_URL` points at a local mock |
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | the tests point this at a scripted mock |
 | `ANTHROPIC_MODEL` | `claude-opus-5` | |
@@ -92,4 +109,4 @@ Sessions are in-memory and bounded: an append-only message history, the turn cou
 
 ## Testing without the model
 
-`crates/agent-service/tests/agent.rs` runs the real engine and MCP server in-process and replaces the model with a scripted mock of the Messages API. Every scenario asserts the engine's end state: a price question permits no action tools and the request still carries the full, name-sorted tool list with the cache breakpoints; an explicit buy places an order carrying an idempotency key; a 2 ETH buy needs a confirmation turn before it is placed and the tool list is identical across all three requests; an unrequested placement is refused when the gate is on and cancelled by the verifier when the gate is off; a refusal and the iteration cap are handled; context editing is requested when enabled; the permission note is a system-role message on supporting models and falls back to the user turn when a mock model rejects it with a 400; the session store evicts the least recently used session; the HTTP API round-trips and refuses a session id that could carry text. The mock also asserts the request shape: headers, `output_config`, `fallbacks`, the permission note, and that all tool results return in one message.
+`crates/agent-service/tests/agent.rs` runs the real engine and MCP server in-process and replaces the model with a scripted mock of the Messages API. Every scenario asserts the engine's end state: a price question permits no action tools and the request still carries the full, name-sorted tool list with the cache breakpoints; an explicit buy places an order carrying an idempotency key; a 2 ETH buy needs a confirmation turn before it is placed and the tool list is identical across all three requests; an unrequested placement is refused when the gate is on and cancelled by the verifier when the gate is off; a refusal and the iteration cap are handled; context editing is requested when enabled; a DeepSeek-shaped mock (chat completions with `reasoning_content` and OpenAI-style `tool_calls`) drives a placement through the same loop and the second request replays the reasoning and answers the call by id; the permission note is a system-role message on supporting models and falls back to the user turn when a mock model rejects it with a 400; the session store evicts the least recently used session; the HTTP API round-trips and refuses a session id that could carry text. The mock also asserts the request shape: headers, `output_config`, `fallbacks`, the permission note, and that all tool results return in one message.
