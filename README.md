@@ -38,6 +38,8 @@ Measured on an Apple M1 Pro laptop (release builds, loopback networking, three r
 | Engine, list 10 trades of one account, same book | 0.2 µs per call (was 1 to 7 µs) |
 | gRPC `PlaceOrder`, sequential, in-process server | p50 70 to 75 µs, p99 160 to 180 µs |
 | gRPC `PlaceOrder`, 16 concurrent clients | 61k to 69k orders/s (unchanged within noise by the batched matcher; the batching buys read-your-writes, not throughput at this load) |
+| Same, with the write-ahead journal (flush per batch) | p50 88 µs, 61k orders/s: about 10% for restart durability |
+| Same, journal with fsync per batch | p50 4.1 ms, 2.1k orders/s: the price of surviving a power loss on a laptop disk |
 | Concurrency tests: 16 clients × 500 orders; 8 accounts cancelling 150 orders each from parallel tasks | every response OK, sequence numbers unique and contiguous, book never crossed; every cancel succeeds and the book ends empty |
 | MCP interoperability (official Python client, stdio and HTTP, also a CI job) | all nine tools, resources and the prompt, output schemas validated: `INTEROP OK` |
 | Evaluation harness, oracle agent, 45 cases × 3 reps | execution 100% (51/51), paraphrase 100% (45/45), safety 100% (39/39, 33/33 attacks blocked); `--assert` passes |
@@ -70,6 +72,7 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 * **Nothing on the matcher thread scales with the book.** Orders and trades are indexed per account, so listing one account's open orders costs the same in a million-order book as in an empty one. Account names are interned (`Arc<str>`).
 * **Deterministic.** Counters for ids and sequence numbers, clocks for reporting only; the property test replays every generated command list and asserts an identical event log.
 * **Idempotent.** `client_order_id` makes retries safe end to end: the engine replays the original reply, the service derives the key from session, turn and tool-call id.
+* **Durable by replay.** With `ENGINE_JOURNAL` set, every place and cancel is journaled before it is applied and committed once per batch before the replies go out; a restart replays the file and lands on the same ids and sequence numbers, and pre-restart idempotency keys still work. Fsync per batch is a flag, with its cost measured above.
 * **MCP designed for the model.** Human units in and out, descriptions that say when to call, precomputed quotes and averages, typed structured output, errors that read as instructions, and three deliberate error channels (protocol, `isError`, structured policy rejection).
 * **Guardrails as code.** Policy in the MCP server (size, value, a collar that always has a reference price, open orders, rate, session cap, kill switch); per-turn permission, confirmation, verifier and audit in the service. See [05 Guardrails](docs/05-guardrails.md).
 * **A prompt that never rewrites itself.** The system prompt and name-sorted tool list are fixed per session and marked for caching; what a turn may do is appended after the user's message and enforced when a tool is called. The cached prefix stays valid and the history append-only, which the newest models require for the thinking blocks they bind to the conversation.
@@ -80,4 +83,4 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 
 ## Next
 
-Persist the command log so the engine recovers by replay; stream book deltas instead of polling; shard by symbol; run the model-driven suites at several effort levels and publish the numbers with the cache hit rate; move the per-turn permission onto the mid-conversation tool-changes beta; add balances and settlement so the simulation scores realised P&L.
+Compact the journal (snapshot plus tail) so it does not grow without bound; stream book deltas instead of polling; shard by symbol; run the model-driven suites at several effort levels and publish the numbers with the cache hit rate; move the per-turn permission onto the mid-conversation tool-changes beta; add balances and settlement so the simulation scores realised P&L.

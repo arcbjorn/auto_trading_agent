@@ -62,6 +62,10 @@ Every read runs on the matcher thread, so a read that scans all orders is latenc
 
 Adding DeepSeek V4 could have meant a second loop or an abstract "message" type. Instead the Messages API block format stays the only internal representation (it is the richer one: typed tool_use and tool_result blocks, per-turn system messages, thinking as a block), and the DeepSeek client translates in both directions, keeping DeepSeek's `reasoning_content` as a `reasoning` block because the API demands it back on every later request that carries tools. The loop, the permission gate, the confirmation flow, the verifier, the audit log and the harness are provider-blind. Alternatives: DeepSeek's Anthropic-compatible endpoint (fewer lines, but it ignores caching markers and rejects the Claude betas, and the native API is the documented one for thinking-mode tool calls), or a third-party client crate (one more dependency for two HTTP calls).
 
-## ADR-16 No Docker in this slice
+## ADR-16 Journal the commands, not the events
+
+Durability for a deterministic book needs only its inputs: the journal holds every place and cancel with its timestamp, and replay recomputes orders, trades, ids and sequence numbers through the same code. Alternatives: journaling events (more data, and a second code path that must agree with the matcher) or a snapshot per interval (loses everything since the last one). The journal is committed once per matcher batch before the replies go out, which is why the fsync variant stays usable under load; flush-only is the default because a power-loss guarantee costs two orders of magnitude of latency on a laptop disk, and the README shows both numbers.
+
+## ADR-17 No Docker in this slice
 
 Every component is a cargo binary with environment-variable configuration; the runbook has the three commands. A compose file would add an untested surface without changing the design.

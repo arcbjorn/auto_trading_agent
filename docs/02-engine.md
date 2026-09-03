@@ -79,6 +79,22 @@ tonic runs each RPC as a tokio task, so many `PlaceOrder` calls arrive at once. 
 
 `crates/engine-server/tests/concurrency.rs` runs a real tonic server with sixteen concurrent clients placing 500 orders each. Every response succeeds, every event's sequence number is unique and contiguous, and the book is never crossed. A second test has eight accounts rest 150 orders each at shared price levels and cancel all of them from parallel tasks while the others are still placing: every cancel succeeds and the book ends empty, which checks the lazily dropped cancelled ids and the per-level totals under interleaving.
 
+## Durability: a journal of commands, replayed
+
+The book is deterministic, so durability needs only its inputs. With `ENGINE_JOURNAL=/path/file.jsonl` every place and cancel is appended to a write-ahead journal (one JSON line: the request and the wall-clock timestamp it was accepted with) *before* it is applied, and the journal is committed once per matcher batch, before that batch's replies are sent. Reads are never journaled. On start the engine replays the file through the same code and arrives at the same orders, trades, ids and sequence numbers; the next order id and sequence continue from there, and an idempotent retry of a pre-restart `client_order_id` still returns the original order. A corrupt line fails startup rather than silently losing data.
+
+Two levels of durability, measured on the laptop in the README with the gRPC benchmark:
+
+| Setting | What survives | Sequential p50 | 16 clients |
+|---|---|---|---|
+| no journal | nothing: in memory only | 79 µs | 68k orders/s |
+| journal, flush per batch (default with `ENGINE_JOURNAL`) | a process crash or restart; not a power loss | 88 µs | 61k orders/s |
+| journal, `ENGINE_JOURNAL_FSYNC=1` | a power loss, for every reply already sent | 4.1 ms | 2.1k orders/s |
+
+The batching is what keeps the fsync variant usable under concurrency: one `fsync` covers every command that was queued while the previous one ran. A journal line is about 136 bytes, so a million orders are about 130 MB; compaction (a snapshot plus the tail) is the next step if the file must not grow without bound.
+
+`crates/engine/src/journal.rs` has the replay test (2,000 random places and cancels, journaled, replayed into a fresh book, identical event log and snapshot); `crates/engine-server/tests/concurrency.rs` restarts a real server from its journal and checks orders, book, sequence and idempotency.
+
 ## gRPC contract
 
 `proto/clob.proto` defines seven unary RPCs: `PlaceOrder`, `CancelOrder`, `GetOrder`, `ListOrders`, `ListTrades`, `GetOrderBook`, `GetMarket`. The generated code lives in `crates/clob-proto`; `build.rs` runs the real `protoc` (a system one when `PROTOC` is set, otherwise the binary vendored by `protoc-bin-vendored`), so a fresh checkout builds with nothing but cargo.
@@ -101,8 +117,9 @@ tonic runs each RPC as a tokio task, so many `PlaceOrder` calls arrive at once. 
 | What | Where | Command |
 |---|---|---|
 | 11 unit tests (rules, cancel, idempotency, IOC/FOK, self-trade, listings, indexed listings against a log scan) and 1 property test | `crates/engine/src/book.rs` | `cargo test -p engine` |
-| Concurrency (placements, racing cancels) and status-code integration tests over a real tonic server | `crates/engine-server/tests/concurrency.rs` | `cargo test -p engine-server` |
+| Concurrency (placements, racing cancels), restart from the journal, and status-code integration tests over a real tonic server | `crates/engine-server/tests/concurrency.rs` | `cargo test -p engine-server` |
+| Journal replay identity | `crates/engine/src/journal.rs` | `cargo test -p engine` |
 | Pure book throughput and listing cost in a million-order book | `crates/engine/examples/bench.rs` | `cargo run --release -p engine --example bench` |
-| gRPC round trip and concurrent throughput | `crates/engine-server/examples/grpc_bench.rs` | `cargo run --release -p engine-server --example grpc_bench` |
+| gRPC round trip and concurrent throughput, with or without the journal | `crates/engine-server/examples/grpc_bench.rs` | `cargo run --release -p engine-server --example grpc_bench` (`ENGINE_JOURNAL=...`, `ENGINE_JOURNAL_FSYNC=1`) |
 
 Numbers are in the README. The book benchmark deliberately includes the idempotency bookkeeping and the per-account indices; the remaining cost per operation is dominated by the `BTreeMap` walk and the hash maps, not by allocation.

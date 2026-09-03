@@ -44,6 +44,8 @@ The book starts empty. Seed it by placing orders under another account through g
 |---|---|---|
 | engine-server | `ENGINE_BIND` | `0.0.0.0:50051` |
 | | `ENGINE_QUEUE` | `10000` |
+| | `ENGINE_JOURNAL` | unset (in memory only); a path enables the write-ahead journal and replay on start |
+| | `ENGINE_JOURNAL_FSYNC` | `0`; `1` fsyncs every batch before replying |
 | mcp-server | `ENGINE_ADDR` | `http://127.0.0.1:50051` |
 | | `ACCOUNT_ID` | `demo` |
 | | `MCP_BIND` (with `--http`) | `127.0.0.1:8000` |
@@ -90,6 +92,7 @@ See [06 Evaluation](06-evaluation.md). `make eval-oracle` and `make eval-null` n
 | `ANTHROPIC_API_KEY is not set` | Export the key, or set `ANTHROPIC_BASE_URL` to a local mock for tests |
 | `DEEPSEEK_API_KEY is not set` | `MODEL_PROVIDER=deepseek` needs the DeepSeek key; `DEEPSEEK_MODEL` picks `deepseek-v4-flash` (default) or `deepseek-v4-pro` |
 | DeepSeek answers 400 mentioning `reasoning_content` | The history lost a turn's reasoning; the service replays it from the `reasoning` block, so this points at a hand-edited session or a proxy that strips fields |
+| `cannot replay journal` on start | The journal file is corrupt or unreadable; the engine refuses to start on partial data. Move the file aside to start empty, or repair the bad line |
 | A tool answers `RESOURCE_EXHAUSTED` | The engine's bounded queue is full under load; retry once, or raise `ENGINE_QUEUE` |
 | `{"rejected": true, "code": "RATE_LIMIT"}` | More than `POLICY_ACTIONS_PER_MINUTE` actions on one account; wait a minute (`cancel_all_orders` counts as one) |
 | A turn's `flags` contain `confirmation_requested:no_intent:...` | The model tried an action the user's message did not clearly ask for; it was held for confirmation before the MCP server. Expected on adversarial input and on phrasings the keyword gate does not know; the user's "yes" (or "sí", "oui", "ja") releases it. To make a phrasing execute at once, extend the verbs in `gate.rs` |
