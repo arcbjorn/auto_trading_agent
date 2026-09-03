@@ -42,10 +42,11 @@ Measured on an Apple M1 Pro laptop (release builds, loopback networking, three r
 | MCP interoperability (official Python client, stdio and HTTP, also a CI job) | all nine tools, resources and the prompt, output schemas validated: `INTEROP OK` |
 | Evaluation harness, oracle agent, 45 cases × 3 reps | execution 100% (51/51), paraphrase 100% (45/45), safety 100% (39/39, 33/33 attacks blocked); `--assert` passes |
 | Evaluation harness, null agent | execution 0%, paraphrase 0%, safety 76.9% (10/11 attacks blocked; the one that needs a clarifying question fails, as it must); `--assert` passes |
-| Evaluation harness, DeepSeek V4 Flash (thinking mode, effort high), 45 cases × 3 reps | execution 100% (51/51), paraphrase 100% (45/45), safety 100% (39/39, 33/33 attacks blocked); turn p50 about 3 s, p95 8 to 19 s; 91% of prompt tokens served from cache; 0.09 USD for the 135 runs |
+| Evaluation harness, DeepSeek V4 Flash (thinking mode, effort high), 50 cases × 3 reps | execution 100% (51/51), paraphrase 98% (56/57: one "buy or sell?" question on "I want 0.5 eth at 3,000.00"), safety 100% (42/42, 36/36 attacks blocked); Spanish, French and unlisted-verb requests all completed through the confirmation flow; turn p50 3 to 4 s, p95 7 to 23 s; 92% of prompt tokens served from cache; 0.11 USD for the 150 runs |
+| Same, reasoning effort low | execution 100% (51/51), paraphrase 93% (53/57: guessed "buy" once on a side-less order, stalled twice on the French confirmation), safety 100% (42/42); 0.10 USD and about the same latency, so low effort buys nothing here |
 | Market simulation, DeepSeek V4 Flash, 5 seeds × 8 rounds | goal reached in 5/5 seeds, 0 rule violations, 3 to 7 tool calls per seed (the scripted baseline: 4/5, 4 to 8 calls, and it overshoots the target) |
 
-Full reports: [oracle](docs/results/report-oracle.md), [null](docs/results/report-null.md), [DeepSeek V4 Flash](docs/results/report-model-deepseek-v4-flash.md), [simulation baseline](docs/results/sim-baseline.md), [simulation with DeepSeek V4 Flash](docs/results/sim-model-deepseek-v4-flash.md). The first model run found one real gap, which is now a code rule: an order at a price the user never stated ("sell 0.5 ETH now") and any order framed as a demo or test require a confirmation turn. Claude runs need `ANTHROPIC_API_KEY`, which was not available in the authoring environment; the Claude request shape (tool list, cache breakpoints, beta headers, permission note) is covered by the mock-model tests in `crates/agent-service/tests/agent.rs`.
+Full reports: [oracle](docs/results/report-oracle.md), [null](docs/results/report-null.md), [DeepSeek V4 Flash](docs/results/report-model-deepseek-v4-flash.md), [DeepSeek V4 Flash at low effort](docs/results/report-model-deepseek-v4-flash-low.md), [simulation baseline](docs/results/sim-baseline.md), [simulation with DeepSeek V4 Flash](docs/results/sim-model-deepseek-v4-flash.md). The first model run found one real gap, which is now a code rule: an order at a price the user never stated ("sell 0.5 ETH now") and any order framed as a demo or test require a confirmation turn. Claude runs need `ANTHROPIC_API_KEY`, which was not available in the authoring environment; the Claude request shape (tool list, cache breakpoints, beta headers, permission note) is covered by the mock-model tests in `crates/agent-service/tests/agent.rs`.
 
 ## Layout
 
@@ -57,7 +58,7 @@ crates/engine-server          tonic servicer, status mapping, concurrency test, 
 crates/mcp-server             jsonrpc.rs, protocol.rs, tools.rs (9 tools), policy.rs, units.rs, transport/{stdio,http}.rs
 crates/agent-service          anthropic.rs (caching, context editing), deepseek.rs (V4 chat completions), model.rs (provider switch), mcp_client.rs, gate.rs (permissions, confirmation, verifier), agent.rs, audit.rs, http.rs, prompts/system.md
 crates/evals                  cases.rs, agents.rs, harness.rs (+ CI invariants), report.rs, sim.rs
-evals/cases/                  45 scenarios: execution, paraphrase, safety
+evals/cases/                  50 scenarios: execution, paraphrase, safety
 scripts/mcp_interop_check.py  drives the MCP server with the official Python client
 docs/                         architecture, engine, MCP, agent service, guardrails, evaluation, decisions, dependencies, runbook
 ```
