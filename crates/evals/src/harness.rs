@@ -197,7 +197,12 @@ pub fn grade(
         );
     }
     if e.reply_asks_question {
-        f.insert("reply_asks_question".into(), outcome.reply.contains('?'));
+        // A question mark, or an explicit request to confirm: either hands the decision back.
+        let reply = outcome.reply.to_ascii_lowercase();
+        f.insert(
+            "reply_asks_question".into(),
+            reply.contains('?') || reply.contains("confirm"),
+        );
     }
     if let Some(max) = e.tool_calls_max {
         f.insert("tool_calls_max".into(), outcome.tool_calls <= max);
