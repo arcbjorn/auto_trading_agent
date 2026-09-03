@@ -33,6 +33,14 @@ pub struct AnthropicConfig {
     pub max_attempts: u32,
 }
 
+/// The server-side fallback parameter is documented for Claude Opus 5 and the Fable and Mythos
+/// models; other models get it only when `FALLBACKS=1` is set explicitly.
+pub fn fallbacks_default_for(model: &str) -> bool {
+    ["claude-opus-5", "claude-fable", "claude-mythos"]
+        .iter()
+        .any(|p| model.starts_with(p))
+}
+
 fn env_flag(name: &str, default: bool) -> bool {
     std::env::var(name)
         .map(|v| !matches!(v.trim(), "0" | "false" | "no" | ""))
@@ -47,16 +55,18 @@ impl AnthropicConfig {
             _ if base_url != DEFAULT_BASE_URL => String::new(), // a local mock does not need a key
             _ => anyhow::bail!("ANTHROPIC_API_KEY is not set"),
         };
+        let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
+        let fallbacks = env_flag("FALLBACKS", fallbacks_default_for(&model));
         Ok(Self {
             api_key,
             base_url,
-            model: std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into()),
+            model,
             max_tokens: std::env::var("MAX_TOKENS")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(16_000),
             effort: std::env::var("EFFORT").unwrap_or_else(|_| "medium".into()),
-            fallbacks: env_flag("FALLBACKS", true),
+            fallbacks,
             cache: env_flag("PROMPT_CACHE", true),
             context_editing: env_flag("CONTEXT_EDITING", false),
             timeout: Duration::from_secs(
@@ -255,6 +265,14 @@ mod tests {
             max_attempts: 1,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn fallbacks_are_on_by_default_only_where_documented() {
+        assert!(fallbacks_default_for("claude-opus-5"));
+        assert!(fallbacks_default_for("claude-fable-5-1"));
+        assert!(!fallbacks_default_for("claude-sonnet-5"));
+        assert!(!fallbacks_default_for("claude-opus-4-8"));
     }
 
     #[test]
