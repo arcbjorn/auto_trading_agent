@@ -69,9 +69,13 @@ All tool results of one assistant turn go back in a single user message, as the 
 
 Permission comes from the user's words: a trade verb (buy, sell, bid, offer, go long, grab, dump, and so on) or the shape of an order (the asset plus at least two numbers, as in "0.5 ETH @ 3000"), a cancel verb for `cancel_order` and `cancel_all_orders`, or a confirmation word while an order is pending. These are heuristics, and the paraphrase suite is where they are measured; the verifier applies the same rules after the fact and additionally flags a placed order whose price and quantity both fail to appear in a message that did contain numbers (`params_not_in_request`).
 
+On the turn in which the user confirms a pending action, the note changes shape: it names the action and its token ("The user confirmed the pending action (cancel order 5). Call cancel_order now with the same arguments plus confirmation_token ..."). The first live runs showed a model occasionally asking a second time instead of completing the flow; the explicit note removes that ambiguity without changing what is enforced.
+
 ## Sessions and the API
 
 Sessions are in-memory and bounded: an append-only message history, the turn counter, a pending confirmation if any, and the last order id. A client-supplied `session_id` must be 1 to 64 characters of letters, digits, `.`, `_` or `-`, because it becomes part of every idempotency key the engine echoes back in listings the model reads; anything else is a 400. When the store holds `MAX_SESSIONS`, sessions idle for longer than `SESSION_IDLE_SECS` are dropped, then the least recently used one. `POST /chat` takes `{"session_id": optional, "message": string}` and answers:
+
+A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) makes a retried POST, from a client that lost the response to a network error, return the earlier answer instead of running the turn, and its actions, again; the last sixteen answers per session are kept. Each session may start twenty turns per minute (`TURNS_PER_MINUTE`); the twenty-first within a minute is answered 429 without touching the model.
 
 ```json
 {
@@ -100,7 +104,8 @@ Sessions are in-memory and bounded: an append-only message history, the turn cou
 | `AGENT_BIND` | `127.0.0.1:8080` | |
 | `AUDIT_LOG` | `audit.jsonl` | empty string disables |
 | `CONFIRM_THRESHOLD_ETH` | `1` | orders at or above this size need a confirmation turn |
-| `CONFIRM_UNPRICED` | `1` | an order at a price the user never stated (the model chose it, as for "sell now") needs a confirmation turn whatever its size |
+| `CONFIRM_UNPRICED` | `1` | an order whose price or side the user never stated (the model chose it, as for "sell now" or "0.5 ETH @ 3000 please") needs a confirmation turn whatever its size |
+| `TURNS_PER_MINUTE` | `20` | turns one session may start per rolling minute; beyond it `POST /chat` answers 429 |
 | `GATE_TOOLS` | `1` | permit action tools only on explicit intent (`0`: everything permitted, the verifier still runs) |
 | `NOTE_CHANNEL` | by model | `system` or `user`: how the per-turn permission note is sent |
 | `PROMPT_CACHE` | `1` | cache breakpoint on the system prompt plus automatic caching of the conversation |

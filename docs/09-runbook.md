@@ -53,7 +53,7 @@ The book starts empty and unfunded. `make run-engine` funds the demo account (50
 | | `MCP_BIND` (with `--http`) | `127.0.0.1:8000` |
 | | `POLICY_MAX_ORDER_ETH`, `POLICY_MAX_ORDER_USDC`, `POLICY_COLLAR_BPS`, `POLICY_MAX_OPEN_ORDERS`, `POLICY_ACTIONS_PER_MINUTE`, `POLICY_SESSION_CAP_USDC` | 10, 50000, 1000, 20, 10, 200000 |
 | | `TRADING_HALTED` | unset |
-| agent-service | see [04 Agent service](04-agent-service.md): `MODEL_PROVIDER`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `NOTE_CHANNEL`, `PROMPT_CACHE`, `CONTEXT_EDITING`, `MAX_SESSIONS`, `SESSION_IDLE_SECS` among others | |
+| agent-service | see [04 Agent service](04-agent-service.md): `MODEL_PROVIDER`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `NOTE_CHANNEL`, `PROMPT_CACHE`, `CONTEXT_EDITING`, `MAX_SESSIONS`, `SESSION_IDLE_SECS`, `TURNS_PER_MINUTE` among others | |
 | all | `RUST_LOG` | `info` (`warn` for evals) |
 
 The MCP server's stdio mode logs to stderr only; stdout is reserved for the protocol.
@@ -101,5 +101,6 @@ See [06 Evaluation](06-evaluation.md). `make eval-oracle` and `make eval-null` n
 | A turn's `flags` contain `confirmation_requested:no_intent:...` | The model tried an action the user's message did not clearly ask for; it was held for confirmation before the MCP server. Expected on adversarial input and on phrasings the keyword gate does not know; the user's "yes" (or "sí", "oui", "ja") releases it. To make a phrasing execute at once, extend the verbs in `gate.rs` |
 | `cache_read_input_tokens` stays 0 across turns | Something rewrites the prompt prefix. The tool list and system prompt must be byte-identical between requests; check `ANTHROPIC_MODEL` did not change mid-session |
 | `403 origin not allowed` on `/mcp` | Browser-based hosts must run on localhost; the server refuses foreign origins by design |
+| `429` from `/chat` | The session started more than `TURNS_PER_MINUTE` turns in the last minute; wait, or raise the limit |
 | `400 session_id must be ...` from `/chat` | Session ids are limited to 64 plain characters because they become idempotency keys the engine echoes back; use letters, digits, `.`, `_`, `-` |
 | A turn's `flags` contain `note_channel_downgraded` | The model rejected a system-role message; the service switched the permission note to the user turn for this process. Set `NOTE_CHANNEL=user` to skip the first failed request |
