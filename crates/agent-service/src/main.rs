@@ -81,7 +81,8 @@ async fn main() -> anyhow::Result<()> {
         None
     } else {
         Some(audit_path.into())
-    });
+    })
+    .map_err(|e| anyhow::anyhow!("audit log: {e}"))?;
     let agent = Agent::new(model, mcp, cfg, audit).await?;
     tracing::info!(tools = ?agent.tools().iter().filter_map(|t| t["name"].as_str()).collect::<Vec<_>>(), "tools loaded from MCP");
     let (addr, handle) = serve(bind.parse()?, Arc::new(State::with_limits(agent, limits))).await?;

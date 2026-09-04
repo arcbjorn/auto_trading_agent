@@ -104,6 +104,13 @@ impl State {
     }
 }
 
+fn message_hash(message: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    message.hash(&mut h);
+    h.finish()
+}
+
 fn respond(status: StatusCode, body: Value) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
@@ -179,8 +186,16 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             let session = state.session(&session_id);
             let mut s = session.lock().await;
             if let Some(id) = &request_id {
-                if let Some((_, earlier)) = s.responses.iter().find(|(r, _)| r == id) {
-                    return Ok(respond(StatusCode::OK, earlier.clone()));
+                if let Some((_, earlier_message, earlier)) = s.responses.iter().find(|(r, _, _)| r == id) {
+                    // The same id with the same message replays; with a different message it is
+                    // a client bug, and answering the old question would mislead.
+                    if *earlier_message == message_hash(message) {
+                        return Ok(respond(StatusCode::OK, earlier.clone()));
+                    }
+                    return Ok(respond(
+                        StatusCode::CONFLICT,
+                        json!({ "error": "request_id was already used with a different message", "session_id": session_id }),
+                    ));
                 }
             }
             if s.turns >= state.limits.max_turns {
@@ -211,7 +226,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                         if s.responses.len() >= REMEMBERED_RESPONSES {
                             s.responses.remove(0);
                         }
-                        s.responses.push((id, body.clone()));
+                        s.responses.push((id, message_hash(message), body.clone()));
                     }
                     Ok(respond(StatusCode::OK, body))
                 }

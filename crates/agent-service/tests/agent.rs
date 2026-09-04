@@ -119,6 +119,10 @@ struct Stack {
 }
 
 async fn stack(responder: Responder, cfg: AgentConfig) -> Stack {
+    stack_with_audit(responder, cfg, Audit::disabled()).await
+}
+
+async fn stack_with_audit(responder: Responder, cfg: AgentConfig, audit: Audit) -> Stack {
     let (engine_addr, _engine_handle) =
         engine_server::serve("127.0.0.1:0".parse().unwrap(), engine_server::EngineConfig::default())
             .await
@@ -175,7 +179,7 @@ async fn stack(responder: Responder, cfg: AgentConfig) -> Stack {
     })
     .unwrap();
     let client = McpClient::connect(&format!("http://{mcp_addr}/mcp")).await.unwrap();
-    let agent = Agent::new(claude, client, cfg, Audit::disabled()).await.unwrap();
+    let agent = Agent::new(claude, client, cfg, audit).await.unwrap();
     // Keep the servers alive for the duration of the test by leaking the handles.
     std::mem::forget(_engine_handle);
     std::mem::forget(_mcp_handle);
@@ -736,6 +740,69 @@ async fn context_editing_is_requested_server_side_when_enabled() {
         "clear_tool_uses_20250919"
     );
     mcp_handle.shutdown().await;
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_action_is_refused_when_its_audit_record_cannot_be_written() {
+    // An explicit buy the gate permits; the model calls the tool at once.
+    let responder: Responder = Arc::new(|n, _| {
+        if n == 1 {
+            tool_use(
+                "place_limit_order",
+                json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "0.2" }),
+            )
+        } else {
+            end_turn("done")
+        }
+    });
+    let path = std::env::temp_dir().join(format!("audit-refuse-{}-{}.jsonl", std::process::id(), line!()));
+    let _ = std::fs::remove_dir(&path);
+    let _ = std::fs::remove_file(&path);
+    let audit = Audit::new(Some(path.clone())).unwrap();
+    // The log becomes unwritable after the service started: a directory now sits at its path.
+    std::fs::create_dir(&path).unwrap();
+    let mut s = stack_with_audit(responder, AgentConfig::default(), audit).await;
+    let mut session = Session::new("audit");
+    let turn = s.agent.chat_turn(&mut session, "buy 0.2 ETH at 2990").await.unwrap();
+    assert!(turn.flags.iter().any(|f| f == "audit_unavailable"), "{:?}", turn.flags);
+    let call = &turn.tool_calls[0];
+    assert!(call.is_error && call.result.contains("audit log"), "{}", call.result);
+    assert!(
+        demo_orders(&mut s.engine, OrderStatus::Open).await.is_empty(),
+        "nothing reached the engine"
+    );
+    let _ = std::fs::remove_dir(&path);
+}
+
+#[tokio::test]
+async fn a_reused_request_id_replays_or_conflicts() {
+    let responder: Responder = Arc::new(|_, _| end_turn("ok"));
+    let s = stack(responder, AgentConfig::default()).await;
+    let state = Arc::new(State::new(s.agent));
+    let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::clone(&state))
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let post = |message: &str| {
+        client
+            .post(format!("http://{addr}/chat"))
+            .json(&json!({ "session_id": "r", "request_id": "req-1", "message": message }))
+            .send()
+    };
+    let first = post("what is the price?").await.unwrap();
+    assert_eq!(first.status(), 200);
+    let first: Value = first.json().await.unwrap();
+    let replay = post("what is the price?").await.unwrap();
+    assert_eq!(replay.status(), 200);
+    assert_eq!(
+        replay.json::<Value>().await.unwrap(),
+        first,
+        "same id and message replays"
+    );
+    let conflict = post("buy 5 ETH at 3000").await.unwrap();
+    assert_eq!(conflict.status(), 409, "same id with a different message is refused");
+    assert_eq!(state.session_count(), 1);
     handle.shutdown().await;
 }
 

@@ -45,7 +45,8 @@ pub struct Session {
     pub last_order_id: Option<String>,
     /// Recent `(request_id, response)` pairs, so a retried `POST /chat` returns the same answer
     /// instead of running the turn (and its actions) again.
-    pub responses: Vec<(String, Value)>,
+    /// Each entry is the request id, a hash of the message it carried, and the response.
+    pub responses: Vec<(String, u64, Value)>,
     /// Start times of recent turns, for the per-session rate limit.
     pub turn_times: std::collections::VecDeque<Instant>,
 }
@@ -97,7 +98,25 @@ pub enum AgentError {
     Model(#[from] ApiError),
     #[error("mcp: {0}")]
     Mcp(#[from] McpError),
+    #[error("mcp tool catalog: {0}")]
+    Catalog(String),
 }
+
+/// The tools the service is written against, in the order the model sees them. A server that
+/// offers anything else is a misconfiguration and the service refuses to start.
+pub const EXPECTED_TOOLS: [&str; 11] = [
+    "cancel_all_orders",
+    "cancel_order",
+    "get_balances",
+    "get_market_summary",
+    "get_order",
+    "get_order_book",
+    "get_quote",
+    "get_statement",
+    "list_orders",
+    "list_trades",
+    "place_limit_order",
+];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCallRecord {
@@ -175,6 +194,12 @@ impl Agent {
         audit: Audit,
     ) -> Result<Self, AgentError> {
         let tools = api_tools(&mcp.list_tools().await?);
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        if names != EXPECTED_TOOLS {
+            return Err(AgentError::Catalog(format!(
+                "expected {EXPECTED_TOOLS:?}, the server offers {names:?}"
+            )));
+        }
         Ok(Self {
             model: model.into(),
             mcp,
@@ -184,6 +209,30 @@ impl Agent {
             system: crate::SYSTEM_PROMPT.to_string(),
             system_channel_rejected: AtomicBool::new(false),
         })
+    }
+
+    /// Writes the pre-action record for an action tool. When it cannot be written the action is
+    /// refused, so nothing reaches the engine that the audit log does not know about.
+    fn audit_before(
+        &self,
+        session_id: &str,
+        turn: impl serde::Serialize,
+        tool: &str,
+        args: &Value,
+        tool_use_id: &str,
+    ) -> std::io::Result<()> {
+        if !ACTION_TOOLS.contains(&tool) {
+            return Ok(());
+        }
+        self.audit.append(&json!({
+            "event": "pre_action",
+            "ts_unix_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0),
+            "session_id": session_id,
+            "turn": turn,
+            "tool": tool,
+            "args": args,
+            "tool_use_id": tool_use_id,
+        }))
     }
 
     /// The channel in use right now: the configured one unless the API has rejected it.
@@ -351,32 +400,44 @@ impl Agent {
                                     }
                                     (v.to_string(), false, true)
                                 }
-                                Intercept::Proceed(clean) => match self.mcp.call_tool(&name, &clean).await {
-                                    Ok(r) => {
-                                        let ok =
-                                            !r.is_error && r.structured.as_ref().is_none_or(|s| s["rejected"] != true);
-                                        if ACTION_TOOLS.contains(&name.as_str()) {
-                                            executed.push(Executed {
-                                                tool: name.clone(),
-                                                args: clean.clone(),
-                                                ok,
-                                            });
+                                Intercept::Proceed(clean) => {
+                                    match self.audit_before(&session.id, turn, &name, &clean, &id) {
+                                        Err(e) => {
+                                            flags.push("audit_unavailable".into());
+                                            (
+                                            format!("action refused: the audit log cannot be written ({e}); nothing was sent to the engine"),
+                                            true,
+                                            false,
+                                        )
                                         }
-                                        if name == "place_limit_order" && ok {
-                                            if let Some(oid) =
-                                                r.structured.as_ref().and_then(|s| s["order_id"].as_str())
-                                            {
-                                                placed_ids.push(oid.to_string());
-                                                session.last_order_id = Some(oid.to_string());
+                                        Ok(()) => match self.mcp.call_tool(&name, &clean).await {
+                                            Ok(r) => {
+                                                let ok = !r.is_error
+                                                    && r.structured.as_ref().is_none_or(|s| s["rejected"] != true);
+                                                if ACTION_TOOLS.contains(&name.as_str()) {
+                                                    executed.push(Executed {
+                                                        tool: name.clone(),
+                                                        args: clean.clone(),
+                                                        ok,
+                                                    });
+                                                }
+                                                if name == "place_limit_order" && ok {
+                                                    if let Some(oid) =
+                                                        r.structured.as_ref().and_then(|s| s["order_id"].as_str())
+                                                    {
+                                                        placed_ids.push(oid.to_string());
+                                                        session.last_order_id = Some(oid.to_string());
+                                                    }
+                                                }
+                                                (r.text, r.is_error, false)
                                             }
-                                        }
-                                        (r.text, r.is_error, false)
+                                            Err(e) => {
+                                                flags.push(format!("mcp_error:{name}"));
+                                                (format!("tool call failed: {e}"), true, false)
+                                            }
+                                        },
                                     }
-                                    Err(e) => {
-                                        flags.push(format!("mcp_error:{name}"));
-                                        (format!("tool call failed: {e}"), true, false)
-                                    }
-                                },
+                                }
                             }
                         };
                         records.push(ToolCallRecord {
@@ -460,6 +521,7 @@ impl Agent {
             permitted,
         };
         self.audit.write(&json!({
+            "event": "turn",
             "ts_unix_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0),
             "session": session.id,
             "turn": turn,
