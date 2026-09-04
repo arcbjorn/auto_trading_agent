@@ -14,7 +14,7 @@
 //!   resting order; matching stops there and the remainder is cancelled.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 /// Price in ticks. 1 tick = 0.01 USDC per ETH.
@@ -28,6 +28,29 @@ pub type Seq = u64;
 /// Events kept in memory for inspection (tests, debugging). The journal is the history; the
 /// broadcast takes its events from a separate buffer that the sequencer drains every batch.
 pub const RECENT_EVENTS: usize = 100_000;
+
+/// Closed orders kept in memory (lookups, listings, idempotent retries): when more have closed,
+/// the oldest closed order is archived. Live orders are always kept.
+pub const RETAINED_CLOSED_ORDERS: usize = 100_000;
+/// Trades kept in memory (listings, the fills of a retry reply): the oldest is dropped when more
+/// have happened. The ledgers and balances they settled are unaffected.
+pub const RETAINED_TRADES: usize = 100_000;
+
+/// How much closed history the book keeps; see [`Book::with_retention`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Retention {
+    pub closed_orders: usize,
+    pub trades: usize,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Self {
+            closed_orders: RETAINED_CLOSED_ORDERS,
+            trades: RETAINED_TRADES,
+        }
+    }
+}
 
 /// Longest account or client order id accepted. Ids are echoed back in listings, so a bound keeps
 /// them from becoming a channel for arbitrary text.
@@ -327,20 +350,25 @@ pub struct Book {
     bids: BTreeMap<Price, Level>,
     asks: BTreeMap<Price, Level>,
     orders: HashMap<OrderId, Order>,
-    /// Order ids per account in placement order, so listings never scan the whole book.
-    by_account: HashMap<Arc<str>, Vec<OrderId>>,
+    /// Order ids per account (id order is placement order), so listings never scan the whole
+    /// book and an archived order leaves in O(log n).
+    by_account: HashMap<Arc<str>, BTreeSet<OrderId>>,
     /// account -> client_order_id -> order: the idempotency index.
     by_client_id: HashMap<Arc<str>, HashMap<Arc<str>, OrderId>>,
-    /// Fill ids of every order that filled at placement, so an idempotent retry can be answered
-    /// with the original reply without keeping a second copy of the order.
-    fill_ids: HashMap<OrderId, Vec<TradeId>>,
+    /// Quantity filled and fill ids of every order that filled at placement, so an idempotent
+    /// retry can be answered with the original reply without keeping a second copy of the order.
+    fill_ids: HashMap<OrderId, (Qty, Vec<TradeId>)>,
+    /// Closed orders in closing order; the front is archived first. See [`Retention`].
+    closed: VecDeque<OrderId>,
+    retention: Retention,
     /// The most recent events, bounded; see [`RECENT_EVENTS`].
     events: VecDeque<Event>,
     /// Events since the sequencer last drained them, for the broadcast.
     pending_events: Vec<Event>,
-    /// Every trade in sequence order, plus the positions each account took part in.
-    trades: Vec<Trade>,
-    trades_by_account: HashMap<Arc<str>, Vec<usize>>,
+    /// Retained trades in id order (the front is the oldest kept), plus the ids each account
+    /// took part in.
+    trades: VecDeque<Trade>,
+    trades_by_account: HashMap<Arc<str>, VecDeque<TradeId>>,
     last_trade_price: Option<Price>,
     next_order: OrderId,
     next_trade: TradeId,
@@ -425,9 +453,12 @@ fn settle(
 pub struct BookState {
     pub orders: Vec<Order>,
     pub trades: Vec<Trade>,
-    /// Fill ids per order that filled at placement, for idempotent retries.
+    /// Quantity filled and fill ids per order that filled at placement, for idempotent retries.
     #[serde(default)]
-    pub fill_ids: Vec<(OrderId, Vec<TradeId>)>,
+    pub fill_ids: Vec<(OrderId, Qty, Vec<TradeId>)>,
+    /// Closed orders in closing order, so archiving continues identically after a restart.
+    #[serde(default)]
+    pub closed: Vec<OrderId>,
     pub balances: Vec<(String, Balances)>,
     #[serde(default)]
     pub ledgers: Vec<(String, Ledger)>,
@@ -448,17 +479,21 @@ impl Book {
     pub fn state(&self) -> BookState {
         let mut orders: Vec<Order> = self.orders.values().cloned().collect();
         orders.sort_by_key(|o| o.id);
-        let mut fill_ids: Vec<(OrderId, Vec<TradeId>)> =
-            self.fill_ids.iter().map(|(id, fills)| (*id, fills.clone())).collect();
-        fill_ids.sort_by_key(|(id, _)| *id);
+        let mut fill_ids: Vec<(OrderId, Qty, Vec<TradeId>)> = self
+            .fill_ids
+            .iter()
+            .map(|(id, (filled, fills))| (*id, *filled, fills.clone()))
+            .collect();
+        fill_ids.sort_by_key(|(id, _, _)| *id);
         let mut balances: Vec<(String, Balances)> = self.balances.iter().map(|(a, b)| (a.to_string(), *b)).collect();
         balances.sort_by(|a, b| a.0.cmp(&b.0));
         let mut ledgers: Vec<(String, Ledger)> = self.ledgers.iter().map(|(a, l)| (a.to_string(), *l)).collect();
         ledgers.sort_by(|a, b| a.0.cmp(&b.0));
         BookState {
             orders,
-            trades: self.trades.clone(),
+            trades: self.trades.iter().cloned().collect(),
             fill_ids,
+            closed: self.closed.iter().copied().collect(),
             balances,
             ledgers,
             last_trade_price: self.last_trade_price,
@@ -491,7 +526,7 @@ impl Book {
         let mut live: Vec<(Side, Price, OrderId, Qty)> = Vec::new();
         for mut o in state.orders {
             o.account = book.intern(&o.account);
-            book.by_account.entry(Arc::clone(&o.account)).or_default().push(o.id);
+            book.by_account.entry(Arc::clone(&o.account)).or_default().insert(o.id);
             book.by_client_id
                 .entry(Arc::clone(&o.account))
                 .or_default()
@@ -511,21 +546,34 @@ impl Book {
             level.live += 1;
             level.queue.push_back(id);
         }
-        for (pos, mut t) in state.trades.into_iter().enumerate() {
+        for mut t in state.trades {
             t.maker_account = book.intern(&t.maker_account);
             t.taker_account = book.intern(&t.taker_account);
             book.trades_by_account
                 .entry(Arc::clone(&t.maker_account))
                 .or_default()
-                .push(pos);
+                .push_back(t.id);
             book.trades_by_account
                 .entry(Arc::clone(&t.taker_account))
                 .or_default()
-                .push(pos);
-            book.trades.push(t);
+                .push_back(t.id);
+            book.trades.push_back(t);
         }
-        for (id, fills) in state.fill_ids {
-            book.fill_ids.insert(id, fills);
+        for (id, filled, fills) in state.fill_ids {
+            book.fill_ids.insert(id, (filled, fills));
+        }
+        if state.closed.is_empty() {
+            // A state written before closing order was recorded: id order is the best guess.
+            let mut closed: Vec<OrderId> = book
+                .orders
+                .values()
+                .filter(|o| !o.status.is_live())
+                .map(|o| o.id)
+                .collect();
+            closed.sort_unstable();
+            book.closed = closed.into();
+        } else {
+            book.closed = state.closed.into();
         }
         book
     }
@@ -541,6 +589,79 @@ impl Book {
 
     pub fn enforces_balances(&self) -> bool {
         self.enforce_balances
+    }
+
+    /// Sets how much closed history is kept and applies it at once. Everything an order or
+    /// trade changed (balances, ledgers, the book) is kept; only the records themselves leave.
+    pub fn with_retention(mut self, retention: Retention) -> Self {
+        self.retention = retention;
+        self.enforce_retention();
+        self
+    }
+
+    pub fn retention(&self) -> Retention {
+        self.retention
+    }
+
+    /// Orders currently in memory: every live order plus the retained closed ones.
+    pub fn retained_orders(&self) -> usize {
+        self.orders.len()
+    }
+
+    pub fn retained_trades(&self) -> usize {
+        self.trades.len()
+    }
+
+    /// Archives the oldest closed orders and drops the oldest trades beyond the retention.
+    fn enforce_retention(&mut self) {
+        while self.closed.len() > self.retention.closed_orders {
+            let id = self.closed.pop_front().expect("closed is not empty");
+            self.archive(id);
+        }
+        while self.trades.len() > self.retention.trades {
+            let t = self.trades.pop_front().expect("trades is not empty");
+            for account in [&t.maker_account, &t.taker_account] {
+                if let Some(ids) = self.trades_by_account.get_mut(account) {
+                    // Per-account ids are in id order, so the oldest trade is at the front.
+                    if ids.front() == Some(&t.id) {
+                        ids.pop_front();
+                    }
+                    if ids.is_empty() {
+                        self.trades_by_account.remove(account);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Forgets a closed order: it leaves the lookups, its account's listing and the idempotency
+    /// index (a retry of its client id after this point is a new order). A cancelled order that
+    /// still sits in a level's queue is skipped by the matcher when reached.
+    fn archive(&mut self, id: OrderId) {
+        let Some(o) = self.orders.remove(&id) else { return };
+        debug_assert!(!o.status.is_live(), "only closed orders are archived");
+        if let Some(ids) = self.by_account.get_mut(&o.account) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                self.by_account.remove(&o.account);
+            }
+        }
+        if let Some(m) = self.by_client_id.get_mut(&o.account) {
+            m.remove(&o.client_order_id);
+            if m.is_empty() {
+                self.by_client_id.remove(&o.account);
+            }
+        }
+        self.fill_ids.remove(&id);
+    }
+
+    /// A retained trade by id.
+    pub fn trade(&self, id: TradeId) -> Option<&Trade> {
+        let first = self.trades.front()?.id;
+        if id < first {
+            return None;
+        }
+        self.trades.get((id - first) as usize)
     }
 
     fn intern(&self, account: &str) -> Arc<str> {
@@ -653,12 +774,12 @@ impl Book {
     /// cancel reason as of then (a later user cancel is not part of the original reply).
     fn original_reply(&self, id: OrderId) -> (Order, Vec<Trade>) {
         let stored = &self.orders[&id];
-        let fills: Vec<Trade> = self
+        // Fills that have left the trade window are no longer listed; the quantity is kept.
+        let (filled, fills): (Qty, Vec<Trade>) = self
             .fill_ids
             .get(&id)
-            .map(|ids| ids.iter().map(|t| self.trades[(*t - 1) as usize].clone()).collect())
+            .map(|(filled, ids)| (*filled, ids.iter().filter_map(|t| self.trade(*t)).cloned().collect()))
             .unwrap_or_default();
-        let filled: Qty = fills.iter().map(|t| t.qty).sum();
         let mut o = stored.clone();
         if stored.status != Status::Rejected {
             o.remaining = o.qty - filled;
@@ -698,7 +819,7 @@ impl Book {
         let mut got = 0;
         for level in levels {
             for id in &level.queue {
-                let o = &self.orders[id];
+                let Some(o) = self.orders.get(id) else { continue };
                 if !o.status.is_live() {
                     continue;
                 }
@@ -790,7 +911,7 @@ impl Book {
             .entry(Arc::clone(&account))
             .or_default()
             .insert(client_order_id, o.id);
-        self.by_account.entry(account).or_default().push(o.id);
+        self.by_account.entry(account).or_default().insert(o.id);
 
         if tif == Tif::Fok && self.available(o.side, o.price, &o.account, o.qty) < o.qty {
             o.status = Status::Rejected;
@@ -805,6 +926,8 @@ impl Book {
                 },
             );
             self.orders.insert(o.id, o.clone());
+            self.closed.push_back(o.id);
+            self.enforce_retention();
             return Ok((o, Vec::new()));
         }
         record_into(&mut self.events, &mut self.pending_events, Event::Accepted(o.clone()));
@@ -836,12 +959,15 @@ impl Book {
                 opposite.remove(&px);
                 continue;
             };
-            let maker = self.orders.get_mut(&maker_id).expect("queued order exists");
-            if !maker.status.is_live() {
-                // Lazily dropped: cancel only marks the order, the matcher removes it here.
-                level.queue.pop_front();
-                continue;
-            }
+            let maker = match self.orders.get_mut(&maker_id) {
+                Some(m) if m.status.is_live() => m,
+                _ => {
+                    // Lazily dropped: cancel only marks the order (and archiving may have
+                    // removed it since); the matcher removes it from the queue here.
+                    level.queue.pop_front();
+                    continue;
+                }
+            };
             if maker.account == o.account {
                 self_trade = true;
                 break;
@@ -858,6 +984,7 @@ impl Book {
             if maker.remaining == 0 {
                 level.queue.pop_front();
                 level.live -= 1;
+                self.closed.push_back(maker_id);
             }
             let level_empty = level.total == 0;
             let maker_account = Arc::clone(&maker.account);
@@ -884,13 +1011,15 @@ impl Book {
             };
             self.last_trade_price = Some(px);
             record_into(&mut self.events, &mut self.pending_events, Event::Traded(trade.clone()));
-            let pos = self.trades.len();
-            self.trades_by_account.entry(maker_account).or_default().push(pos);
+            self.trades_by_account
+                .entry(maker_account)
+                .or_default()
+                .push_back(trade.id);
             self.trades_by_account
                 .entry(Arc::clone(&o.account))
                 .or_default()
-                .push(pos);
-            self.trades.push(trade.clone());
+                .push_back(trade.id);
+            self.trades.push_back(trade.clone());
             fills.push(trade);
             if level_empty {
                 opposite.remove(&px);
@@ -946,8 +1075,13 @@ impl Book {
         }
         self.orders.insert(o.id, o.clone());
         if !fills.is_empty() {
-            self.fill_ids.insert(o.id, fills.iter().map(|t| t.id).collect());
+            self.fill_ids
+                .insert(o.id, (o.qty - o.remaining, fills.iter().map(|t| t.id).collect()));
         }
+        if !o.status.is_live() {
+            self.closed.push_back(o.id);
+        }
+        self.enforce_retention();
         Ok((o, fills))
     }
 
@@ -990,7 +1124,10 @@ impl Book {
                 seq,
             },
         );
-        Ok(self.orders[&id].clone())
+        let cancelled = self.orders[&id].clone();
+        self.closed.push_back(id);
+        self.enforce_retention();
+        Ok(cancelled)
     }
 
     pub fn order(&self, id: OrderId) -> Option<&Order> {
@@ -1035,7 +1172,14 @@ impl Book {
             Some(a) => self
                 .trades_by_account
                 .get(a)
-                .map(|idx| idx.iter().rev().take(limit).map(|&i| self.trades[i].clone()).collect())
+                .map(|ids| {
+                    ids.iter()
+                        .rev()
+                        .take(limit)
+                        .filter_map(|id| self.trade(*id))
+                        .cloned()
+                        .collect()
+                })
                 .unwrap_or_default(),
         }
     }
@@ -1275,6 +1419,80 @@ mod tests {
         let rebuilt = Book::from_state(b.state());
         assert_eq!(rebuilt.statement("t"), b.statement("t"));
         assert_eq!(rebuilt.statement("m"), m);
+    }
+
+    #[test]
+    fn closed_history_is_bounded_and_live_orders_are_kept() {
+        let keep = Retention {
+            closed_orders: 20,
+            trades: 5,
+        };
+        let mut b = Book::new().with_retention(keep);
+        // Two bids at 298000 from m; c1 is cancelled but stays in the level's queue behind c2.
+        let (c1, _) = b.place(req("m", "c1", Side::Buy, 298_000, 5, Tif::Gtc), 0).unwrap();
+        let (c2, _) = b.place(req("m", "c2", Side::Buy, 298_000, 5, Tif::Gtc), 0).unwrap();
+        b.cancel("m", c1.id).unwrap();
+        // Thirty bids from m, each lifted by a sell from t: 30 trades, 60 more closed orders.
+        let mut pairs = Vec::new();
+        for i in 0..30u64 {
+            let (bid, _) = b
+                .place(req("m", &format!("b{i}"), Side::Buy, 300_000, 10, Tif::Gtc), i as i64)
+                .unwrap();
+            let (ask, fills) = b
+                .place(req("t", &format!("s{i}"), Side::Sell, 300_000, 10, Tif::Gtc), i as i64)
+                .unwrap();
+            assert_eq!(fills.len(), 1);
+            pairs.push((bid.id, ask.id));
+        }
+        assert_eq!(b.retained_orders(), 21, "20 closed orders and the live c2");
+        assert_eq!(b.retained_trades(), 5);
+        assert!(b.order(c1.id).is_none(), "the cancelled order was archived");
+        assert!(b.order(pairs[0].0).is_none());
+        assert_eq!(b.order(c2.id).map(|o| o.status), Some(Status::Open));
+        assert_eq!(
+            b.orders_for("t", |_| true, 100).len(),
+            10,
+            "only the newest closed are listed"
+        );
+        assert_eq!(b.orders_for("m", |_| true, 100).len(), 11);
+        assert_eq!(b.open_orders_for("m").len(), 1);
+        assert_eq!(
+            b.trades(None, 100).iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![30, 29, 28, 27, 26]
+        );
+        assert_eq!(b.trades(Some("t"), 100).len(), 5);
+        assert!(b.trades(Some("nobody"), 100).is_empty());
+        // The balances and the ledger remember every fill, retained or not.
+        assert_eq!(b.statement("t").sold_lots, 300);
+
+        // A retry of a retained order whose fill left the window still says what happened.
+        let (again, fills) = b.place(req("t", "s20", Side::Sell, 300_000, 10, Tif::Gtc), 1).unwrap();
+        assert_eq!(
+            (again.id, again.status, again.remaining),
+            (pairs[20].1, Status::Filled, 0)
+        );
+        assert!(fills.is_empty(), "trade 21 is no longer retained");
+        // A retry of an archived client id is a new order.
+        let (fresh, _) = b.place(req("t", "s0", Side::Sell, 300_000, 10, Tif::Gtc), 2).unwrap();
+        assert!(fresh.id > pairs[29].1);
+        assert_eq!(fresh.status, Status::Open);
+        // The matcher skips the archived c1 in the queue and fills against c2.
+        let (hit, fills) = b.place(req("t", "hit", Side::Sell, 298_000, 5, Tif::Gtc), 3).unwrap();
+        assert_eq!((hit.status, fills.len(), fills[0].maker), (Status::Filled, 1, c2.id));
+
+        // A restart keeps archiving in the same order as the never-restarted book.
+        let mut r = Book::from_state(b.state()).with_retention(keep);
+        assert_eq!(r.orders_for("m", |_| true, 100), b.orders_for("m", |_| true, 100));
+        assert_eq!(r.trades(None, 100), b.trades(None, 100));
+        for (book, i) in [(&mut b, 0i64), (&mut r, 0i64)] {
+            book.place(req("m", "after", Side::Buy, 300_000, 1, Tif::Gtc), i)
+                .unwrap();
+            book.place(req("t", "after", Side::Sell, 300_000, 1, Tif::Gtc), i)
+                .unwrap();
+        }
+        assert_eq!(r.retained_orders(), b.retained_orders());
+        assert_eq!(r.orders_for("t", |_| true, 100), b.orders_for("t", |_| true, 100));
+        assert_eq!(r.trades(Some("m"), 100), b.trades(Some("m"), 100));
     }
 
     #[test]
