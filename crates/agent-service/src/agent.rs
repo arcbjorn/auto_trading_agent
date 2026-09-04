@@ -415,16 +415,15 @@ impl Agent {
                             }
                             let permitted = permissions.allows(&name);
                             let had_token = args["confirmation_token"].as_str().is_some_and(|t| !t.is_empty());
-                            match confirm.intercept(
-                                &mut session.pending,
-                                &name,
-                                &args,
-                                &session.id,
+                            let cx = gate::TurnContext {
+                                session_id: &session.id,
                                 turn,
-                                &gate_text,
+                                user_text: &gate_text,
                                 permitted,
-                                carried.is_some(),
-                            ) {
+                                carried: carried.is_some(),
+                                confirming_turn: confirmation_turn,
+                            };
+                            match confirm.intercept(&mut session.pending, &name, &args, &cx) {
                                 Intercept::Reply(v) => {
                                     if v["rejected"] == true {
                                         flags.push(format!("gate_rejected:{}", v["code"].as_str().unwrap_or("?")));
@@ -440,8 +439,10 @@ impl Agent {
                                 }
                                 Intercept::Proceed(clean) => {
                                     if had_token {
-                                        // Released by the user's confirmation of the gate's own summary.
-                                        flags.push(format!("confirmed:{name}"));
+                                        // Released by the user's confirmation of the gate's own exact
+                                        // summary, on this turn. The turn is part of the flag so a
+                                        // grader can check the user's message for itself.
+                                        flags.push(format!("confirmed:{name}:turn{turn}"));
                                     }
                                     match self.audit_before(&session.id, turn, &name, &clean, &id) {
                                         Err(e) => {

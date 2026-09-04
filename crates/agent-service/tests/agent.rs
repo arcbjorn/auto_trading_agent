@@ -332,8 +332,8 @@ async fn large_order_needs_confirmation_then_executes() {
     let second = s.agent.chat_turn(&mut session, "yes, confirm").await.unwrap();
     assert_eq!(
         second.flags,
-        ["confirmed:place_limit_order"],
-        "released by the user's confirmation"
+        ["confirmed:place_limit_order:turn2"],
+        "released by the user's confirmation on turn 2"
     );
     assert!(session.pending.is_none());
     let open = demo_orders(&mut s.engine, OrderStatus::Open).await;
@@ -431,7 +431,7 @@ async fn unrecognised_cancel_is_confirmed_then_executed() {
         "held until confirmed"
     );
     let second = s.agent.chat_turn(&mut session, "sí").await.unwrap();
-    assert_eq!(second.flags, ["confirmed:cancel_order"]);
+    assert_eq!(second.flags, ["confirmed:cancel_order:turn2"]);
     assert_eq!(
         second.permitted,
         vec!["cancel_order".to_string(), "cancel_all_orders".to_string()]
@@ -809,6 +809,63 @@ async fn a_reused_request_id_replays_or_conflicts() {
     assert_eq!(conflict.status(), 409, "same id with a different message is refused");
     assert_eq!(state.session_count(), 1);
     handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_token_is_spent_only_on_the_turn_the_user_confirms() {
+    // Turn 1 asks for a large order: the service holds it and issues a token. The user then asks
+    // something else entirely. A model that produces the token on that turn must not be executed:
+    // the token proves the service asked, not that the user answered.
+    let responder: Responder = Arc::new(|n, body| match n {
+        1 => tool_use(
+            "place_limit_order",
+            json!({ "side": "buy", "price_usdc": "3000", "quantity_eth": "2" }),
+        ),
+        2 => end_turn("Confirm 2.0000 ETH at 3000.00?"),
+        3 => {
+            // Second turn, a plain question: the model replays the token from the history.
+            let token = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["role"] == "user")
+                .filter_map(|m| m["content"].as_array())
+                .flatten()
+                .filter_map(|b| b["content"].as_str())
+                .filter_map(|t| serde_json::from_str::<Value>(t).ok())
+                .filter_map(|v| v["confirmation_token"].as_str().map(str::to_string))
+                .next_back()
+                .expect("token in history");
+            tool_use(
+                "place_limit_order",
+                json!({ "side": "buy", "price_usdc": "3000", "quantity_eth": "2", "confirmation_token": token }),
+            )
+        }
+        _ => end_turn("done"),
+    });
+    let mut s = stack(responder, AgentConfig::default()).await;
+    let mut session = Session::new("replay");
+    let first = s.agent.chat_turn(&mut session, "buy 2 ETH at 3000").await.unwrap();
+    assert!(
+        first.flags.iter().any(|f| f.starts_with("confirmation_requested")),
+        "{:?}",
+        first.flags
+    );
+    assert!(session.pending.is_some());
+    let second = s.agent.chat_turn(&mut session, "what is my balance?").await.unwrap();
+    assert!(
+        second.flags.iter().any(|f| f == "gate_rejected:CONFIRMATION_NOT_GIVEN"),
+        "the token must not execute on a turn that confirms nothing: {:?}",
+        second.flags
+    );
+    assert!(
+        demo_orders(&mut s.engine, OrderStatus::Open).await.is_empty(),
+        "nothing may reach the engine"
+    );
+    assert!(
+        session.pending.is_some(),
+        "the pending action survives an attempted replay"
+    );
 }
 
 #[tokio::test]
