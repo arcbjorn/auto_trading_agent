@@ -1054,6 +1054,57 @@ async fn metrics_count_turns_tool_calls_and_flags() {
 }
 
 #[tokio::test]
+async fn a_busy_session_is_never_evicted() {
+    // One session slot, two callers. The first holds the session for the length of its turn; the
+    // second must be refused rather than evict it, which would let two turns of one session run
+    // at once with the limits reset. An unknown session id is a 404, not a new session.
+    let responder: Responder = Arc::new(|_, _| {
+        let mut r = end_turn("ok");
+        r["__delay_ms"] = json!(200);
+        r
+    });
+    let s = stack(responder, AgentConfig::default()).await;
+    let state = Arc::new(State::with_limits(
+        s.agent,
+        agent_service::http::SessionLimits {
+            max_sessions: 1,
+            ..agent_service::http::SessionLimits::default()
+        },
+    ));
+    let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::clone(&state))
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let slow = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .post(format!("http://{addr}/chat"))
+                .json(&json!({ "session_id": "busy", "message": "first" }))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let intruder = client
+        .post(format!("http://{addr}/chat"))
+        .json(&json!({ "session_id": "other", "message": "second" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(intruder.status(), 429, "the busy session is not evicted for a new one");
+    assert_eq!(slow.await.unwrap(), 200, "the turn in flight finishes");
+    // A read of an unknown session neither creates nor evicts.
+    let unknown = client.get(format!("http://{addr}/sessions/nope")).send().await.unwrap();
+    assert_eq!(unknown.status(), 404);
+    assert_eq!(state.session_count(), 1);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn session_store_is_bounded() {
     let responder: Responder = Arc::new(|_, _| end_turn("ok"));
     let s = stack(responder, AgentConfig::default()).await;
@@ -1125,7 +1176,10 @@ async fn concurrent_sessions_do_not_wait_for_each_other() {
     let state = Arc::new(State::with_limits(
         s.agent,
         agent_service::http::SessionLimits {
-            max_sessions: 16,
+            // Room for every concurrent session: a busy session is never evicted, so a smaller
+            // store would refuse the surplus rather than replace live sessions (see
+            // `a_busy_session_is_never_evicted`).
+            max_sessions: 64,
             ..agent_service::http::SessionLimits::default()
         },
     ));
@@ -1171,7 +1225,7 @@ async fn concurrent_sessions_do_not_wait_for_each_other() {
         elapsed < Duration::from_millis(2_500),
         "sessions ran one after another: {elapsed:?}"
     );
-    assert!(state.session_count() <= 16, "the store grew past its cap");
+    assert!(state.session_count() <= 64, "the store grew past its cap");
     handle.shutdown().await;
 }
 

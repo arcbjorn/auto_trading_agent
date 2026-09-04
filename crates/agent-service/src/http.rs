@@ -56,10 +56,39 @@ struct Entry {
     session: Arc<tokio::sync::Mutex<Session>>,
 }
 
+/// A session held for the length of a request. While one exists the entry cannot be evicted, so
+/// a turn in flight never has its session replaced underneath it (which would let a second turn
+/// of the same session run in parallel with limits reset).
+pub struct SessionLease {
+    session: Arc<tokio::sync::Mutex<Session>>,
+    state: Arc<State>,
+    id: String,
+}
+
+impl SessionLease {
+    pub async fn lock(&self) -> tokio::sync::MutexGuard<'_, Session> {
+        self.session.lock().await
+    }
+}
+
+impl Drop for SessionLease {
+    fn drop(&mut self) {
+        let mut leases = self.state.leases.lock().expect("leases lock");
+        if let Some(n) = leases.get_mut(&self.id) {
+            *n -= 1;
+            if *n == 0 {
+                leases.remove(&self.id);
+            }
+        }
+    }
+}
+
 pub struct State {
     pub agent: Agent,
     limits: SessionLimits,
     sessions: Mutex<HashMap<String, Entry>>,
+    /// Sessions with a request in flight, by count: an entry here is never evicted.
+    leases: Mutex<HashMap<String, usize>>,
     pub metrics: crate::metrics::Metrics,
 }
 
@@ -73,6 +102,7 @@ impl State {
             agent,
             limits,
             sessions: Mutex::new(HashMap::new()),
+            leases: Mutex::new(HashMap::new()),
             metrics: crate::metrics::Metrics::default(),
         }
     }
@@ -81,33 +111,79 @@ impl State {
         self.sessions.lock().expect("sessions lock").len()
     }
 
-    /// Returns the session, creating it if needed. When the store is full, idle sessions are
-    /// dropped first, then the least recently used one, so memory stays bounded.
-    fn session(&self, id: &str) -> Arc<tokio::sync::Mutex<Session>> {
+    /// An existing session, without creating one. Used by reads, which must not bring a session
+    /// into being or push another out.
+    fn existing(self: &Arc<Self>, id: &str) -> Option<SessionLease> {
+        let session = {
+            let mut map = self.sessions.lock().expect("sessions lock");
+            let e = map.get_mut(id)?;
+            e.last_seen = Instant::now();
+            Arc::clone(&e.session)
+        };
+        Some(self.lease(id, session))
+    }
+
+    fn lease(self: &Arc<Self>, id: &str, session: Arc<tokio::sync::Mutex<Session>>) -> SessionLease {
+        *self
+            .leases
+            .lock()
+            .expect("leases lock")
+            .entry(id.to_string())
+            .or_insert(0) += 1;
+        SessionLease {
+            session,
+            state: Arc::clone(self),
+            id: id.to_string(),
+        }
+    }
+
+    /// Returns the session, creating it if needed, and holds it for the caller's lifetime. When
+    /// the store is full, idle sessions are dropped first, then the least recently used one that
+    /// has no request in flight. When every session is busy the caller is refused rather than
+    /// having a live session evicted underneath it.
+    fn session(self: &Arc<Self>, id: &str) -> Result<SessionLease, Response<Full<Bytes>>> {
         let now = Instant::now();
-        let mut map = self.sessions.lock().expect("sessions lock");
-        if let Some(e) = map.get_mut(id) {
-            e.last_seen = now;
-            return Arc::clone(&e.session);
-        }
-        if map.len() >= self.limits.max_sessions.max(1) {
-            let ttl = self.limits.idle_ttl;
-            map.retain(|_, e| now.duration_since(e.last_seen) < ttl);
-            if map.len() >= self.limits.max_sessions.max(1) {
-                if let Some(oldest) = map.iter().min_by_key(|(_, e)| e.last_seen).map(|(k, _)| k.clone()) {
-                    map.remove(&oldest);
+        let session = {
+            let mut map = self.sessions.lock().expect("sessions lock");
+            if let Some(e) = map.get_mut(id) {
+                e.last_seen = now;
+                Arc::clone(&e.session)
+            } else {
+                if map.len() >= self.limits.max_sessions.max(1) {
+                    let ttl = self.limits.idle_ttl;
+                    let busy = self.leases.lock().expect("leases lock");
+                    map.retain(|k, e| now.duration_since(e.last_seen) < ttl || busy.contains_key(k));
+                    if map.len() >= self.limits.max_sessions.max(1) {
+                        let oldest = map
+                            .iter()
+                            .filter(|(k, _)| !busy.contains_key(*k))
+                            .min_by_key(|(_, e)| e.last_seen)
+                            .map(|(k, _)| k.clone());
+                        match oldest {
+                            Some(k) => {
+                                map.remove(&k);
+                            }
+                            None => {
+                                return Err(respond(
+                                    StatusCode::TOO_MANY_REQUESTS,
+                                    json!({ "error": "every session is busy; retry shortly", "session_id": id }),
+                                ))
+                            }
+                        }
+                    }
                 }
+                let session = Arc::new(tokio::sync::Mutex::new(Session::new(id)));
+                map.insert(
+                    id.to_string(),
+                    Entry {
+                        last_seen: now,
+                        session: Arc::clone(&session),
+                    },
+                );
+                session
             }
-        }
-        let session = Arc::new(tokio::sync::Mutex::new(Session::new(id)));
-        map.insert(
-            id.to_string(),
-            Entry {
-                last_seen: now,
-                session: Arc::clone(&session),
-            },
-        );
-        session
+        };
+        Ok(self.lease(id, session))
     }
 }
 
@@ -137,8 +213,14 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             .expect("metrics response")),
         (Method::GET, p) if p.starts_with("/sessions/") => {
             let id = p.trim_start_matches("/sessions/");
-            let session = state.session(id);
-            let s = session.lock().await;
+            // A read never creates a session, so it cannot evict one either.
+            let Some(lease) = state.existing(id) else {
+                return Ok(respond(
+                    StatusCode::NOT_FOUND,
+                    json!({ "error": "no such session", "session_id": id }),
+                ));
+            };
+            let s = lease.lock().await;
             Ok(respond(
                 StatusCode::OK,
                 json!({ "session_id": s.id, "turns": s.turns, "messages": s.messages, "pending_confirmation": s.pending.is_some() }),
@@ -195,8 +277,14 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     ))
                 }
             };
-            let session = state.session(&session_id);
-            let mut s = session.lock().await;
+            let lease = match state.session(&session_id) {
+                Ok(l) => l,
+                Err(response) => {
+                    state.metrics.turn_refused("no_session_available");
+                    return Ok(response);
+                }
+            };
+            let mut s = lease.lock().await;
             if let Some(id) = &request_id {
                 if let Some((_, earlier_message, earlier)) = s.responses.iter().find(|(r, _, _)| r == id) {
                     // The same id with the same message replays; with a different message it is
