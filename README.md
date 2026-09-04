@@ -76,6 +76,7 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 * **Deterministic.** Counters for ids and sequence numbers, clocks for reporting only; the property test replays every generated command list and asserts an identical event log.
 * **Idempotent.** `client_order_id` makes retries safe end to end: the engine replays the original reply, the service derives the key from session, turn and tool-call id.
 * **Every order is backed.** Accounts have wallets in the engine: a buy reserves its USDC and a sell its ETH at placement, fills settle both legs, cancels release the rest, and the property test proves nothing is created or destroyed. Deposits and withdrawals are gRPC calls, never tools, so no prompt can move funds; `get_balances` shows what the account holds and `get_statement` how it has done: volume, average cost, realised P&L (average-cost basis over ETH bought here) and unrealised P&L at the current market, with the ledger's zero-sum property in the property test.
+* **Push, not just poll.** The matcher broadcasts every event; `Subscribe` streams them over gRPC (per account, counterparty hidden, lag reported rather than skipped), and over stdio the MCP server turns them into `resources/updated` notifications for subscribed hosts, coalesced per 100 ms.
 * **Durable by replay.** With `ENGINE_JOURNAL` set, every place, cancel and deposit is journaled before it is applied and committed once per batch before the replies go out; a restart replays the file and lands on the same ids, wallets and sequence numbers, and pre-restart idempotency keys still work. A large journal is folded into a snapshot plus tail on the next start. Fsync per batch is a flag, with its cost measured above.
 * **MCP designed for the model.** Human units in and out, descriptions that say when to call, precomputed quotes and averages, typed structured output, errors that read as instructions, and three deliberate error channels (protocol, `isError`, structured policy rejection).
 * **Guardrails as code.** Policy in the MCP server (size, value, a collar that always has a reference price, open orders, rate, session cap, kill switch); per-turn permission, confirmation, verifier and audit in the service. See [05 Guardrails](docs/05-guardrails.md).
@@ -87,4 +88,4 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 
 ## Next
 
-stream book deltas instead of polling; shard by symbol; move the per-turn permission onto the mid-conversation tool-changes beta; run the Claude suites when a key is available.
+shard by symbol; move the per-turn permission onto the mid-conversation tool-changes beta; run the Claude suites when a key is available.

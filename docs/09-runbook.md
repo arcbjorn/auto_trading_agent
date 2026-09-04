@@ -84,7 +84,7 @@ cargo run -p mcp-server -- --http &
 uv run --with mcp python scripts/mcp_interop_check.py --http http://127.0.0.1:8000/mcp
 ```
 
-Both runs end with `INTEROP OK` (`pip install mcp` and plain `python` work too). The CI workflow's `interop` job does the same on every push.
+Both runs end with `INTEROP OK` (`pip install mcp` and plain `python` work too). The CI workflow's `interop` job does the same on every push. `ENGINE_ADDR=http://127.0.0.1:50051 python3 scripts/mcp_stdio_notifications_check.py target/debug/mcp-server` checks the stdio push path: it subscribes to the market summary, places an order through the tools and expects a `resources/updated` notification (no client library needed).
 
 ## Evaluation
 

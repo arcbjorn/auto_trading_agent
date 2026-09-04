@@ -97,6 +97,10 @@ The property test funds two buyers and two sellers, one of each tightly, runs ra
 
 The accounting costs about 10% of pure-book throughput (650k to 720k operations/s against 690k to 850k without it).
 
+## Event stream
+
+The matcher broadcasts every event of a batch (accepted orders, trades, cancels with their reason, rejects, deposits, withdrawals), in sequence order, right after it publishes the batch's snapshot. `Subscribe` is a server-streaming RPC over that broadcast: with an `account_id` it sends only that account's events, with the counterparty of a trade hidden; without one, everything. A subscriber that falls more than 8,192 events behind is not silently skipped: its stream ends with a `DATA_LOSS` status telling it to resynchronise from `GetOrderBook` and `ListOrders` and subscribe again. Events already in the book when a subscriber arrives (a replayed journal) are history, not news, and are not replayed to it. `crates/engine-server/tests/concurrency.rs` checks that a subscriber scoped to one account sees its deposit, orders, trade and cancel in order and never the other account's own orders or id.
+
 ## Durability: a journal of commands, replayed
 
 The book is deterministic, so durability needs only its inputs. With `ENGINE_JOURNAL=/path/file.jsonl` every place and cancel is appended to a write-ahead journal (one JSON line: the request and the wall-clock timestamp it was accepted with) *before* it is applied, and the journal is committed once per matcher batch, before that batch's replies are sent. Reads are never journaled. On start the engine replays the file through the same code and arrives at the same orders, trades, ids and sequence numbers; the next order id and sequence continue from there, and an idempotent retry of a pre-restart `client_order_id` still returns the original order. A corrupt line fails startup rather than silently losing data.
@@ -115,7 +119,7 @@ The batching is what keeps the fsync variant usable under concurrency: one `fsyn
 
 ## gRPC contract
 
-`proto/clob.proto` defines eleven unary RPCs: `PlaceOrder`, `CancelOrder`, `GetOrder`, `ListOrders`, `ListTrades`, `GetOrderBook`, `GetMarket`, `Deposit`, `Withdraw`, `GetBalances`, `GetStatement`. The generated code lives in `crates/clob-proto`; `build.rs` runs the real `protoc` (a system one when `PROTOC` is set, otherwise the binary vendored by `protoc-bin-vendored`), so a fresh checkout builds with nothing but cargo.
+`proto/clob.proto` defines eleven unary RPCs and one server-streaming RPC (`Subscribe`): `PlaceOrder`, `CancelOrder`, `GetOrder`, `ListOrders`, `ListTrades`, `GetOrderBook`, `GetMarket`, `Deposit`, `Withdraw`, `GetBalances`, `GetStatement`. The generated code lives in `crates/clob-proto`; `build.rs` runs the real `protoc` (a system one when `PROTOC` is set, otherwise the binary vendored by `protoc-bin-vendored`), so a fresh checkout builds with nothing but cargo.
 
 `Trade` carries `taker_side`, `maker_account` and `taker_account`. An account-scoped `ListTrades` fills in only the requesting account's id and leaves the counterparty blank; an unscoped listing (the harness, an operator) carries both.
 

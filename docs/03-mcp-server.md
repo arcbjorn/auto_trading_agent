@@ -19,6 +19,7 @@ MCP is two years old. No SDK for it, in any language, has the production history
 | `tools/list` | The nine tool definitions with input schema, output schema and annotations |
 | `tools/call` | Runs a tool. Unknown tool: JSON-RPC `-32602`. Invalid arguments and engine errors: a readable `isError` result |
 | `resources/list`, `resources/templates/list`, `resources/read` | Three JSON resources and one template; unknown URI: `-32002` |
+| `resources/subscribe`, `resources/unsubscribe` | Known URIs only; the server then sends `notifications/resources/updated` when the engine changes. Over stdio only: the stateless HTTP transport refuses a subscription with an explanation, because it has no stream to deliver on |
 | `prompts/list`, `prompts/get` | The `trading_assistant` prompt |
 | `logging/setLevel` | Accepted as a no-op |
 | anything else | `-32601` |
@@ -75,6 +76,8 @@ Design rules applied throughout:
 A tool the model does not need on a turn still costs context: the eleven definitions are about a thousand tokens on the Messages API side. The chat service keeps that cost to one cache write per session by never changing the list (see [04](04-agent-service.md)).
 
 Resources are application-controlled: a host may attach them to context without the model asking. `market://ETH-USDC/summary`, `market://ETH-USDC/book` (5 levels), the template `market://ETH-USDC/book/{depth}` and `orders://me/open`, all `application/json`. The `trading_assistant` prompt carries the unit rules and the "only trade on explicit instruction" rule for hosts that support prompts. Hosts use tools far more reliably than resources, so the tools are self-sufficient.
+
+Over stdio the server also pushes. A pump subscribes to the engine's event stream (`Subscribe` over gRPC) and, whenever events arrive, sends one `notifications/resources/updated` per subscribed resource, coalesced over 100 ms so a burst of fills is one update rather than hundreds. The notification carries no data; the host re-reads the resource. The pump reconnects after a dropped stream or a lag, since nothing is lost that a re-read would not recover. `scripts/mcp_stdio_notifications_check.py` drives this end to end with raw JSON-RPC: subscribe, place an order through the tools, expect the notification.
 
 ## Interoperability
 
