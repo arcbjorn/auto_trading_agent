@@ -6,41 +6,41 @@ Each requirement of the task, the code that implements it and the test or run th
 
 | Requirement | Code | Proof |
 |---|---|---|
-| Spot limit buy and sell orders | [book.rs::Book::place](../crates/engine/src/book.rs#L1203-L1467) | [book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2387-L2423) |
-| Order cancellations | [book.rs::Book::cancel](../crates/engine/src/book.rs#L1471-L1473) | [concurrency.rs::cancels_race_placements_and_leave_the_book_empty](../crates/engine-server/tests/concurrency.rs#L212-L283) |
+| Spot limit buy and sell orders | [book.rs::Book::place](../crates/engine/src/book.rs#L1259-L1523) | [book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2443-L2479) |
+| Order cancellations | [book.rs::Book::cancel](../crates/engine/src/book.rs#L1527-L1529) | [concurrency.rs::cancels_race_placements_and_leave_the_book_empty](../crates/engine-server/tests/concurrency.rs#L212-L283) |
 | Exposed strictly via gRPC | [proto/clob.proto](../proto/clob.proto) | [concurrency.rs::idempotent_retry_and_status_codes](../crates/engine-server/tests/concurrency.rs#L598-L690) |
 | Thread-safe | [sequencer.rs::spawn_with_journal](../crates/engine/src/sequencer.rs#L232-L301) | [concurrency.rs::sixteen_tasks_place_orders_concurrently](../crates/engine-server/tests/concurrency.rs#L23-L110) |
 | Efficient under concurrent placement | [sequencer.rs::apply](../crates/engine/src/sequencer.rs#L130-L208) | [grpc_bench.rs](../crates/engine-server/examples/grpc_bench.rs), [soak.rs](../crates/engine-server/examples/soak.rs) |
-| Deterministic | [journal.rs::Journal::recover](../crates/engine/src/journal.rs#L108-L172) | [journal.rs::replay_rebuilds_the_same_book_and_continues_its_counters](../crates/engine/src/journal.rs#L398-L545) |
+| Deterministic | [journal.rs::Journal::recover](../crates/engine/src/journal.rs#L108-L181) | [journal.rs::replay_rebuilds_the_same_book_and_continues_its_counters](../crates/engine/src/journal.rs#L474-L621) |
 
 **2. The Bridge (MCP)**
 
 | Requirement | Code | Proof |
 |---|---|---|
-| Perceive market state | [tools.rs::ToolSet::quote](../crates/mcp-server/src/tools.rs#L535-L579) | [protocol.rs::tools_against_a_real_engine](../crates/mcp-server/tests/protocol.rs#L217-L588) |
-| Act on the market | [tools.rs::ToolSet::place](../crates/mcp-server/src/tools.rs#L595-L687) | [policy.rs::rejects_size_value_collar_and_open_orders](../crates/mcp-server/src/policy.rs#L277-L298) |
-| Structure of tools | [tools.rs::ToolSet::definitions](../crates/mcp-server/src/tools.rs#L263-L417) | [protocol.rs::lifecycle_and_discovery](../crates/mcp-server/tests/protocol.rs#L64-L214) |
+| Perceive market state | [tools.rs::ToolSet::quote](../crates/mcp-server/src/tools.rs#L539-L583) | [protocol.rs::tools_against_a_real_engine](../crates/mcp-server/tests/protocol.rs#L258-L629) |
+| Act on the market | [tools.rs::ToolSet::place](../crates/mcp-server/src/tools.rs#L625-L723) | [policy.rs::rejects_size_value_collar_and_open_orders](../crates/mcp-server/src/policy.rs#L277-L298) |
+| Structure of tools | [tools.rs::ToolSet::definitions](../crates/mcp-server/src/tools.rs#L267-L421) | [protocol.rs::lifecycle_and_discovery](../crates/mcp-server/tests/protocol.rs#L64-L214) |
 | Structure of resources | [protocol.rs::McpServer::resources_read](../crates/mcp-server/src/protocol.rs#L220-L226) | [scripts/mcp_stdio_notifications_check.py](../scripts/mcp_stdio_notifications_check.py) |
-| Optimised for LLM reasoning | [tools.rs::grpc_error](../crates/mcp-server/src/tools.rs#L216-L230), [tools.rs::add_top](../crates/mcp-server/src/tools.rs#L142-L147) | [units.rs::rejects_bad_inputs_with_actionable_messages](../crates/mcp-server/src/units.rs#L138-L147) |
+| Optimised for LLM reasoning | [tools.rs::grpc_error](../crates/mcp-server/src/tools.rs#L220-L234), [tools.rs::add_top](../crates/mcp-server/src/tools.rs#L146-L151) | [units.rs::rejects_bad_inputs_with_actionable_messages](../crates/mcp-server/src/units.rs#L138-L147) |
 | Minimal context window | [anthropic.rs::AnthropicClient::request_body](../crates/agent-service/src/anthropic.rs#L155-L178) | 92 to 95% of prompt tokens from cache |
 
 **3. LLM Interaction Service**
 
 | Requirement | Code | Proof |
 |---|---|---|
-| Execute a trade | [agent.rs::Agent::chat_turn](../crates/agent-service/src/agent.rs#L296-L583) | [agent.rs::explicit_buy_places_an_order_with_an_idempotency_key](../crates/agent-service/tests/agent.rs#L263-L288) |
-| Return pricing | [gate.rs::Permissions::for_turn](../crates/agent-service/src/gate.rs#L357-L369) | [agent.rs::read_only_question_permits_no_action_tools](../crates/agent-service/tests/agent.rs#L203-L260) |
-| Retrieve order history | [tools.rs::ToolSet::statement](../crates/mcp-server/src/tools.rs#L745-L787) | [book.rs::ledger_tracks_average_cost_realised_pnl_and_withdrawals](../crates/engine/src/book.rs#L1778-L1836) |
-| Guardrails: validation | [units.rs::parse_price](../crates/mcp-server/src/units.rs#L71-L73), [book.rs::MAX_PRICE](../crates/engine/src/book.rs#L34-L34) | [book.rs::hard_caps_reject_absurd_orders_before_anything_else](../crates/engine/src/book.rs#L1839-L1853) |
-| Guardrails: risk checks | [policy.rs::Policy::check_place](../crates/mcp-server/src/policy.rs#L143-L159), [gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L453-L660) | [agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L291-L353) |
-| Guardrails: prompt protections | [gate.rs::verify](../crates/agent-service/src/gate.rs#L688-L714), [audit.rs::Audit::append](../crates/agent-service/src/audit.rs#L86-L98) | [agent.rs::an_action_is_refused_when_its_audit_record_cannot_be_written](../crates/agent-service/tests/agent.rs#L752-L781) |
+| Execute a trade | [agent.rs::Agent::chat_turn](../crates/agent-service/src/agent.rs#L296-L599) | [agent.rs::explicit_buy_places_an_order_with_an_idempotency_key](../crates/agent-service/tests/agent.rs#L263-L288) |
+| Return pricing | [gate.rs::Permissions::for_turn](../crates/agent-service/src/gate.rs#L418-L430) | [agent.rs::read_only_question_permits_no_action_tools](../crates/agent-service/tests/agent.rs#L203-L260) |
+| Retrieve order history | [tools.rs::ToolSet::statement](../crates/mcp-server/src/tools.rs#L781-L823) | [book.rs::ledger_tracks_average_cost_realised_pnl_and_withdrawals](../crates/engine/src/book.rs#L1834-L1892) |
+| Guardrails: validation | [units.rs::parse_price](../crates/mcp-server/src/units.rs#L71-L73), [book.rs::MAX_PRICE](../crates/engine/src/book.rs#L34-L34) | [book.rs::hard_caps_reject_absurd_orders_before_anything_else](../crates/engine/src/book.rs#L1895-L1909) |
+| Guardrails: risk checks | [policy.rs::Policy::check_place](../crates/mcp-server/src/policy.rs#L143-L159), [gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L518-L743) | [agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L291-L353) |
+| Guardrails: prompt protections | [gate.rs::verify](../crates/agent-service/src/gate.rs#L771-L797), [audit.rs::Audit::append](../crates/agent-service/src/audit.rs#L118-L132) | [agent.rs::an_action_is_refused_when_its_audit_record_cannot_be_written](../crates/agent-service/tests/agent.rs#L752-L781) |
 
 **4. LLM Evaluation**
 
 | Dimension | Code | Proof |
 |---|---|---|
-| Trade execution accuracy | [harness.rs::grade](../crates/evals/src/harness.rs#L224-L276) | [harness.rs::check_invariants](../crates/evals/src/harness.rs#L419-L462) in CI |
+| Trade execution accuracy | [harness.rs::grade](../crates/evals/src/harness.rs#L229-L281) | [harness.rs::check_invariants](../crates/evals/src/harness.rs#L434-L477) in CI |
 | Latency | [report.rs::render](../crates/evals/src/report.rs#L58-L214) | [docs/results](results) |
-| Safety, guardrail effectiveness | [model.rs::UnsafeModel](../crates/agent-service/src/model.rs#L63-L66) | `make eval-unsafe` in CI |
+| Safety, guardrail effectiveness | [model.rs::UnsafeModel](../crates/agent-service/src/model.rs#L68-L71) | `make eval-unsafe` in CI |
 | Prompt robustness | [perturb.rs::apply](../crates/evals/src/perturb.rs#L36-L49) | `make eval-perturbed` |
 | Simulation-based testing | [sim.rs::run](../crates/evals/src/sim.rs#L167-L295) | `make sim` |

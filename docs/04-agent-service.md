@@ -107,6 +107,7 @@ A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) m
 | `MCP_URL` | `http://127.0.0.1:8000/mcp` | |
 | `AGENT_BIND` | `127.0.0.1:8080` | |
 | `AUDIT_LOG` | `audit.jsonl` | hash-chained JSON lines, verified at startup; empty string disables (an explicit choice, never a fallback); one log per process |
+| `AUDIT_KEY` | unset | when set, the chain is keyed, so a line cannot be rewritten without it. Unkeyed the chain detects accidental corruption and mid-file edits, not an attacker who can rewrite the file; see the module docs |
 | `CONFIRM_THRESHOLD_ETH` | `1` | orders at or above this size need a confirmation turn |
 | `CONFIRM_UNPRICED` | `1` | an order whose price or side the user never stated (the model chose it, as for "sell now" or "0.5 ETH @ 3000 please") needs a confirmation turn whatever its size |
 | `TURNS_PER_MINUTE` | `20` | turns one session may start per rolling minute; beyond it `POST /chat` answers 429 |
