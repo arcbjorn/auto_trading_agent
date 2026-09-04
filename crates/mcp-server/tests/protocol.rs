@@ -295,6 +295,12 @@ async fn tools_against_a_real_engine() {
         (Some("filled"), Some("1.2000"), Some("3001.58"))
     );
     assert_eq!(p["fills"].as_array().unwrap().len(), 2);
+    // The book after the action travels with the result: the 2999.00 bid and what is left of the
+    // 3002.00 ask, so the model needs no follow-up read.
+    assert_eq!(
+        (p["best_bid_usdc"].as_str(), p["best_ask_usdc"].as_str()),
+        (Some("2999.00"), Some("3002.00"))
+    );
     // The statement right after the 1.2 ETH buy: inventory at average cost, nothing realised,
     // unrealised marked at the mid of 2999.00 and the remaining 3002.00 ask.
     let st = call(&server, 60, "get_statement", json!({})).await;
