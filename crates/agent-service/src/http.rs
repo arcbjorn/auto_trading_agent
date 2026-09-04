@@ -141,7 +141,7 @@ impl State {
     /// the store is full, idle sessions are dropped first, then the least recently used one that
     /// has no request in flight. When every session is busy the caller is refused rather than
     /// having a live session evicted underneath it.
-    fn session(self: &Arc<Self>, id: &str) -> Result<SessionLease, Response<Full<Bytes>>> {
+    fn session(self: &Arc<Self>, id: &str) -> Result<SessionLease, Box<Response<Full<Bytes>>>> {
         let now = Instant::now();
         let session = {
             let mut map = self.sessions.lock().expect("sessions lock");
@@ -164,10 +164,10 @@ impl State {
                                 map.remove(&k);
                             }
                             None => {
-                                return Err(respond(
+                                return Err(Box::new(respond(
                                     StatusCode::TOO_MANY_REQUESTS,
                                     json!({ "error": "every session is busy; retry shortly", "session_id": id }),
-                                ))
+                                )))
                             }
                         }
                     }
@@ -281,7 +281,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 Ok(l) => l,
                 Err(response) => {
                     state.metrics.turn_refused("no_session_available");
-                    return Ok(response);
+                    return Ok(*response);
                 }
             };
             let mut s = lease.lock().await;
