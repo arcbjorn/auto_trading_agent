@@ -44,6 +44,7 @@ Apple M1 Pro, release builds, loopback. Reproduce with `make bench`, `make soak`
 | Same suites via the Claude Messages-API client on DeepSeek's compatible endpoint | 162/162; the Claude request path exercised live |
 | Reasoning cases added later (top up a holding, cancel the higher bid, sell half) | 16/17 runs |
 | All 57 cases with every turn perturbed (typos, filler, casing) | 57/57 |
+| Tool calls per turn with the post-action book in results, DeepSeek V4 Flash, 57 cases | execution 2.00 to 1.83, paraphrase 2.00 to 1.47, safety unchanged; 57/57 |
 | Reply grounding, 57 cases | 172 figures quoted, none without a source in the turn's inputs |
 | Market simulation, 5 seeds × 8 rounds | goal reached 5/5, no rule violations; scripted baseline 4/5 |
 
@@ -68,11 +69,12 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 * **Integers only.** Prices in ticks of 0.01 USDC, quantities in lots of 0.0001 ETH, notionals in `u128`; decimals convert exactly at the MCP boundary.
 * **Single writer, batched.** The book lives on one thread. Commands drain in batches and a snapshot is published before replies go out, so a client always sees its own order; reads are lock-free; the bounded queue gives backpressure.
 * **Bounded memory.** Events, closed orders and trades are retained up to fixed counts and archived beyond them; live orders, wallets and ledgers are never touched. Sessions in the service are capped by count, idle time, turns per minute and total turns.
-* **Deterministic and durable.** Ids and sequence numbers are counters; property tests replay every generated command list to an identical event log and check every trade against a naive reference matcher. The journal is committed once per batch before replies; a restart replays it, or a snapshot plus tail, onto the same state.
+* **Deterministic and durable.** Ids and sequence numbers are counters; property tests replay every generated command list to an identical event log, check every trade against a naive reference matcher, and audit the book's structure after every operation. Hard caps on price and size hold whatever the layers above do. The journal is committed once per batch before replies; a restart replays it, or a snapshot plus tail, onto the same state.
 * **Idempotent end to end.** `client_order_id` replays the original reply; the service derives it from session, turn and tool call; `request_id` makes `POST /chat` retries safe.
 * **Funds in the engine.** A buy reserves USDC and a sell reserves ETH at placement; fills settle, cancels release; deposits and withdrawals are gRPC calls, never tools. Statements report volume, average cost and realised P&L.
 * **A prompt that never rewrites itself.** The system prompt and name-sorted tool list are fixed and cached; the turn's permissions travel as a note after the user's message and are enforced when a tool is called.
 * **Two providers, one loop.** History is kept as Messages API blocks; the DeepSeek client translates at the edge, replays reasoning content, and maps cache accounting onto the same usage fields.
+* **The book travels with the action.** Placement and cancel results carry the best bid and ask afterwards, so the model reports the market without another call: tool calls per turn fell from 2.00 to 1.83 and 1.47 on the execution and paraphrase suites.
 * **Guardrails as code.** Policy in the MCP server (size, value, collar, open orders, rate, session cap, kill switch); permission, confirmation, verifier, reply grounding and audit in the service. Details in [05 Guardrails](docs/05-guardrails.md).
 * **Few dependencies.** tokio, hyper, tonic, prost, serde, reqwest, arc-swap, tracing. No MCP SDK, web framework, decimal or RNG crate. Rationale in [08 Dependencies](docs/08-dependencies.md).
 
