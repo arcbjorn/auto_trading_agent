@@ -568,8 +568,17 @@ pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(Socke
     }
     let engine = spawn_with_journal(book, cfg.queue_capacity, cfg.snapshot_depth, journal);
     let (tx, rx) = oneshot::channel::<()>();
+    // Standard health checking and reflection: `grpc-health-probe` and `grpcurl` work out of the box.
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter.set_serving::<EngineServer<Svc>>().await;
+    let reflection = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(clob_proto::FILE_DESCRIPTOR_SET)
+        .build_v1()
+        .map_err(|e| anyhow::anyhow!("reflection service: {e}"))?;
     let task = tokio::spawn(
         Server::builder()
+            .add_service(health_service)
+            .add_service(reflection)
             .add_service(EngineServer::new(Svc::new(engine, cfg.enforce_balances)))
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 let _ = rx.await;
