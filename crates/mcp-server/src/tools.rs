@@ -4,7 +4,7 @@
 
 use crate::jsonrpc::RpcError;
 use crate::policy::{reference_price, Policy};
-use crate::units::{average_price, eth, mid, parse_price, parse_qty, usdc, usdc_from_micro};
+use crate::units::{average_price, eth, mid, parse_price, parse_qty, signed_usdc_from_micro, usdc, usdc_from_micro};
 use clob_proto::v1 as pb;
 use clob_proto::v1::engine_client::EngineClient;
 use serde::Deserialize;
@@ -111,6 +111,10 @@ struct CancelAllArgs {}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BalancesArgs {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatementArgs {}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -326,6 +330,19 @@ impl ToolSet {
                 "annotations": read_only
             }),
             json!({
+                "name": "get_statement",
+                "title": "Account statement",
+                "description": "How this account has done: deposits and withdrawals, ETH bought and sold with the USDC paid and received, the ETH still held from purchases here at its average cost, realised P&L, and unrealised P&L at the current market. Call when the user asks how they are doing, their P&L, or their average price.",
+                "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+                "outputSchema": { "type": "object", "properties": {
+                    "deposits_usdc": { "type": "string" }, "deposits_eth": { "type": "string" }, "withdrawals_usdc": { "type": "string" }, "withdrawals_eth": { "type": "string" },
+                    "bought_eth": { "type": "string" }, "sold_eth": { "type": "string" }, "usdc_paid": { "type": "string" }, "usdc_received": { "type": "string" }, "trades": { "type": "integer" },
+                    "inventory_eth": { "type": "string" }, "average_cost_usdc": { "type": ["string", "null"] }, "sold_from_deposits_eth": { "type": "string" },
+                    "realised_pnl_usdc": { "type": "string" }, "reference_price_usdc": { "type": ["string", "null"] }, "unrealised_pnl_usdc": { "type": ["string", "null"] } },
+                    "required": ["bought_eth", "sold_eth", "usdc_paid", "usdc_received", "trades", "inventory_eth", "realised_pnl_usdc"] },
+                "annotations": read_only
+            }),
+            json!({
                 "name": "get_order",
                 "title": "Get order",
                 "description": "One of this account's orders by order_id, with its current status and remaining quantity. Call when the user asks about a specific order, or to check an older order that list_orders no longer shows.",
@@ -418,6 +435,7 @@ impl ToolSet {
             "cancel_all_orders" => self.cancel_all(args).await,
             "get_order" => self.get_order(args).await,
             "get_balances" => self.balances(args).await,
+            "get_statement" => self.statement(args).await,
             "list_orders" => self.list_orders(args).await,
             "list_trades" => self.list_trades(args).await,
             other => return Err(RpcError::invalid_params(format!("Unknown tool: {other}"))),
@@ -689,6 +707,52 @@ impl ToolSet {
             }
             Err(s) => grpc_error(s),
         }
+    }
+
+    /// The ledger from the engine plus unrealised P&L at the current reference price (the mid,
+    /// else the last trade, else the one quoted side), computed here in integer math.
+    async fn statement(&self, args: &Value) -> ToolOutput {
+        if let Err(e) = parse_args::<StatementArgs>(args) {
+            return e;
+        }
+        let req = pb::GetStatementRequest {
+            account_id: self.account.clone(),
+        };
+        let s = match self.engine.clone().get_statement(req).await {
+            Ok(r) => r.into_inner(),
+            Err(e) => return grpc_error(e),
+        };
+        let reference = match self.market().await {
+            Ok(m) => {
+                let positive = |v: i64| (v > 0).then_some(v as u64);
+                reference_price(
+                    positive(m.best_bid_ticks),
+                    positive(m.best_ask_ticks),
+                    positive(m.last_trade_price_ticks),
+                )
+            }
+            Err(e) => return e,
+        };
+        let unrealised =
+            reference.map(|r| (s.inventory_lots as u128 * r as u128) as i128 - s.inventory_cost_micro as i128);
+        ToolOutput::ok(json!({
+            "deposits_usdc": usdc_from_micro(s.deposits_usdc_micro as u128),
+            "deposits_eth": eth(s.deposits_eth_lots),
+            "withdrawals_usdc": usdc_from_micro(s.withdrawals_usdc_micro as u128),
+            "withdrawals_eth": eth(s.withdrawals_eth_lots),
+            "bought_eth": eth(s.bought_lots),
+            "sold_eth": eth(s.sold_lots),
+            "usdc_paid": usdc_from_micro(s.usdc_paid_micro as u128),
+            "usdc_received": usdc_from_micro(s.usdc_received_micro as u128),
+            "trades": s.trades,
+            "inventory_eth": eth(s.inventory_lots),
+            "average_cost_usdc": average_price(s.inventory_cost_micro as u128, s.inventory_lots).map(usdc),
+            "sold_from_deposits_eth": eth(s.sold_from_deposits_lots),
+            "realised_pnl_usdc": signed_usdc_from_micro(s.realised_pnl_micro as i128),
+            "reference_price_usdc": reference.map(usdc),
+            "unrealised_pnl_usdc": unrealised.map(signed_usdc_from_micro),
+            "note": "Realised P&L is over ETH bought on this venue at its average cost; ETH that was deposited has no cost basis here and earns no P&L when sold."
+        }))
     }
 
     async fn get_order(&self, args: &Value) -> ToolOutput {

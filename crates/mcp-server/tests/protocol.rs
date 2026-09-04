@@ -88,7 +88,7 @@ async fn lifecycle_and_discovery() {
 
     let r = server.handle_message(req(4, "tools/list", json!({}))).await.unwrap();
     let tools = r["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 10);
+    assert_eq!(tools.len(), 11);
     let place = tools.iter().find(|t| t["name"] == "place_limit_order").unwrap();
     assert_eq!(place["annotations"]["readOnlyHint"], false);
     assert_eq!(
@@ -255,6 +255,26 @@ async fn tools_against_a_real_engine() {
         (Some("filled"), Some("1.2000"), Some("3001.58"))
     );
     assert_eq!(p["fills"].as_array().unwrap().len(), 2);
+    // The statement right after the 1.2 ETH buy: inventory at average cost, nothing realised,
+    // unrealised marked at the mid of 2999.00 and the remaining 3002.00 ask.
+    let st = call(&server, 60, "get_statement", json!({})).await;
+    assert_eq!(st["isError"], false, "{st}");
+    let st = &st["structuredContent"];
+    assert_eq!(
+        (
+            st["bought_eth"].as_str(),
+            st["usdc_paid"].as_str(),
+            st["average_cost_usdc"].as_str(),
+            st["trades"].as_u64()
+        ),
+        (Some("1.2000"), Some("3601.90"), Some("3001.58"), Some(2))
+    );
+    assert_eq!(
+        (st["realised_pnl_usdc"].as_str(), st["reference_price_usdc"].as_str()),
+        (Some("0.00"), Some("3000.50"))
+    );
+    assert_eq!(st["unrealised_pnl_usdc"], "-1.30"); // 1.2 * 3000.50 - 3601.90
+    assert_eq!(st["deposits_eth"], "10.0000");
     let replay = call(
         &server,
         11,

@@ -90,6 +90,16 @@ pub fn usdc_from_micro(micro: u128) -> String {
     format_fixed(cents.min(u64::MAX as u128) as u64, PRICE_DECIMALS)
 }
 
+/// A signed amount in micro-USDC as USDC with 2 decimals, rounded half up away from zero.
+pub fn signed_usdc_from_micro(micro: i128) -> String {
+    let text = usdc_from_micro(micro.unsigned_abs());
+    if micro < 0 && text != "0.00" {
+        format!("-{text}")
+    } else {
+        text
+    }
+}
+
 /// Midpoint of two prices in ticks, shown with 3 decimals only when the sum is odd.
 pub fn mid(bid: u64, ask: u64) -> String {
     let sum = bid + ask;
@@ -146,6 +156,9 @@ mod tests {
         assert_eq!(mid(300_050, 300_100), "3000.75");
         assert_eq!(mid(300_050, 300_051), "3000.505");
         assert_eq!(usdc_from_micro(3_601_900_000), "3601.90");
+        assert_eq!(signed_usdc_from_micro(-600_000), "-0.60");
+        assert_eq!(signed_usdc_from_micro(1_250_000), "1.25");
+        assert_eq!(signed_usdc_from_micro(-1), "0.00");
         assert_eq!(average_price(3_601_900_000, 12_000), Some(300_158)); // 3001.58, rounded from 3001.5833
         assert_eq!(average_price(0, 0), None);
     }

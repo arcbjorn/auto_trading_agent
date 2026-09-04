@@ -5,7 +5,7 @@
 //!
 //! * [`jsonrpc`]  request/response envelopes and error codes
 //! * [`protocol`] the MCP methods: initialize, ping, tools/*, resources/*, prompts/*
-//! * [`tools`]    the ten tools the model can call, translated to gRPC
+//! * [`tools`]    the eleven tools the model can call, translated to gRPC
 //! * [`policy`]   deterministic risk rules applied before any order reaches the engine
 //! * [`units`]    exact decimal <-> integer conversion (no floats anywhere)
 //! * [`transport`] stdio (newline-delimited JSON) and Streamable HTTP (POST /mcp)

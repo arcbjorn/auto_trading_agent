@@ -18,7 +18,7 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const INSTRUCTIONS: &str = "ETH/USDC central limit order book for one trading account. \
 Prices are USDC per ETH with at most 2 decimals (tick 0.01); quantities are ETH with at most 4 decimals (lot 0.0001). \
-Read tools (get_market_summary, get_order_book, get_quote, get_order, get_balances, list_orders, list_trades) are always safe. \
+Read tools (get_market_summary, get_order_book, get_quote, get_order, get_balances, get_statement, list_orders, list_trades) are always safe. \
 place_limit_order, cancel_order and cancel_all_orders change the account's orders: call them only when the user explicitly asked to trade or cancel, \
 and call get_quote before placing an order above 1 ETH. There are no market orders; propose a limit price instead. \
 Never invent order ids: take them from list_orders or from a previous place_limit_order result.";
