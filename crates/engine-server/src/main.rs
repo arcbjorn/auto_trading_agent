@@ -9,10 +9,10 @@
 //!   ENGINE_JOURNAL_FSYNC 1 to fsync every batch before replying (default 0: flush to the OS)
 //!   ENGINE_JOURNAL_COMPACT_MB  compact the journal into a snapshot on start when larger (default 64; 0 never)
 //!   ENGINE_BALANCES      0 to run without balance checks (default 1: every order must be funded)
-//!   ENGINE_ACCOUNT_RATE_PER_SEC   mutations one account may send per second (default unlimited)
+//!   ENGINE_ACCOUNT_RATE_PER_SEC   mutations one account may send per second (default 50, 0 = unlimited)
 //!   ENGINE_RETAIN_HOURS           closed orders and trades older than this are archived (default 24)
-//!   ENGINE_MAX_OPEN_ORDERS        live orders one account may rest at once (default unlimited)
-//!   ENGINE_MAX_OPEN_NOTIONAL_USDC sum of price x remaining one account may rest, in USDC (default unlimited)
+//!   ENGINE_MAX_OPEN_ORDERS        live orders one account may rest at once (default 20, 0 = unlimited)
+//!   ENGINE_MAX_OPEN_NOTIONAL_USDC sum of price x remaining one account may rest, in USDC (default 200000, 0 = unlimited)
 //!   ENGINE_FUND          accounts credited on an empty book, whole units: "demo:50000:10,mm:1000000:1000"
 //!                        (account:USDC:ETH); journaled, and skipped when a journal was replayed
 //!   RUST_LOG      tracing filter (default info)
@@ -35,6 +35,13 @@ fn parse_funding(spec: &str) -> anyhow::Result<Vec<(String, u64, u64)>> {
             Ok((parts[0].to_string(), usdc * 1_000_000, eth * 10_000))
         })
         .collect()
+}
+
+/// A numeric setting with a finite default. `0` means unlimited, which reads as `None` so each
+/// caller substitutes its own maximum.
+fn env_or(name: &str, default: u64) -> Option<u64> {
+    let value = std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default);
+    (value > 0).then_some(value)
 }
 
 #[tokio::main]
@@ -66,21 +73,18 @@ async fn main() -> anyhow::Result<()> {
             std::env::var("ENGINE_BALANCES").as_deref(),
             Ok("0") | Ok("false") | Ok("no")
         ),
+        // Finite by default, and matching the MCP policy's own limits, so the matcher is the
+        // boundary that actually holds: a direct gRPC client bypasses the MCP checks but not
+        // these. Raise them deliberately, or set 0 for unlimited.
         exposure_limits: engine::ExposureLimits {
-            max_open_orders: std::env::var("ENGINE_MAX_OPEN_ORDERS")
-                .ok()
-                .and_then(|v| v.parse().ok())
+            max_open_orders: env_or("ENGINE_MAX_OPEN_ORDERS", 20)
+                .map(|v| v as u32)
                 .unwrap_or(u32::MAX),
-            max_open_notional: std::env::var("ENGINE_MAX_OPEN_NOTIONAL_USDC")
-                .ok()
-                .and_then(|v| v.parse::<u128>().ok())
-                .map(|usdc| usdc * 1_000_000)
+            max_open_notional: env_or("ENGINE_MAX_OPEN_NOTIONAL_USDC", 200_000)
+                .map(|usdc| usdc as u128 * 1_000_000)
                 .unwrap_or(u128::MAX),
         },
-        account_rate_per_sec: std::env::var("ENGINE_ACCOUNT_RATE_PER_SEC")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0),
+        account_rate_per_sec: env_or("ENGINE_ACCOUNT_RATE_PER_SEC", 50).map(|v| v as u32).unwrap_or(0),
         retention: engine::Retention {
             max_age_ns: std::env::var("ENGINE_RETAIN_HOURS")
                 .ok()

@@ -684,11 +684,11 @@ pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(Socke
         Some(path) => {
             let (book, replayed) = Journal::recover(path, cfg.enforce_balances, cfg.exposure_limits)
                 .map_err(|e| anyhow::anyhow!("cannot recover journal {}: {e}", path.display()))?;
-            let book = book.with_retention(cfg.retention);
+            let mut book = book.with_retention(cfg.retention);
             tracing::info!(journal = %path.display(), replayed, seq = book.seq(), "journal recovered");
             let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             if cfg.journal_compact_bytes > 0 && size > cfg.journal_compact_bytes {
-                Journal::compact(path, &book)
+                Journal::compact(path, &mut book)
                     .map_err(|e| anyhow::anyhow!("cannot compact journal {}: {e}", path.display()))?;
                 tracing::info!(journal = %path.display(), bytes = size, "journal compacted into its snapshot");
             }

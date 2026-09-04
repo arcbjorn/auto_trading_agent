@@ -54,6 +54,10 @@ impl ToolOutput {
 /// Fills listed in a placement result; the totals above them always cover every fill.
 const MAX_FILLS: usize = 50;
 
+/// Orders scanned when looking for a retry's original order. The engine keeps far more; this is
+/// the window in which a retry is answered without charging policy again.
+const MAX_LISTED: u32 = 200;
+
 #[derive(Clone)]
 pub struct ToolSet {
     engine: EngineClient<Channel>,
@@ -592,6 +596,32 @@ impl ToolSet {
         Ok(r.into_inner().orders.len())
     }
 
+    /// The reply an earlier call with this key produced, when the engine already holds it and the
+    /// order matches. Retries are answered without charging the session cap or the rate limit a
+    /// second time; a key reused for a different order falls through so the engine can refuse it.
+    async fn replay_of(&self, client_order_id: &str, price: u64, qty: u64, side: pb::Side) -> Option<ToolOutput> {
+        let orders = self
+            .engine
+            .clone()
+            .list_orders(pb::ListOrdersRequest {
+                account_id: self.account.clone(),
+                status: pb::OrderStatus::StatusUnspecified as i32,
+                limit: MAX_LISTED,
+            })
+            .await
+            .ok()?
+            .into_inner()
+            .orders;
+        let existing = orders.into_iter().find(|o| o.client_order_id == client_order_id)?;
+        if existing.price_ticks as u64 != price || existing.quantity_lots as u64 != qty || existing.side != side as i32
+        {
+            return None; // a different order under the same key: the engine answers ALREADY_EXISTS
+        }
+        let mut out = order_json(&existing);
+        out["idempotent_replay"] = json!(true);
+        Some(ToolOutput::ok(out))
+    }
+
     async fn place(&self, args: &Value) -> ToolOutput {
         let a: PlaceArgs = match parse_args(args) {
             Ok(a) => a,
@@ -620,15 +650,9 @@ impl ToolSet {
             }
             Err(e) => return e,
         };
-        let open = match self.open_order_count().await {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
-        if let Err(rej) = self.policy.check_place(&self.account, price, qty, reference, open) {
-            return ToolOutput::ok(
-                json!({ "rejected": true, "code": rej.code, "message": rej.message, "hint": rej.hint }),
-            );
-        }
+        // The idempotency key is read before any policy accounting: an exact retry must reach the
+        // engine and return the original reply, not be refused by a limit its first attempt
+        // already paid for. A key the engine already knows short-circuits everything below.
         let client_order_id = match a.client_order_id.filter(|s| !s.trim().is_empty()) {
             Some(id) if valid_client_order_id(&id) => id,
             Some(id) => {
@@ -639,6 +663,18 @@ impl ToolSet {
             }
             None => new_client_order_id(),
         };
+        if let Some(out) = self.replay_of(&client_order_id, price, qty, side).await {
+            return out;
+        }
+        let open = match self.open_order_count().await {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
+        if let Err(rej) = self.policy.check_place(&self.account, price, qty, reference, open) {
+            return ToolOutput::ok(
+                json!({ "rejected": true, "code": rej.code, "message": rej.message, "hint": rej.hint }),
+            );
+        }
         let req = pb::PlaceOrderRequest {
             account_id: self.account.clone(),
             client_order_id,

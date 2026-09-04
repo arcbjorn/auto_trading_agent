@@ -214,6 +214,47 @@ async fn lifecycle_and_discovery() {
 }
 
 #[tokio::test]
+async fn an_exact_retry_is_replayed_without_paying_policy_twice() {
+    // A session cap of one order: the first placement uses it up. An identical retry must still
+    // return the original order rather than be refused by the cap its first attempt consumed.
+    let (addr, _handle) = serve("127.0.0.1:0".parse().unwrap(), EngineConfig::default())
+        .await
+        .unwrap();
+    let mut engine = EngineClient::connect(format!("http://{addr}")).await.unwrap();
+    engine
+        .deposit(DepositRequest {
+            account_id: "demo".into(),
+            usdc_micro: 50_000_000_000,
+            eth_lots: 100_000,
+        })
+        .await
+        .unwrap();
+    let policy = Arc::new(Policy::new(PolicyConfig {
+        session_notional_cap_micro: 3_000 * 1_000_000,
+        ..PolicyConfig::default()
+    }));
+    let server = McpServer::new(ToolSet::new(engine, "demo".into(), policy));
+    let args = json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "1", "client_order_id": "retry-me" });
+    let first = call(&server, 1, "place_limit_order", args.clone()).await;
+    assert_eq!(first["structuredContent"]["rejected"], Value::Null, "{first}");
+    let order_id = first["structuredContent"]["order_id"].clone();
+    // The cap is now spent: a different order is refused.
+    let other = call(
+        &server,
+        2,
+        "place_limit_order",
+        json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "1", "client_order_id": "another" }),
+    )
+    .await;
+    assert_eq!(other["structuredContent"]["code"], "SESSION_CAP", "{other}");
+    // The identical retry is answered from the engine's own record.
+    let retry = call(&server, 3, "place_limit_order", args).await;
+    assert_eq!(retry["structuredContent"]["rejected"], Value::Null, "{retry}");
+    assert_eq!(retry["structuredContent"]["order_id"], order_id);
+    assert_eq!(retry["structuredContent"]["idempotent_replay"], true);
+}
+
+#[tokio::test]
 async fn tools_against_a_real_engine() {
     let (server, mut engine, handle) = stack().await;
     // Empty book first.
