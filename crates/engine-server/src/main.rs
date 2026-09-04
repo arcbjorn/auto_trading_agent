@@ -1,7 +1,9 @@
 //! `engine-server`: the gRPC matching engine.
 //!
 //! Environment:
-//!   ENGINE_BIND   address to listen on (default 0.0.0.0:50051)
+//!   ENGINE_BIND   address to listen on (default 127.0.0.1:50051). The engine has no
+//!                 authentication and takes the account from the request, so it must not be
+//!                 exposed beyond the host without mTLS or a service identity in front of it.
 //!   ENGINE_QUEUE  bounded command queue length (default 10000)
 //!   ENGINE_JOURNAL       path of the write-ahead journal (default none: in memory only)
 //!   ENGINE_JOURNAL_FSYNC 1 to fsync every batch before replying (default 0: flush to the OS)
@@ -40,7 +42,12 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
-    let bind = std::env::var("ENGINE_BIND").unwrap_or_else(|_| "0.0.0.0:50051".into());
+    // Loopback by default: an unauthenticated engine that trusts the account in each request
+    // must not be reachable from the network unless an operator says so deliberately.
+    let bind = std::env::var("ENGINE_BIND").unwrap_or_else(|_| "127.0.0.1:50051".into());
+    if !bind.starts_with("127.") && !bind.starts_with("localhost") && !bind.starts_with("[::1]") {
+        tracing::warn!(%bind, "the engine is bound beyond loopback; it has no authentication, so put mTLS or a service identity in front of it");
+    }
     let queue_capacity = std::env::var("ENGINE_QUEUE")
         .ok()
         .and_then(|s| s.parse().ok())

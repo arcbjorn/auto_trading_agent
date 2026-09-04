@@ -46,7 +46,7 @@ The third turn shows the confirmation gate: no price was stated, so the service 
 Three terminals:
 
 ```
-make run-engine        # gRPC on 0.0.0.0:50051; demo account and a market maker funded
+make run-engine        # gRPC on 127.0.0.1:50051; demo account and a market maker funded
 make run-mcp           # MCP over Streamable HTTP on 127.0.0.1:8000/mcp
 make run-agent         # POST /chat on 127.0.0.1:8080
 ```

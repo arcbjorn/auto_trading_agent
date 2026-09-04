@@ -20,7 +20,7 @@ Or `make build`, `make test`, `make lint`.
 Three processes, three terminals (or `make run-engine`, `make run-mcp`, `make run-agent`):
 
 ```
-cargo run --release -p engine-server                      # gRPC on 0.0.0.0:50051
+cargo run --release -p engine-server                      # gRPC on 127.0.0.1:50051
 cargo run --release -p mcp-server -- --http               # MCP on 127.0.0.1:8000/mcp
 ANTHROPIC_API_KEY=sk-... cargo run --release -p agent-service   # POST /chat on 127.0.0.1:8080
 ```
@@ -46,7 +46,7 @@ The book starts empty and unfunded. `make run-engine` funds the demo account (50
 
 | Component | Variable | Default |
 |---|---|---|
-| engine-server | `ENGINE_BIND` | `0.0.0.0:50051` |
+| engine-server | `ENGINE_BIND` | `127.0.0.1:50051`; the engine has no authentication and trusts the account in each request, so binding it beyond loopback needs mTLS or a service identity in front of it |
 | | `ENGINE_QUEUE` | `10000` |
 | | `ENGINE_JOURNAL` | unset (in memory only); a path enables the write-ahead journal and replay on start |
 | | `ENGINE_JOURNAL_FSYNC` | `0`; `1` fsyncs every batch before replying |
