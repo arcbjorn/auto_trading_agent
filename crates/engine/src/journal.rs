@@ -33,6 +33,12 @@ pub enum Record {
         usdc: u128,
         eth: Qty,
     },
+    Withdraw {
+        t: i64,
+        account: String,
+        usdc: u128,
+        eth: Qty,
+    },
 }
 
 pub struct Journal {
@@ -169,6 +175,9 @@ impl Journal {
                 }
                 Record::Deposit { account, usdc, eth, .. } => {
                     let _ = book.deposit(&account, usdc, eth);
+                }
+                Record::Withdraw { account, usdc, eth, .. } => {
+                    let _ = book.withdraw(&account, usdc, eth);
                 }
             }
             n += 1;

@@ -133,12 +133,64 @@ pub struct Balances {
     pub eth_reserved: Qty,
 }
 
+/// Per-account trading ledger: what went in and out, what was bought and sold, and the average
+/// cost of the ETH still held from purchases on this venue, so realised P&L is a number rather
+/// than a guess. ETH that arrived by deposit has no cost basis here: a sell beyond the venue
+/// inventory is counted in `sold_from_deposits_lots` and contributes no P&L.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ledger {
+    pub deposits_usdc: u128,
+    pub deposits_eth: Qty,
+    pub withdrawals_usdc: u128,
+    pub withdrawals_eth: Qty,
+    pub bought_lots: Qty,
+    pub sold_lots: Qty,
+    pub usdc_paid: u128,
+    pub usdc_received: u128,
+    /// ETH bought here and not yet sold, and what it cost in total (average cost is the ratio).
+    pub inventory_lots: Qty,
+    pub inventory_cost: u128,
+    pub sold_from_deposits_lots: Qty,
+    /// Sum over sells of (price minus average cost) times quantity, for the inventory part.
+    pub realised_pnl: i128,
+    pub trades: u64,
+}
+
+/// Books one fill into both ledgers. The seller's inventory is relieved at average cost.
+fn record_fill(ledgers: &mut HashMap<Arc<str>, Ledger>, buyer: &Arc<str>, seller: &Arc<str>, px: Price, q: Qty) {
+    let paid = px as u128 * q as u128;
+    let b = ledgers.entry(Arc::clone(buyer)).or_default();
+    b.bought_lots += q;
+    b.usdc_paid += paid;
+    b.inventory_lots += q;
+    b.inventory_cost += paid;
+    b.trades += 1;
+    let s = ledgers.entry(Arc::clone(seller)).or_default();
+    s.sold_lots += q;
+    s.usdc_received += paid;
+    s.trades += 1;
+    let from_inventory = q.min(s.inventory_lots);
+    if from_inventory > 0 {
+        let cost_removed = s.inventory_cost * from_inventory as u128 / s.inventory_lots as u128;
+        s.realised_pnl += (px as u128 * from_inventory as u128) as i128 - cost_removed as i128;
+        s.inventory_cost -= cost_removed;
+        s.inventory_lots -= from_inventory;
+    }
+    s.sold_from_deposits_lots += q - from_inventory;
+}
+
 /// Append-only history. Order and trade listings are derived from it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Accepted(Order),
     Traded(Trade),
     Deposited {
+        account: Arc<str>,
+        usdc: u128,
+        eth: Qty,
+        seq: Seq,
+    },
+    Withdrawn {
         account: Arc<str>,
         usdc: u128,
         eth: Qty,
@@ -251,6 +303,7 @@ pub struct Book {
     /// When set, every order must be backed by the account's balance (see [`Book::with_balances`]).
     enforce_balances: bool,
     balances: HashMap<Arc<str>, Balances>,
+    ledgers: HashMap<Arc<str>, Ledger>,
 }
 
 /// Moves `needed` from available to reserved for a new order (the funds check happened first).
@@ -330,6 +383,8 @@ pub struct BookState {
     /// Original replies for idempotent retries: the order as first returned and its fill ids.
     pub original_replies: Vec<(OrderId, Order, Vec<TradeId>)>,
     pub balances: Vec<(String, Balances)>,
+    #[serde(default)]
+    pub ledgers: Vec<(String, Ledger)>,
     pub last_trade_price: Option<Price>,
     pub next_order: OrderId,
     pub next_trade: TradeId,
@@ -355,11 +410,14 @@ impl Book {
         original_replies.sort_by_key(|(id, ..)| *id);
         let mut balances: Vec<(String, Balances)> = self.balances.iter().map(|(a, b)| (a.to_string(), *b)).collect();
         balances.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut ledgers: Vec<(String, Ledger)> = self.ledgers.iter().map(|(a, l)| (a.to_string(), *l)).collect();
+        ledgers.sort_by(|a, b| a.0.cmp(&b.0));
         BookState {
             orders,
             trades: self.trades.clone(),
             original_replies,
             balances,
+            ledgers,
             last_trade_price: self.last_trade_price,
             next_order: self.next_order,
             next_trade: self.next_trade,
@@ -382,6 +440,10 @@ impl Book {
         };
         for (account, b) in state.balances {
             book.balances.insert(Arc::from(account.as_str()), b);
+        }
+        for (account, l) in state.ledgers {
+            let key = book.intern(&account);
+            book.ledgers.insert(key, l);
         }
         let mut live: Vec<(Side, Price, OrderId, Qty)> = Vec::new();
         for mut o in state.orders {
@@ -471,6 +533,9 @@ impl Book {
             .checked_add(eth)
             .ok_or_else(|| EngineError::Invalid("deposit overflows the balance".into()))?;
         let result = *b;
+        let ledger = self.ledgers.entry(Arc::clone(&key)).or_default();
+        ledger.deposits_usdc += usdc;
+        ledger.deposits_eth += eth;
         let seq = self.bump_seq();
         self.events.push(Event::Deposited {
             account: key,
@@ -479,6 +544,52 @@ impl Book {
             seq,
         });
         Ok(result)
+    }
+
+    /// Debits an account from what is available; reserved amounts back live orders and cannot be
+    /// withdrawn. Recorded as an event so a replay restores balances too.
+    pub fn withdraw(&mut self, account: &str, usdc: u128, eth: Qty) -> Result<Balances, EngineError> {
+        if account.is_empty() || account.len() > MAX_ID_LEN {
+            return Err(EngineError::Invalid(format!(
+                "account_id must be 1 to {MAX_ID_LEN} bytes"
+            )));
+        }
+        let current = self.balances(account);
+        if current.usdc_available < usdc {
+            return Err(EngineError::InsufficientFunds {
+                asset: "USDC",
+                needed: usdc,
+                available: current.usdc_available,
+            });
+        }
+        if current.eth_available < eth {
+            return Err(EngineError::InsufficientFunds {
+                asset: "ETH",
+                needed: eth as u128,
+                available: current.eth_available as u128,
+            });
+        }
+        let key = self.intern(account);
+        let b = self.balances.entry(Arc::clone(&key)).or_default();
+        b.usdc_available -= usdc;
+        b.eth_available -= eth;
+        let result = *b;
+        let ledger = self.ledgers.entry(Arc::clone(&key)).or_default();
+        ledger.withdrawals_usdc += usdc;
+        ledger.withdrawals_eth += eth;
+        let seq = self.bump_seq();
+        self.events.push(Event::Withdrawn {
+            account: key,
+            usdc,
+            eth,
+            seq,
+        });
+        Ok(result)
+    }
+
+    /// The account's trading ledger; all zeros for an account that never traded or deposited.
+    pub fn statement(&self, account: &str) -> Ledger {
+        self.ledgers.get(account).copied().unwrap_or_default()
     }
 
     /// The account's balances; zero for an account that was never funded.
@@ -665,6 +776,10 @@ impl Book {
             let maker_account = Arc::clone(&maker.account);
             if self.enforce_balances {
                 settle(&mut self.balances, &o.account, o.side, o.price, &maker_account, px, q);
+            }
+            match o.side {
+                Side::Buy => record_fill(&mut self.ledgers, &o.account, &maker_account, px, q),
+                Side::Sell => record_fill(&mut self.ledgers, &maker_account, &o.account, px, q),
             }
             self.next_trade += 1;
             self.next_seq += 1;
@@ -998,6 +1113,67 @@ mod tests {
     }
 
     #[test]
+    fn ledger_tracks_average_cost_realised_pnl_and_withdrawals() {
+        let mut b = Book::with_balances();
+        b.deposit("m", 10_000_000_000, 100_000).unwrap();
+        b.deposit("t", 10_000_000_000, 0).unwrap();
+        b.place(gtc("m", "a1", Side::Sell, 300_100, 5_000), 0).unwrap();
+        b.place(gtc("m", "b1", Side::Buy, 299_900, 8_000), 0).unwrap();
+        // t buys 0.5 at 3001.00, then sells 0.3 at 2999.00: realised (2999 - 3001) * 0.3 = -0.60 USDC.
+        b.place(gtc("t", "t1", Side::Buy, 300_100, 5_000), 0).unwrap();
+        let after_buy = b.statement("t");
+        assert_eq!(
+            (
+                after_buy.bought_lots,
+                after_buy.inventory_lots,
+                after_buy.inventory_cost
+            ),
+            (5_000, 5_000, 300_100 * 5_000)
+        );
+        b.place(gtc("t", "t2", Side::Sell, 299_900, 3_000), 0).unwrap();
+        let t = b.statement("t");
+        assert_eq!(
+            (t.sold_lots, t.inventory_lots, t.sold_from_deposits_lots, t.trades),
+            (3_000, 2_000, 0, 2)
+        );
+        assert_eq!(t.realised_pnl, -600_000); // -0.60 USDC in micro-USDC
+        assert_eq!(t.inventory_cost, 300_100 * 2_000);
+        // The maker sold ETH it deposited (no cost basis) and then bought: no P&L, inventory 0.3.
+        let m = b.statement("m");
+        assert_eq!(
+            (m.sold_from_deposits_lots, m.inventory_lots, m.realised_pnl),
+            (5_000, 3_000, 0)
+        );
+        assert_eq!(
+            (m.deposits_eth, m.deposits_usdc, t.deposits_usdc),
+            (100_000, 10_000_000_000, 10_000_000_000)
+        );
+        // Withdrawals come out of what is available; reserved stays put.
+        b.place(gtc("t", "t3", Side::Buy, 290_000, 1_000), 0).unwrap(); // reserves 290 USDC
+        let bal = b.balances("t");
+        assert!(matches!(
+            b.withdraw("t", bal.usdc_available + 1, 0),
+            Err(EngineError::InsufficientFunds { asset: "USDC", .. })
+        ));
+        let left = b.withdraw("t", bal.usdc_available, 2_000).unwrap();
+        assert_eq!(
+            (left.usdc_available, left.eth_available, left.usdc_reserved),
+            (0, 0, 290_000 * 1_000)
+        );
+        let t = b.statement("t");
+        assert_eq!((t.withdrawals_usdc, t.withdrawals_eth), (bal.usdc_available, 2_000));
+        assert!(matches!(
+            b.withdraw("t", 0, 1),
+            Err(EngineError::InsufficientFunds { asset: "ETH", .. })
+        ));
+        assert!(matches!(b.events().last(), Some(Event::Withdrawn { .. })));
+        // The ledger survives a state round trip.
+        let rebuilt = Book::from_state(b.state());
+        assert_eq!(rebuilt.statement("t"), b.statement("t"));
+        assert_eq!(rebuilt.statement("m"), m);
+    }
+
+    #[test]
     fn fifo_within_a_price_level() {
         let mut b = Book::new();
         let (first, _) = b.place(gtc("m1", "x", Side::Sell, 300_000, 100), 0).unwrap();
@@ -1248,7 +1424,7 @@ mod tests {
                 let seqs: Vec<u64> = b.events().iter().map(|e| match e {
                     Event::Accepted(o) => o.seq,
                     Event::Traded(t) => t.seq,
-                    Event::Cancelled { seq, .. } | Event::Rejected { seq, .. } | Event::Deposited { seq, .. } => *seq,
+                    Event::Cancelled { seq, .. } | Event::Rejected { seq, .. } | Event::Deposited { seq, .. } | Event::Withdrawn { seq, .. } => *seq,
                 }).collect();
                 let mut sorted = seqs.clone();
                 sorted.sort_unstable();
@@ -1302,6 +1478,20 @@ mod tests {
                 proptest::prop_assert_eq!(eth, total_eth, "ETH was created or destroyed");
             }
             proptest::prop_assert!(accepted + refused == ops.len());
+            // The ledgers are zero-sum across accounts and each one's inventory adds up.
+            let (mut paid, mut received, mut bought, mut sold) = (0u128, 0u128, 0u64, 0u64);
+            for (a, _, _) in funding {
+                let l = b.statement(a);
+                paid += l.usdc_paid;
+                received += l.usdc_received;
+                bought += l.bought_lots;
+                sold += l.sold_lots;
+                proptest::prop_assert_eq!(l.inventory_lots, l.bought_lots - (l.sold_lots - l.sold_from_deposits_lots), "inventory of {}", a);
+                proptest::prop_assert!(l.inventory_lots > 0 || l.inventory_cost == 0, "cost without inventory for {}", a);
+                proptest::prop_assert!(l.sold_from_deposits_lots <= l.deposits_eth, "{} sold ETH it never had", a);
+            }
+            proptest::prop_assert_eq!(paid, received, "USDC paid != USDC received");
+            proptest::prop_assert_eq!(bought, sold, "ETH bought != ETH sold");
         }
     }
 }

@@ -24,6 +24,10 @@ service Engine {
   // sell reserves the quantity in ETH; fills settle both legs, cancels release the remainder.
   rpc Deposit(DepositRequest) returns (Balances);
   rpc GetBalances(GetBalancesRequest) returns (Balances);
+  // Debits what is available; reserved amounts back live orders and cannot be withdrawn.
+  rpc Withdraw(WithdrawRequest) returns (Balances);
+  // The account's trading ledger: flows, volume, venue inventory at average cost, realised P&L.
+  rpc GetStatement(GetStatementRequest) returns (Statement);
 }
 
 enum Side {
@@ -109,6 +113,33 @@ message DepositRequest {
 
 message GetBalancesRequest {
   string account_id = 1;
+}
+
+message WithdrawRequest {
+  string account_id = 1;
+  uint64 usdc_micro = 2;
+  uint64 eth_lots = 3;
+}
+
+message GetStatementRequest {
+  string account_id = 1;
+}
+
+message Statement {
+  string account_id = 1;
+  uint64 deposits_usdc_micro = 2;
+  uint64 deposits_eth_lots = 3;
+  uint64 withdrawals_usdc_micro = 4;
+  uint64 withdrawals_eth_lots = 5;
+  uint64 bought_lots = 6;
+  uint64 sold_lots = 7;
+  uint64 usdc_paid_micro = 8;
+  uint64 usdc_received_micro = 9;
+  uint64 inventory_lots = 10;         // bought here and not yet sold
+  uint64 inventory_cost_micro = 11;   // what that inventory cost; average cost is the ratio
+  uint64 sold_from_deposits_lots = 12; // sold beyond the venue inventory, no cost basis, no P&L
+  int64 realised_pnl_micro = 13;
+  uint64 trades = 14;
 }
 
 message Balances {

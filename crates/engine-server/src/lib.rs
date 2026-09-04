@@ -63,6 +63,26 @@ impl Svc {
     }
 }
 
+fn statement_to_pb(account: &str, l: &engine::Ledger) -> pb::Statement {
+    let clamp = |v: u128| v.min(u64::MAX as u128) as u64;
+    pb::Statement {
+        account_id: account.to_string(),
+        deposits_usdc_micro: clamp(l.deposits_usdc),
+        deposits_eth_lots: l.deposits_eth,
+        withdrawals_usdc_micro: clamp(l.withdrawals_usdc),
+        withdrawals_eth_lots: l.withdrawals_eth,
+        bought_lots: l.bought_lots,
+        sold_lots: l.sold_lots,
+        usdc_paid_micro: clamp(l.usdc_paid),
+        usdc_received_micro: clamp(l.usdc_received),
+        inventory_lots: l.inventory_lots,
+        inventory_cost_micro: clamp(l.inventory_cost),
+        sold_from_deposits_lots: l.sold_from_deposits_lots,
+        realised_pnl_micro: l.realised_pnl.clamp(i64::MIN as i128, i64::MAX as i128) as i64,
+        trades: l.trades,
+    }
+}
+
 fn balances_to_pb(account: &str, b: &engine::Balances, enforced: bool) -> pb::Balances {
     pb::Balances {
         account_id: account.to_string(),
@@ -347,6 +367,30 @@ impl Engine for Svc {
         };
         match self.engine.submit(cmd).await.map_err(to_status)? {
             Reply::Balances(b) => Ok(Response::new(balances_to_pb(&r.account_id, &b, self.enforced))),
+            _ => Err(Status::internal("unexpected reply")),
+        }
+    }
+
+    async fn withdraw(&self, req: Request<pb::WithdrawRequest>) -> Result<Response<pb::Balances>, Status> {
+        let r = req.into_inner();
+        let cmd = Command::Withdraw {
+            account: r.account_id.clone(),
+            usdc: r.usdc_micro as u128,
+            eth: r.eth_lots,
+        };
+        match self.engine.submit(cmd).await.map_err(to_status)? {
+            Reply::Balances(b) => Ok(Response::new(balances_to_pb(&r.account_id, &b, self.enforced))),
+            _ => Err(Status::internal("unexpected reply")),
+        }
+    }
+
+    async fn get_statement(&self, req: Request<pb::GetStatementRequest>) -> Result<Response<pb::Statement>, Status> {
+        let r = req.into_inner();
+        let cmd = Command::Statement {
+            account: r.account_id.clone(),
+        };
+        match self.engine.submit(cmd).await.map_err(to_status)? {
+            Reply::Statement(l) => Ok(Response::new(statement_to_pb(&r.account_id, &l))),
             _ => Err(Status::internal("unexpected reply")),
         }
     }

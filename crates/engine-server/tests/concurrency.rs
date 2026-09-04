@@ -3,8 +3,8 @@
 //! is never crossed.
 use clob_proto::v1::engine_client::EngineClient;
 use clob_proto::v1::{
-    CancelOrderRequest, DepositRequest, GetBalancesRequest, GetOrderBookRequest, ListTradesRequest, PlaceOrderRequest,
-    Side, TimeInForce,
+    CancelOrderRequest, DepositRequest, GetBalancesRequest, GetOrderBookRequest, GetStatementRequest,
+    ListTradesRequest, PlaceOrderRequest, Side, TimeInForce, WithdrawRequest,
 };
 use engine_server::{serve, EngineConfig};
 
@@ -250,6 +250,23 @@ async fn restart_replays_the_journal() {
     })
     .await
     .unwrap();
+    // A withdrawal of available USDC is journaled too; reserved USDC cannot leave.
+    c.withdraw(WithdrawRequest {
+        account_id: "a".into(),
+        usdc_micro: 100_000_000, // 100 USDC
+        eth_lots: 0,
+    })
+    .await
+    .unwrap();
+    let too_much = c
+        .withdraw(WithdrawRequest {
+            account_id: "a".into(),
+            usdc_micro: 5_000_000_000,
+            eth_lots: 0,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(too_much.code(), tonic::Code::FailedPrecondition);
     let before = c
         .list_orders(clob_proto::v1::ListOrdersRequest {
             account_id: "a".into(),
@@ -264,6 +281,19 @@ async fn restart_replays_the_journal() {
         .await
         .unwrap()
         .into_inner();
+    let statement_before = c
+        .get_statement(GetStatementRequest { account_id: "a".into() })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        (
+            statement_before.withdrawals_usdc_micro,
+            statement_before.bought_lots,
+            statement_before.trades
+        ),
+        (100_000_000, 200, 1)
+    );
     let balances_before = c
         .get_balances(GetBalancesRequest { account_id: "a".into() })
         .await
@@ -302,7 +332,16 @@ async fn restart_replays_the_journal() {
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(balances_after, balances_before, "deposits and settlements replay too");
+    assert_eq!(
+        balances_after, balances_before,
+        "deposits, withdrawals and settlements replay too"
+    );
+    let statement_after = c
+        .get_statement(GetStatementRequest { account_id: "a".into() })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(statement_after, statement_before, "the ledger replays too");
     handle.shutdown().await;
 
     // A third start with a tiny compaction threshold: the journal is folded into a snapshot, the
