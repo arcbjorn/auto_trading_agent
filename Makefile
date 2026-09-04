@@ -2,7 +2,7 @@
 -include .env
 export
 
-.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent eval-oracle eval-null eval-unsafe eval-model eval-perturbed sim demo interop
+.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent docmap eval-oracle eval-null eval-unsafe eval-model eval-perturbed sim demo interop
 
 build:
 	cargo build --workspace --release
@@ -16,6 +16,10 @@ lint:
 
 fmt:
 	cargo fmt --all
+
+# Rewrites the line anchors of every [file.rs::Symbol](...) link in the docs; CI runs it with --check.
+docmap:
+	python3 scripts/docmap.py
 
 bench:
 	cargo run --release -p engine --example bench
