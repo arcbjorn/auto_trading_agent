@@ -145,38 +145,66 @@ impl Journal {
             }
             Err(e) => return Err(e),
         };
-        // A retired journal is the trace of a compaction that did not finish. It is replayed
-        // only when the snapshot is older than it (step 1 crashed); once the snapshot exists and
-        // is newer, its effects are already inside and replaying would double-apply deposits.
+        // A retired journal is the trace of a compaction that did not finish. Whether the
+        // snapshot already contains it is decided by generation, never by a clock: the retired
+        // file is written for generation N+1, so a snapshot at N+1 or later contains it and a
+        // snapshot at N does not. When it must be replayed, recovery finishes the interrupted
+        // compaction (writes the snapshot, then removes the file) before returning, so a second
+        // restart finds the state on disk rather than losing it.
         let retired = Self::retired_path(journal);
         let mut replayed = 0;
         if retired.exists() {
-            let snapshot_is_newer = match (std::fs::metadata(&snapshot), std::fs::metadata(&retired)) {
-                (Ok(s), Ok(r)) => match (s.modified(), r.modified()) {
-                    (Ok(s), Ok(r)) => s >= r,
-                    _ => false,
-                },
-                (Err(_), _) => false,
-                _ => false,
-            };
-            if snapshot_is_newer {
-                eprintln!("engine journal: a compaction was interrupted after its snapshot was written; discarding the retired journal ({})", retired.display());
+            let retired_generation = Self::retired_generation(&retired);
+            if book.generation() >= retired_generation {
+                eprintln!(
+                    "engine journal: a compaction was interrupted after its snapshot was written; the snapshot (generation {}) already contains the retired journal (generation {retired_generation}) at {}",
+                    book.generation(),
+                    retired.display()
+                );
+                let _ = std::fs::remove_file(&retired);
             } else {
-                eprintln!("engine journal: a compaction was interrupted before its snapshot was written; replaying the retired journal ({})", retired.display());
+                eprintln!(
+                    "engine journal: a compaction was interrupted before its snapshot was written; replaying the retired journal ({}) and finishing the compaction",
+                    retired.display()
+                );
                 replayed += Self::replay(&retired, &mut book)?;
+                replayed += Self::replay(journal, &mut book)?;
+                // Finish what the crash interrupted: publish the recovered state, then drop the
+                // retired file and empty the journal. Until the snapshot is renamed into place,
+                // both inputs are still on disk, so another crash here loses nothing.
+                Self::compact(journal, &mut book)?;
+                return Ok((book, replayed));
             }
-            let _ = std::fs::remove_file(&retired);
         }
         replayed += Self::replay(journal, &mut book)?;
         Ok((book, replayed))
     }
 
+    /// The generation a retired journal belongs to, from the marker written beside it. A missing
+    /// or unreadable marker reads as `u64::MAX`, so the journal is replayed rather than dropped:
+    /// replaying a journal the snapshot already holds is caught by the generation check on the
+    /// next line, while dropping one it does not hold would lose state.
+    fn retired_generation(retired: &Path) -> u64 {
+        let mut marker = retired.as_os_str().to_owned();
+        marker.push(".generation");
+        std::fs::read_to_string(std::path::PathBuf::from(marker))
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(u64::MAX)
+    }
+
     /// Writes the book's state as the snapshot (atomically: a temporary file renamed into place)
     /// and empties the journal, so recovery is the snapshot plus whatever is appended afterwards.
     /// Call before opening the journal for appending.
-    pub fn compact(journal: &Path, book: &Book) -> std::io::Result<()> {
+    pub fn compact(journal: &Path, book: &mut Book) -> std::io::Result<()> {
         let snapshot = Self::snapshot_path(journal);
         let retired = Self::retired_path(journal);
+        // The snapshot about to be written belongs to the next generation; the retired journal is
+        // stamped with it, so recovery can tell whether the snapshot contains it.
+        let generation = book.next_generation();
+        let mut marker = retired.as_os_str().to_owned();
+        marker.push(".generation");
+        let marker = std::path::PathBuf::from(marker);
         let mut tmp = snapshot.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = std::path::PathBuf::from(tmp);
@@ -193,6 +221,11 @@ impl Journal {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
+        {
+            let mut f = File::create(&marker)?;
+            f.write_all(generation.to_string().as_bytes())?;
+            f.sync_all()?;
+        }
         sync_dir(journal)?;
         {
             let mut w = BufWriter::new(File::create(&tmp)?);
@@ -203,6 +236,7 @@ impl Journal {
         std::fs::rename(&tmp, &snapshot)?;
         sync_dir(journal)?;
         let _ = std::fs::remove_file(&retired);
+        let _ = std::fs::remove_file(&marker);
         let empty = File::create(journal)?;
         empty.sync_all()?;
         sync_dir(journal)?;
@@ -247,6 +281,7 @@ impl Journal {
                 reader.read_to_string(&mut text)?;
                 let state: BookState = serde_json::from_str(&text).map_err(|e| invalid(e.to_string()))?;
                 let header = SnapshotHeader {
+                    generation: state.generation,
                     last_trade_price: state.last_trade_price,
                     next_order: state.next_order,
                     next_trade: state.next_trade,
@@ -323,60 +358,98 @@ mod tests {
     }
 
     #[test]
-    fn an_interrupted_compaction_never_applies_the_journal_twice() {
-        // Compaction moves the journal aside, writes the snapshot, then deletes the retired file.
-        // A crash between the last two steps used to leave a snapshot that already contained the
-        // journal, plus a journal that would be replayed again: deposits doubled.
-        let path = temp_path("interrupted");
-        let snapshot = Journal::snapshot_path(&path);
-        let retired = Journal::retired_path(&path);
-        for p in [&path, &snapshot, &retired] {
-            let _ = std::fs::remove_file(p);
-        }
-        {
-            let mut j = Journal::open(&path, false).unwrap();
-            j.append(&Record::Deposit {
-                t: 1,
-                account: "a".into(),
-                usdc: 1_000,
-                eth: 5,
-            })
-            .unwrap();
-            j.commit().unwrap();
-        }
+    fn a_snapshot_written_before_closing_times_still_loads() {
+        // The `closed` field used to hold bare order ids. Such a snapshot must still load, or an
+        // upgrade would strand the state it was meant to preserve.
+        let dir = std::env::temp_dir().join(format!("clob-legacy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("journal.jsonl");
+        let legacy = r#"{"orders":[],"trades":[],"fill_ids":[],"closed":[7,8],"balances":[],"ledgers":[],"last_trade_price":null,"next_order":9,"next_trade":1,"next_seq":9,"enforce_balances":true}"#;
+        std::fs::write(Journal::snapshot_path(&path), legacy).unwrap();
         let (book, replayed) = Journal::recover(&path, true, ExposureLimits::default()).unwrap();
-        assert_eq!(replayed, 1);
-        assert_eq!(book.balances("a").usdc_available, 1_000);
+        assert_eq!(replayed, 0);
+        assert_eq!(book.seq(), 9, "the counters come from the old snapshot");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-        // A crash after the snapshot was published but before the retired journal was deleted:
-        // the retired file still holds the deposit the snapshot already contains.
-        let journal_bytes = std::fs::read(&path).unwrap();
-        assert!(
-            !journal_bytes.is_empty(),
-            "the journal holds the deposit before compaction"
-        );
-        Journal::compact(&path, &book).unwrap();
-        std::fs::write(&retired, &journal_bytes).unwrap();
-        // The snapshot must read as newer than the retired file for recovery to discard it.
-        let contents = std::fs::read(&snapshot).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        std::fs::write(&snapshot, contents).unwrap();
-        let (after, replayed) = Journal::recover(&path, true, ExposureLimits::default()).unwrap();
-        assert_eq!(replayed, 0, "the retired journal is already inside the snapshot");
-        assert_eq!(
-            after.balances("a").usdc_available,
-            1_000,
-            "the deposit is not applied twice"
-        );
-        assert!(!retired.exists(), "the retired journal is cleaned up");
+    /// Crash a compaction at each of its three steps and restart twice from each. Nothing may be
+    /// applied twice, and nothing may be lost: the second restart must see what the first did.
+    #[test]
+    fn an_interrupted_compaction_is_recovered_exactly_once() {
+        let root = std::env::temp_dir().join(format!(
+            "clob-compact-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
 
-        // A crash before the snapshot was written: the retired journal is the only record, and
-        // recovery must replay it.
-        for p in [&path, &snapshot, &retired] {
-            let _ = std::fs::remove_file(p);
+        // `after` is the crash point: 0 = before the journal was moved aside, 1 = after it was
+        // moved but before the snapshot was published, 2 = after the snapshot but before the
+        // retired file was deleted.
+        for after in 0..3 {
+            let dir = root.join(format!("cut{after}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("journal.jsonl");
+            let snapshot = Journal::snapshot_path(&path);
+            let retired = Journal::retired_path(&path);
+            let mut marker = retired.as_os_str().to_owned();
+            marker.push(".generation");
+            let marker = std::path::PathBuf::from(marker);
+
+            // One deposit in the journal, and a book that already holds it.
+            {
+                let mut j = Journal::open(&path, false).unwrap();
+                j.append(&Record::Deposit {
+                    t: 1,
+                    account: "a".into(),
+                    usdc: 1_000,
+                    eth: 5,
+                })
+                .unwrap();
+                j.commit().unwrap();
+            }
+            let (book, replayed) = Journal::recover(&path, true, ExposureLimits::default()).unwrap();
+            assert_eq!(replayed, 1);
+            assert_eq!(book.balances("a").usdc_available, 1_000);
+            let journal_bytes = std::fs::read(&path).unwrap();
+
+            // Reproduce the crash by performing compaction's steps up to the cut.
+            let generation = book.generation() + 1;
+            if after >= 1 {
+                std::fs::rename(&path, &retired).unwrap();
+                std::fs::write(&marker, generation.to_string()).unwrap();
+            }
+            if after >= 2 {
+                let mut done = book.clone_for_snapshot();
+                done.set_generation(generation);
+                let mut w = std::io::BufWriter::new(File::create(&snapshot).unwrap());
+                done.write_snapshot(&mut w).unwrap();
+                w.flush().unwrap();
+                std::fs::write(&path, "").unwrap();
+            }
+
+            for restart in 1..=2 {
+                let (recovered, _) = Journal::recover(&path, true, ExposureLimits::default()).unwrap();
+                assert_eq!(
+                    recovered.balances("a").usdc_available,
+                    1_000,
+                    "cut {after}, restart {restart}: the deposit is applied exactly once"
+                );
+                assert!(
+                    !retired.exists(),
+                    "cut {after}, restart {restart}: recovery finishes the compaction"
+                );
+            }
+            assert!(!journal_bytes.is_empty());
         }
+
+        // A retired journal with no marker is replayed rather than dropped: losing state is worse
+        // than the double-apply the generation check then prevents.
+        let dir = root.join("no-marker");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("journal.jsonl");
         {
-            let mut j = Journal::open(&retired, false).unwrap();
+            let mut j = Journal::open(&Journal::retired_path(&path), false).unwrap();
             j.append(&Record::Deposit {
                 t: 1,
                 account: "b".into(),
@@ -386,12 +459,15 @@ mod tests {
             .unwrap();
             j.commit().unwrap();
         }
-        let (rescued, replayed) = Journal::recover(&path, true, ExposureLimits::default()).unwrap();
-        assert_eq!(replayed, 1, "with no snapshot the retired journal is the state");
-        assert_eq!(rescued.balances("b").usdc_available, 2_000);
-        for p in [&path, &snapshot, &retired] {
-            let _ = std::fs::remove_file(p);
+        for restart in 1..=2 {
+            let (b, _) = Journal::recover(&path, true, ExposureLimits::default()).unwrap();
+            assert_eq!(
+                b.balances("b").usdc_available,
+                2_000,
+                "restart {restart}: an unmarked retired journal is rescued and then persisted"
+            );
         }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -493,7 +569,7 @@ mod tests {
         }
         let (mut compacted, replayed) = Journal::recover(&compact_path, false, ExposureLimits::default()).unwrap();
         assert_eq!(replayed, 50);
-        Journal::compact(&compact_path, &compacted).unwrap();
+        Journal::compact(&compact_path, &mut compacted).unwrap();
         assert_eq!(std::fs::metadata(&compact_path).unwrap().len(), 0, "journal emptied");
         let first_line = std::fs::read_to_string(Journal::snapshot_path(&compact_path))
             .unwrap()

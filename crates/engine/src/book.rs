@@ -427,6 +427,9 @@ pub struct Book {
     exposure_limits: ExposureLimits,
     /// Live orders and their notional per account, kept incrementally for the limits.
     exposure: HashMap<Arc<str>, Exposure>,
+    /// How many compactions produced this book. Written into the snapshot; see
+    /// [`SnapshotHeader::generation`].
+    generation: u64,
 }
 
 /// One more live order for the account: `qty` at `price` now rests.
@@ -517,6 +520,24 @@ fn settle(
     }
 }
 
+/// Reads `closed` from either shape: `[[id, closed_at], ..]` as written now, or `[id, ..]` as
+/// written before closing times existed.
+fn closed_entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(OrderId, i64)>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Entry {
+        Timed(OrderId, i64),
+        Bare(OrderId),
+    }
+    Ok(Vec::<Entry>::deserialize(d)?
+        .into_iter()
+        .map(|e| match e {
+            Entry::Timed(id, at) => (id, at),
+            Entry::Bare(id) => (id, 0),
+        })
+        .collect())
+}
+
 /// One line of a streamed snapshot: a header, then every record on its own line, so a
 /// snapshot is written and read without ever holding the whole state in memory twice.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -533,6 +554,10 @@ pub enum SnapshotLine {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SnapshotHeader {
+    /// Which compaction wrote this snapshot. A retired journal carries the generation it belongs
+    /// to, so recovery knows whether the snapshot already contains it without consulting clocks.
+    #[serde(default)]
+    pub generation: u64,
     pub last_trade_price: Option<Price>,
     pub next_order: OrderId,
     pub next_trade: TradeId,
@@ -555,6 +580,7 @@ impl BookBuilder {
             book: Book {
                 enforce_balances: h.enforce_balances,
                 exposure_limits: h.exposure_limits,
+                generation: h.generation,
                 last_trade_price: h.last_trade_price,
                 next_order: h.next_order,
                 next_trade: h.next_trade,
@@ -658,8 +684,9 @@ pub struct BookState {
     #[serde(default)]
     pub fill_ids: Vec<(OrderId, Qty, Vec<TradeId>)>,
     /// Closed orders with their closing time, in closing order, so archiving continues
-    /// identically after a restart.
-    #[serde(default)]
+    /// identically after a restart. A snapshot written before closing times were recorded holds
+    /// bare ids; those read back with a zero time, which archives them by count as before.
+    #[serde(default, deserialize_with = "closed_entries")]
     pub closed: Vec<(OrderId, i64)>,
     pub balances: Vec<(String, Balances)>,
     #[serde(default)]
@@ -672,6 +699,9 @@ pub struct BookState {
     /// The limits in force when the state was written; replay under other limits would differ.
     #[serde(default)]
     pub exposure_limits: ExposureLimits,
+    /// See [`SnapshotHeader::generation`].
+    #[serde(default)]
+    pub generation: u64,
 }
 
 impl Book {
@@ -707,6 +737,7 @@ impl Book {
             next_seq: self.next_seq,
             enforce_balances: self.enforce_balances,
             exposure_limits: self.exposure_limits,
+            generation: self.generation,
         }
     }
 
@@ -721,6 +752,7 @@ impl Book {
             next_seq: state.next_seq,
             enforce_balances: state.enforce_balances,
             exposure_limits: state.exposure_limits,
+            generation: state.generation,
         });
         for (account, bal) in state.balances {
             b.line(SnapshotLine::Balance(account, bal));
@@ -746,6 +778,7 @@ impl Book {
     /// The header of a streamed snapshot: counters and modes, without the records.
     pub fn snapshot_header(&self) -> SnapshotHeader {
         SnapshotHeader {
+            generation: self.generation,
             last_trade_price: self.last_trade_price,
             next_order: self.next_order,
             next_trade: self.next_trade,
@@ -815,6 +848,29 @@ impl Book {
 
     pub fn exposure_limits(&self) -> ExposureLimits {
         self.exposure_limits
+    }
+
+    /// How many compactions produced this book.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Called by compaction before the snapshot is written.
+    pub fn next_generation(&mut self) -> u64 {
+        self.generation += 1;
+        self.generation
+    }
+
+    /// Sets the generation. For tests that reproduce a crash mid-compaction by writing the
+    /// snapshot themselves.
+    pub fn set_generation(&mut self, generation: u64) {
+        self.generation = generation;
+    }
+
+    /// A copy of the book through its durable state. Used by tests that need a second book at the
+    /// same point; the state round trip is itself covered by a test.
+    pub fn clone_for_snapshot(&self) -> Book {
+        Book::from_state(self.state())
     }
 
     /// Whether resting `qty` more at `price` keeps the account within its limits.
