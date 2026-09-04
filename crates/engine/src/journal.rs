@@ -43,6 +43,16 @@ pub enum Record {
     },
 }
 
+/// Makes a rename in the journal's directory durable: the file's own fsync does not promise the
+/// directory entry survives a crash.
+fn sync_dir(journal: &Path) -> std::io::Result<()> {
+    let dir = journal.parent().filter(|p| !p.as_os_str().is_empty());
+    match dir {
+        Some(d) => File::open(d)?.sync_all(),
+        None => File::open(".")?.sync_all(),
+    }
+}
+
 pub struct Journal {
     out: BufWriter<File>,
     fsync: bool,
@@ -131,7 +141,29 @@ impl Journal {
             }
             Err(e) => return Err(e),
         };
-        let replayed = Self::replay(journal, &mut book)?;
+        // A retired journal is the trace of a compaction that did not finish. It is replayed
+        // only when the snapshot is older than it (step 1 crashed); once the snapshot exists and
+        // is newer, its effects are already inside and replaying would double-apply deposits.
+        let retired = Self::retired_path(journal);
+        let mut replayed = 0;
+        if retired.exists() {
+            let snapshot_is_newer = match (std::fs::metadata(&snapshot), std::fs::metadata(&retired)) {
+                (Ok(s), Ok(r)) => match (s.modified(), r.modified()) {
+                    (Ok(s), Ok(r)) => s >= r,
+                    _ => false,
+                },
+                (Err(_), _) => false,
+                _ => false,
+            };
+            if snapshot_is_newer {
+                eprintln!("engine journal: a compaction was interrupted after its snapshot was written; discarding the retired journal ({})", retired.display());
+            } else {
+                eprintln!("engine journal: a compaction was interrupted before its snapshot was written; replaying the retired journal ({})", retired.display());
+                replayed += Self::replay(&retired, &mut book)?;
+            }
+            let _ = std::fs::remove_file(&retired);
+        }
+        replayed += Self::replay(journal, &mut book)?;
         Ok((book, replayed))
     }
 
@@ -140,9 +172,24 @@ impl Journal {
     /// Call before opening the journal for appending.
     pub fn compact(journal: &Path, book: &Book) -> std::io::Result<()> {
         let snapshot = Self::snapshot_path(journal);
+        let retired = Self::retired_path(journal);
         let mut tmp = snapshot.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = std::path::PathBuf::from(tmp);
+        // Three steps, each survivable in either order of a crash:
+        //   1. move the journal aside. A crash here leaves the old snapshot and the retired
+        //      journal, which recovery replays exactly as it would have replayed the journal.
+        //   2. publish the new snapshot by rename, which is atomic. A crash here leaves the new
+        //      snapshot and the retired journal, whose effects it already contains; recovery
+        //      deletes the retired file without replaying it, because the snapshot is newer.
+        //   3. delete the retired journal. A crash here is step 2's state.
+        // The directory is synced after each rename so the entries themselves are durable.
+        match std::fs::rename(journal, &retired) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        sync_dir(journal)?;
         {
             let mut w = BufWriter::new(File::create(&tmp)?);
             book.write_snapshot(&mut w)?;
@@ -150,9 +197,19 @@ impl Journal {
             w.get_ref().sync_all()?;
         }
         std::fs::rename(&tmp, &snapshot)?;
-        let truncated = File::create(journal)?;
-        truncated.sync_all()?;
+        sync_dir(journal)?;
+        let _ = std::fs::remove_file(&retired);
+        let empty = File::create(journal)?;
+        empty.sync_all()?;
+        sync_dir(journal)?;
         Ok(())
+    }
+
+    /// Where a journal waits during compaction. Its presence means a crash interrupted one.
+    pub fn retired_path(journal: &Path) -> std::path::PathBuf {
+        let mut name = journal.as_os_str().to_owned();
+        name.push(".retired");
+        std::path::PathBuf::from(name)
     }
 
     /// Reads a snapshot one line at a time into a book. A file whose first line is not a
@@ -256,6 +313,78 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         std::env::temp_dir().join(format!("clob-journal-{name}-{}-{nanos}.jsonl", std::process::id()))
+    }
+
+    #[test]
+    fn an_interrupted_compaction_never_applies_the_journal_twice() {
+        // Compaction moves the journal aside, writes the snapshot, then deletes the retired file.
+        // A crash between the last two steps used to leave a snapshot that already contained the
+        // journal, plus a journal that would be replayed again: deposits doubled.
+        let path = temp_path("interrupted");
+        let snapshot = Journal::snapshot_path(&path);
+        let retired = Journal::retired_path(&path);
+        for p in [&path, &snapshot, &retired] {
+            let _ = std::fs::remove_file(p);
+        }
+        {
+            let mut j = Journal::open(&path, false).unwrap();
+            j.append(&Record::Deposit {
+                t: 1,
+                account: "a".into(),
+                usdc: 1_000,
+                eth: 5,
+            })
+            .unwrap();
+            j.commit().unwrap();
+        }
+        let (book, replayed) = Journal::recover(&path, true, ExposureLimits::default()).unwrap();
+        assert_eq!(replayed, 1);
+        assert_eq!(book.balances("a").usdc_available, 1_000);
+
+        // A crash after the snapshot was published but before the retired journal was deleted:
+        // the retired file still holds the deposit the snapshot already contains.
+        let journal_bytes = std::fs::read(&path).unwrap();
+        assert!(
+            !journal_bytes.is_empty(),
+            "the journal holds the deposit before compaction"
+        );
+        Journal::compact(&path, &book).unwrap();
+        std::fs::write(&retired, &journal_bytes).unwrap();
+        // The snapshot must read as newer than the retired file for recovery to discard it.
+        let contents = std::fs::read(&snapshot).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&snapshot, contents).unwrap();
+        let (after, replayed) = Journal::recover(&path, true, ExposureLimits::default()).unwrap();
+        assert_eq!(replayed, 0, "the retired journal is already inside the snapshot");
+        assert_eq!(
+            after.balances("a").usdc_available,
+            1_000,
+            "the deposit is not applied twice"
+        );
+        assert!(!retired.exists(), "the retired journal is cleaned up");
+
+        // A crash before the snapshot was written: the retired journal is the only record, and
+        // recovery must replay it.
+        for p in [&path, &snapshot, &retired] {
+            let _ = std::fs::remove_file(p);
+        }
+        {
+            let mut j = Journal::open(&retired, false).unwrap();
+            j.append(&Record::Deposit {
+                t: 1,
+                account: "b".into(),
+                usdc: 2_000,
+                eth: 0,
+            })
+            .unwrap();
+            j.commit().unwrap();
+        }
+        let (rescued, replayed) = Journal::recover(&path, true, ExposureLimits::default()).unwrap();
+        assert_eq!(replayed, 1, "with no snapshot the retired journal is the state");
+        assert_eq!(rescued.balances("b").usdc_available, 2_000);
+        for p in [&path, &snapshot, &retired] {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     #[test]

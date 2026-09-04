@@ -242,11 +242,18 @@ pub fn spawn_with_journal(mut book: Book, capacity: usize, depth: usize, mut jou
                 }
                 if let Some(j) = journal.as_mut() {
                     if let Err(e) = j.commit() {
+                        // The book has already been mutated by this batch but the journal may not
+                        // hold it, so the two no longer agree. Serving on would hand out state a
+                        // restart could not reproduce: stop instead, and let the operator restart
+                        // from the last durable point.
                         tracing_error(&e);
                         for (reply, _) in pending.drain(..) {
                             let _ = reply.send(Err(EngineError::Shutdown));
                         }
-                        continue;
+                        eprintln!(
+                            "journal commit failed; the matcher is stopping so the book cannot drift from its journal"
+                        );
+                        break;
                     }
                 }
                 published.store(Arc::new(book.snapshot(depth)));
