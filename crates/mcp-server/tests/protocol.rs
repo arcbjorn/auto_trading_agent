@@ -414,6 +414,42 @@ async fn tools_against_a_real_engine() {
     let missing = call(&server, 32, "get_order", json!({ "order_id": 99999 })).await;
     assert!(missing["content"][0]["text"].as_str().unwrap().contains("list_orders"));
 
+    // A sell that would cross this account's own resting buy: self-trade prevention cancels the
+    // remainder and the result says so, with what to do about it.
+    let own_bid = call(
+        &server,
+        36,
+        "place_limit_order",
+        json!({ "side": "buy", "price_usdc": "2999.50", "quantity_eth": "0.2" }),
+    )
+    .await;
+    assert_eq!(own_bid["structuredContent"]["status"], "open", "{own_bid}");
+    let crossing = call(
+        &server,
+        37,
+        "place_limit_order",
+        json!({ "side": "sell", "price_usdc": "2999.50", "quantity_eth": "0.1" }),
+    )
+    .await;
+    assert_eq!(crossing["structuredContent"]["status"], "cancelled", "{crossing}");
+    assert_eq!(crossing["structuredContent"]["cancel_reason"], "self_trade_prevention");
+    assert!(crossing["structuredContent"]["note"]
+        .as_str()
+        .unwrap()
+        .contains("own resting order"));
+    let listed = call(&server, 38, "list_orders", json!({ "status": "cancelled", "limit": 1 })).await;
+    assert_eq!(
+        listed["structuredContent"]["orders"][0]["cancel_reason"],
+        "self_trade_prevention"
+    );
+    call(
+        &server,
+        39,
+        "cancel_order",
+        json!({ "order_id": own_bid["structuredContent"]["order_id"].clone() }),
+    )
+    .await;
+
     // Balances in human units: 10 ETH and 50,000 USDC to start, 1.2 ETH bought for 3,601.90 above,
     // everything else cancelled again, so nothing is reserved.
     let b = call(&server, 40, "get_balances", json!({})).await;

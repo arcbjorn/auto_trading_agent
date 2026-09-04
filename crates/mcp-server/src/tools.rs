@@ -161,7 +161,7 @@ fn side_name(side: i32) -> &'static str {
 }
 
 fn order_json(o: &pb::Order) -> Value {
-    json!({
+    let mut v = json!({
         "order_id": o.order_id,
         "client_order_id": o.client_order_id,
         "side": side_name(o.side),
@@ -170,7 +170,24 @@ fn order_json(o: &pb::Order) -> Value {
         "remaining_eth": eth(o.remaining_lots as u64),
         "status": status_name(o.status),
         "seq": o.sequence
-    })
+    });
+    if !o.cancel_reason.is_empty() {
+        v["cancel_reason"] = json!(o.cancel_reason);
+    }
+    v
+}
+
+/// What a cancelled remainder means for the model, in one sentence it can relay.
+fn cancel_note(o: &pb::Order) -> Option<&'static str> {
+    match o.cancel_reason.as_str() {
+        "self_trade_prevention" => Some(
+            "The order would have traded against this account's own resting order, so the unfilled remainder was cancelled. \
+             Cancel or reprice the resting order first, or use a price that does not cross it.",
+        ),
+        "ioc" => Some("Immediate-or-cancel: whatever did not fill at once was cancelled."),
+        "fok" => Some("Fill-or-kill: the full quantity was not available, nothing was filled."),
+        _ => None,
+    }
 }
 
 fn fill_json(t: &pb::Trade) -> Value {
@@ -282,7 +299,8 @@ impl ToolSet {
                     "rejected": { "type": "boolean" }, "code": { "type": "string" }, "message": { "type": "string" }, "hint": { "type": "string" },
                     "order_id": { "type": "string" }, "status": { "type": "string" }, "side": { "type": "string" }, "price_usdc": { "type": "string" },
                     "quantity_eth": { "type": "string" }, "filled_eth": { "type": "string" }, "remaining_eth": { "type": "string" },
-                    "average_fill_price_usdc": { "type": ["string", "null"] }, "fills": { "type": "array" }, "seq": { "type": "integer" } } },
+                    "average_fill_price_usdc": { "type": ["string", "null"] }, "fills": { "type": "array" }, "seq": { "type": "integer" },
+                    "cancel_reason": { "type": "string" }, "note": { "type": "string" } } },
                 "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
             }),
             json!({
@@ -600,7 +618,7 @@ impl ToolSet {
             .iter()
             .map(|f| f.quantity_lots as u128 * f.price_ticks as u128)
             .sum();
-        ToolOutput::ok(json!({
+        let mut out = json!({
             "order_id": o.order_id,
             "status": status_name(o.status),
             "side": side_name(o.side),
@@ -612,7 +630,14 @@ impl ToolSet {
             "fills": resp.fills.iter().map(fill_json).collect::<Vec<_>>(),
             "client_order_id": o.client_order_id,
             "seq": o.sequence
-        }))
+        });
+        if !o.cancel_reason.is_empty() {
+            out["cancel_reason"] = json!(o.cancel_reason);
+        }
+        if let Some(note) = cancel_note(&o) {
+            out["note"] = json!(note);
+        }
+        ToolOutput::ok(out)
     }
 
     async fn cancel(&self, args: &Value) -> ToolOutput {
