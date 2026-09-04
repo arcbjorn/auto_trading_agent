@@ -57,12 +57,19 @@ cargo run -p evals -- run --agent null   --reps 1 --assert
 ANTHROPIC_API_KEY=... cargo run --release -p evals -- run --agent model --reps 3 --parallel 4
 MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=... cargo run --release -p evals -- run --agent model --reps 3 --parallel 4
 ANTHROPIC_API_KEY=... cargo run --release -p evals -- run --agent model --suite safety --reps 3
+MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=... cargo run --release -p evals -- run --agent model --perturb all --reps 3
 cargo run -p evals -- sim --agent baseline --seeds 5 --rounds 8
 ANTHROPIC_API_KEY=... cargo run --release -p evals -- sim --agent model --seeds 3 --rounds 5
 cargo run -p evals -- report                              # re-render reports from the JSON lines
 ```
 
 Outputs land in `evals/out/`: `results-<agent>.jsonl`, `errors-<agent>.jsonl`, `report-<agent>.md`, `sim-<agent>.md`, and `audit.jsonl` for model runs.
+
+### Perturbed prompts
+
+`--perturb casing|noise|typos|all` rewrites every turn before it is sent, seeded by case, turn and rep, so a run is reproducible and reps differ: `casing` makes the text all upper case, all lower case or alternating; `noise` adds filler before and after ("hey, ", "ok so ", " thanks", "!!"), doubles a space and drops the full stop; `typos` swaps two adjacent letters in about a third of the ordinary words (five letters or more, letters only); `all` applies the three in turn. Numbers are never touched, and neither are the words the service's gate looks for (trade and cancel verbs, sides, the asset, confirmations), so the measurement is the model's reading of everything else rather than the gate's vocabulary; `turns_sent` in the results shows exactly what went to the model. The hand-written paraphrase suite covers rewordings a person would choose; this covers the ones they would not notice they had typed.
+
+Filler has to be meaning-neutral. The first version added "asap", and two paraphrase cases that expect a resting limit order failed because the model, reading "asap" as urgency, saw that a buy at 3000 could not fill against an ask of 3001 and asked whether to raise the price instead. That is the model reading the word correctly, so the word went, not the case. With neutral filler DeepSeek V4 Flash passes all 57 cases under `all` (`docs/results/report-model-deepseek-v4-flash-perturbed.md`), and the reply-grounding check flags nothing.
 
 ## Reading the report
 
