@@ -64,7 +64,7 @@ the evaluations reproducible.
 * Order ids, trade ids and sequence numbers are counters.
 * Wall-clock timestamps are passed in by the caller (`now_ns`), recorded for reporting, and never used for ordering.
 
-The property test in `book.rs` generates random sequences of places (GTC, IOC, FOK) and cancels across four accounts and asserts after every step: the book is never crossed, displayed depth equals the open quantity, every trade is at the maker's price and within the taker's limit, no self-trade occurs, sequence numbers are unique, and a replay of the same sequence yields an identical event log.
+The property test in `book.rs` generates random sequences of places (GTC, IOC, FOK) and cancels across four accounts and asserts after every step: the book is never crossed, displayed depth equals the open quantity, every trade is at the maker's price and within the taker's limit, no self-trade occurs, sequence numbers are unique, and a replay of the same sequence yields an identical event log. A second property test runs the same random sequences through a deliberately naive matcher written in the test (resting orders in a vector, the best price and lowest id chosen by a scan on every fill, self-trade prevention and FOK availability spelled out in the obvious way) and asserts after every operation that the book produced the same trades, in order, with the same makers, takers, prices and quantities, and holds the same resting orders with the same remaining quantities. The reference is slow and obviously right; the book is fast and now demonstrably agrees with it.
 
 ## Thread safety and concurrency: the single writer
 
@@ -142,7 +142,7 @@ The batching is what keeps the fsync variant usable under concurrency: one `fsyn
 
 | What | Where | Command |
 |---|---|---|
-| 14 unit tests (rules, cancel, idempotency, IOC/FOK, self-trade, listings, indexed listings against a log scan, reserve/settle/release, ledger and withdrawals, state round trip) and 2 property tests (book invariants and replay; balance conservation and zero-sum ledgers) | `crates/engine/src/book.rs` | `cargo test -p engine` |
+| 14 unit tests (rules, cancel, idempotency, IOC/FOK, self-trade, listings, indexed listings against a log scan, reserve/settle/release, ledger and withdrawals, state round trip) and 3 property tests (book invariants and replay; agreement with a naive reference matcher; balance conservation and zero-sum ledgers) | `crates/engine/src/book.rs` | `cargo test -p engine` |
 | Concurrency (placements, racing cancels), restart from the journal, and status-code integration tests over a real tonic server | `crates/engine-server/tests/concurrency.rs` | `cargo test -p engine-server` |
 | Journal replay identity | `crates/engine/src/journal.rs` | `cargo test -p engine` |
 | Pure book throughput and listing cost in a million-order book | `crates/engine/examples/bench.rs` | `cargo run --release -p engine --example bench` |

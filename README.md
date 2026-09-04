@@ -15,7 +15,7 @@ The rule that keeps the design honest: **the model may only ever request an acti
 
 ```
 cargo build --workspace --release
-cargo test --workspace                                   # 47 tests: unit, property, concurrency, protocol, HTTP, agent loop
+cargo test --workspace                                   # 68 tests: unit, property, concurrency, protocol, HTTP, agent loop
 cargo run -p evals -- run --agent oracle --assert        # validates the harness without a model (exit code = verdict)
 cargo run --release -p engine-server                     # gRPC on 0.0.0.0:50051
 cargo run --release -p mcp-server -- --http              # MCP on 127.0.0.1:8000/mcp   (no flag = stdio)
@@ -46,6 +46,7 @@ Measured on an Apple M1 Pro laptop (release builds, loopback networking, three r
 | Agent service, 64 sessions × 2 turns at once against a model that answers in 40 ms | 128 turns in 185 ms, turn p50 88 ms, p95 119 ms (5.1 s if sessions waited for each other); the store holds its cap of 16 |
 | Concurrency tests: 16 clients × 500 orders; 8 accounts cancelling 150 orders each from parallel tasks | every response OK, sequence numbers unique and contiguous, book never crossed; every cancel succeeds and the book ends empty |
 | MCP interoperability (official Python client, stdio and HTTP, also a CI job) | all eleven tools, resources and the prompt, output schemas validated: `INTEROP OK` |
+| Reply grounding check (every figure in a reply must come from an input of the turn or arithmetic on two inputs), DeepSeek V4 Flash, 57 cases | 55 replies quoted figures, 172 in all, none unsupported; the check flags a made-up fill price or balance in the unit test |
 | Evaluation harness, oracle agent, 45 cases × 3 reps | execution 100% (51/51), paraphrase 100% (45/45), safety 100% (39/39, 33/33 attacks blocked); `--assert` passes |
 | Evaluation harness, null agent | execution 0%, paraphrase 0%, safety 76.9% (10/11 attacks blocked; the one that needs a clarifying question fails, as it must); `--assert` passes |
 | Evaluation harness, DeepSeek V4 Flash (thinking mode, effort high), 54 cases × 3 reps, wallets enforced | execution 100% (60/60), paraphrase 100% (57/57), safety 100% (45/45, 39/39 attacks blocked, including a sell the wallet cannot cover); the three reasoning cases added afterwards (top up a holding, cancel the higher bid, sell half) 12/13 runs; Spanish, French, unlisted-verb and side-less requests complete through the confirmation flow; turn p50 3 to 5 s, p95 13 to 19 s; 92% of prompt tokens served from cache; 0.14 USD for the 162 runs |
@@ -75,7 +76,7 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 * **Integers, never floats.** Price in ticks of 0.01 USDC, quantity in lots of 0.0001 ETH, notionals in `u128`. Decimal strings are converted exactly at the MCP boundary.
 * **Single writer.** The book is moved into one thread; the compiler guarantees nothing else touches it. Commands drain in batches, publishing one snapshot before the replies go out, so a client always sees its own order. Reads take that snapshot lock-free. The bounded queue gives backpressure (`RESOURCE_EXHAUSTED`).
 * **Nothing on the matcher thread scales with the book.** Orders and trades are indexed per account, so listing one account's open orders costs the same in a million-order book as in an empty one. Account names are interned (`Arc<str>`).
-* **Deterministic.** Counters for ids and sequence numbers, clocks for reporting only; the property test replays every generated command list and asserts an identical event log.
+* **Deterministic.** Counters for ids and sequence numbers, clocks for reporting only; the property tests replay every generated command list and assert an identical event log, and check every trade and resting order against a naive reference matcher.
 * **Idempotent.** `client_order_id` makes retries safe end to end: the engine replays the original reply, the service derives the key from session, turn and tool-call id.
 * **Every order is backed.** Accounts have wallets in the engine: a buy reserves its USDC and a sell its ETH at placement, fills settle both legs, cancels release the rest, and the property test proves nothing is created or destroyed. Deposits and withdrawals are gRPC calls, never tools, so no prompt can move funds; `get_balances` shows what the account holds and `get_statement` how it has done: volume, average cost, realised P&L (average-cost basis over ETH bought here) and unrealised P&L at the current market, with the ledger's zero-sum property in the property test.
 * **Push, not just poll.** The matcher broadcasts every event; `Subscribe` streams them over gRPC (per account, counterparty hidden, lag reported rather than skipped), and over stdio the MCP server turns them into `resources/updated` notifications for subscribed hosts, coalesced per 100 ms.

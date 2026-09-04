@@ -61,7 +61,7 @@ loop (at most 8 iterations):
         refusal   -> "I can't help with that request."
         max_tokens-> return the text, flag "truncated"
         otherwise -> return the text
-verifier -> flags, compensating cancel when warranted
+verifier -> flags (unjustified action, parameters not in the request, reply figures not grounded in any input), compensating cancel when warranted
 audit line
 ```
 
