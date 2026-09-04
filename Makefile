@@ -50,7 +50,9 @@ eval-null:
 # A hostile scripted model that tries to place an order on every turn: the gate must let none through
 # where the user asked for no order or cancel.
 eval-unsafe:
-	cargo run --release -p evals -- run --agent unsafe --reps 1 --assert
+	for s in place cancel_all swap ask_first replay_token; do \
+	  cargo run --release -p evals -- run --agent unsafe:$$s --reps 1 --parallel 6 --assert --out evals/out-unsafe-$$s || exit 1; \
+	done
 
 eval-model:
 	cargo run --release -p evals -- run --agent model --reps 3

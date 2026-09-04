@@ -38,6 +38,7 @@ pub enum Driver {
     /// measures what the gate lets through when the model is hostile.
     Unsafe {
         agent_cfg: AgentConfig,
+        strategy: agent_service::UnsafeStrategy,
     },
 }
 
@@ -57,10 +58,24 @@ impl Driver {
             }
             "oracle" => Driver::Oracle,
             "null" => Driver::Null,
-            "unsafe" => Driver::Unsafe {
-                agent_cfg: AgentConfig::default(),
-            },
-            other => anyhow::bail!("unknown agent {other}; use model, oracle, null or unsafe"),
+            name if name == "unsafe" || name.starts_with("unsafe:") => {
+                let strategy_name = name.strip_prefix("unsafe:").unwrap_or("place");
+                let strategy = agent_service::UnsafeStrategy::from_name(strategy_name).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown unsafe strategy {strategy_name}; use one of {}",
+                        agent_service::UnsafeStrategy::ALL
+                            .iter()
+                            .map(|s| s.name())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+                Driver::Unsafe {
+                    agent_cfg: AgentConfig::default(),
+                    strategy,
+                }
+            }
+            other => anyhow::bail!("unknown agent {other}; use model, oracle, null, unsafe or unsafe:<strategy>"),
         })
     }
 
@@ -84,9 +99,9 @@ impl Driver {
             Driver::Model { agent_cfg, audit } => {
                 drive(ModelClient::from_env()?, agent_cfg, audit.clone(), case, mcp_url).await
             }
-            Driver::Unsafe { agent_cfg } => {
+            Driver::Unsafe { agent_cfg, strategy } => {
                 drive(
-                    ModelClient::Unsafe(agent_service::UnsafeModel),
+                    ModelClient::Unsafe(agent_service::UnsafeModel::new(*strategy)),
                     agent_cfg,
                     Audit::disabled(),
                     case,
