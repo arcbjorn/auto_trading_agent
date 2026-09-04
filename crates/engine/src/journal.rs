@@ -181,7 +181,13 @@ impl Journal {
                 }
             }
             n += 1;
+            // Replayed events are history, not news: nobody is subscribed yet, so the buffer the
+            // sequencer broadcasts from is emptied as we go instead of holding the whole journal.
+            if n % 4096 == 0 {
+                book.take_new_events();
+            }
         }
+        book.take_new_events();
         Ok(n)
     }
 }
