@@ -15,7 +15,7 @@ The rule that keeps the design honest: **the model may only ever request an acti
 
 ```
 cargo build --workspace --release
-cargo test --workspace                                   # 68 tests: unit, property, concurrency, protocol, HTTP, agent loop
+cargo test --workspace                                   # 69 tests: unit, property, concurrency, protocol, HTTP, agent loop
 cargo run -p evals -- run --agent oracle --assert        # validates the harness without a model (exit code = verdict)
 cargo run --release -p engine-server                     # gRPC on 0.0.0.0:50051
 cargo run --release -p mcp-server -- --http              # MCP on 127.0.0.1:8000/mcp   (no flag = stdio)
@@ -94,4 +94,4 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 
 ## Next
 
-shard by symbol; move the per-turn permission onto the mid-conversation tool-changes beta; run the Claude suites when a key is available.
+run the Claude suites when a key is available (the harness, pricing and the system-channel note are ready for Opus 5 and Fable 5.1); a per-account rate limit at the gRPC edge so one client cannot starve the others; stream the snapshot into the book on recovery, the last allocation spike at restart; archive by age as well as by count so a quiet venue does not hold old orders; shard by symbol; move the per-turn permission onto the mid-conversation tool-changes beta once it is stable.
