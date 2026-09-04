@@ -131,6 +131,8 @@ message Order {
   OrderStatus status = 8;
   uint64 sequence = 9;
   int64 created_at_unix_ns = 10; // wall clock, for reporting only; never used for ordering
+  // Empty unless CANCELLED: "user", "ioc", "fok" or "self_trade_prevention".
+  string cancel_reason = 11;
 }
 
 message Trade {

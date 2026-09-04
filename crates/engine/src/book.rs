@@ -58,7 +58,7 @@ impl Status {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CancelReason {
     User,
     Ioc,
@@ -77,6 +77,9 @@ pub struct Order {
     pub qty: Qty,
     pub remaining: Qty,
     pub status: Status,
+    /// Why a cancelled order was cancelled: the user, IOC or FOK time in force, or self-trade
+    /// prevention. Callers need this to explain a cancelled order rather than guess.
+    pub cancel_reason: Option<CancelReason>,
     pub seq: Seq,
     /// Wall clock at acceptance, for reporting only. Never used for ordering.
     pub created_at_unix_ns: i64,
@@ -585,6 +588,7 @@ impl Book {
             qty: req.qty,
             remaining: req.qty,
             status: Status::Open,
+            cancel_reason: None,
             seq,
             created_at_unix_ns: now_ns,
         };
@@ -712,6 +716,7 @@ impl Book {
                 }
             }
         }
+        o.cancel_reason = cancel;
         o.status = if o.remaining == 0 {
             Status::Filled
         } else if cancel.is_some() {
@@ -744,6 +749,7 @@ impl Book {
             return Err(EngineError::Precondition(id, o.status));
         }
         o.status = Status::Cancelled;
+        o.cancel_reason = Some(CancelReason::User);
         let (side, price, remaining) = (o.side, o.price, o.remaining);
         let owner = Arc::clone(&o.account);
         if self.enforce_balances {
@@ -1021,7 +1027,10 @@ mod tests {
         let (o, _) = b.place(gtc("a", "c1", Side::Buy, 300_000, 1_000), 0).unwrap();
         assert_eq!(b.snapshot(1).bids[0].qty, 1_000);
         let c = b.cancel("a", o.id).unwrap();
-        assert_eq!(c.status, Status::Cancelled);
+        assert_eq!(
+            (c.status, c.cancel_reason),
+            (Status::Cancelled, Some(CancelReason::User))
+        );
         assert!(b.snapshot(1).bids.is_empty());
         assert_eq!(
             b.cancel("a", o.id),
@@ -1064,6 +1073,7 @@ mod tests {
         b.place(gtc("m", "a", Side::Sell, 300_000, 100), 0).unwrap();
         let (ioc, fills) = b.place(req("t", "i", Side::Buy, 300_000, 300, Tif::Ioc), 0).unwrap();
         assert_eq!((fills.len(), ioc.status, ioc.remaining), (1, Status::Cancelled, 200));
+        assert_eq!(ioc.cancel_reason, Some(CancelReason::Ioc));
         assert!(b.snapshot(1).bids.is_empty());
         b.place(gtc("m", "b", Side::Sell, 300_000, 100), 0).unwrap();
         let before = b.snapshot(5);
@@ -1082,6 +1092,7 @@ mod tests {
         let (o, fills) = b.place(gtc("me", "taker", Side::Buy, 300_200, 200), 0).unwrap();
         assert_eq!(fills.len(), 1); // takes the other account's order first
         assert_eq!((o.status, o.remaining), (Status::Cancelled, 150)); // stops at its own order
+        assert_eq!(o.cancel_reason, Some(CancelReason::SelfTradePrevention));
         assert_eq!(b.snapshot(1).asks[0].qty, 100); // own resting order untouched
         assert!(b.snapshot(1).bids.is_empty()); // remainder did not rest
         assert!(matches!(

@@ -144,6 +144,13 @@ pub fn order_to_pb(o: &engine::Order) -> pb::Order {
         status: status_to_pb(o.status) as i32,
         sequence: o.seq,
         created_at_unix_ns: o.created_at_unix_ns,
+        cancel_reason: match o.cancel_reason {
+            None => String::new(),
+            Some(engine::CancelReason::User) => "user".into(),
+            Some(engine::CancelReason::Ioc) => "ioc".into(),
+            Some(engine::CancelReason::Fok) => "fok".into(),
+            Some(engine::CancelReason::SelfTradePrevention) => "self_trade_prevention".into(),
+        },
     }
 }
 
