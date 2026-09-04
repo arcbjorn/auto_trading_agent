@@ -46,7 +46,7 @@ Measured on an Apple M1 Pro laptop (release builds, loopback networking, three r
 | MCP interoperability (official Python client, stdio and HTTP, also a CI job) | all eleven tools, resources and the prompt, output schemas validated: `INTEROP OK` |
 | Evaluation harness, oracle agent, 45 cases × 3 reps | execution 100% (51/51), paraphrase 100% (45/45), safety 100% (39/39, 33/33 attacks blocked); `--assert` passes |
 | Evaluation harness, null agent | execution 0%, paraphrase 0%, safety 76.9% (10/11 attacks blocked; the one that needs a clarifying question fails, as it must); `--assert` passes |
-| Evaluation harness, DeepSeek V4 Flash (thinking mode, effort high), 54 cases × 3 reps, wallets enforced | execution 100% (60/60), paraphrase 100% (57/57), safety 100% (45/45, 39/39 attacks blocked, including a sell the wallet cannot cover); Spanish, French, unlisted-verb and side-less requests complete through the confirmation flow; turn p50 3 to 5 s, p95 13 to 19 s; 92% of prompt tokens served from cache; 0.14 USD for the 162 runs |
+| Evaluation harness, DeepSeek V4 Flash (thinking mode, effort high), 54 cases × 3 reps, wallets enforced | execution 100% (60/60), paraphrase 100% (57/57), safety 100% (45/45, 39/39 attacks blocked, including a sell the wallet cannot cover); the three reasoning cases added afterwards (top up a holding, cancel the higher bid, sell half) 12/13 runs; Spanish, French, unlisted-verb and side-less requests complete through the confirmation flow; turn p50 3 to 5 s, p95 13 to 19 s; 92% of prompt tokens served from cache; 0.14 USD for the 162 runs |
 | Same suites through the Claude Messages-API client, pointed at DeepSeek's Anthropic-compatible endpoint (`ANTHROPIC_BASE_URL`, model `deepseek-v4-flash`) | execution 100% (60/60), paraphrase 100% (57/57), safety 100% (45/45, 39/39 attacks); the Messages-API code path (system block, tool definitions, tool_use and tool_result blocks, stop reasons, usage fields) exercised against a live server without an Anthropic key; 94% cache hits; 0.13 USD |
 | Same, reasoning effort low | execution 100% (51/51), paraphrase 93% (53/57: guessed "buy" once on a side-less order, stalled twice on the French confirmation), safety 100% (42/42); 0.10 USD and about the same latency, so low effort buys nothing here |
 | Market simulation, DeepSeek V4 Flash, 5 seeds × 8 rounds, 10,000 USDC wallet | goal reached in 5/5 seeds, 0 rule violations, 4 to 6 tool calls per seed, P&L scored from the wallet against the deposit (the scripted baseline: 4/5, 4 to 8 calls, and it overshoots the target) |
@@ -63,7 +63,7 @@ crates/engine-server          tonic servicer, status mapping, concurrency test, 
 crates/mcp-server             jsonrpc.rs, protocol.rs, tools.rs (11 tools), policy.rs, units.rs, transport/{stdio,http}.rs
 crates/agent-service          anthropic.rs (caching, context editing), deepseek.rs (V4 chat completions), model.rs (provider switch), mcp_client.rs, gate.rs (permissions, confirmation, verifier), agent.rs, audit.rs, http.rs, prompts/system.md
 crates/evals                  cases.rs, agents.rs, harness.rs (+ CI invariants), report.rs, sim.rs
-evals/cases/                  54 scenarios: execution, paraphrase, safety
+evals/cases/                  57 scenarios: execution, paraphrase, safety
 scripts/mcp_interop_check.py  drives the MCP server with the official Python client
 docs/                         architecture, engine, MCP, agent service, guardrails, evaluation, decisions, dependencies, runbook
 ```

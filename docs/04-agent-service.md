@@ -75,7 +75,7 @@ On the turn in which the user confirms a pending action, the note changes shape:
 
 Sessions are in-memory and bounded: an append-only message history, the turn counter, a pending confirmation if any, and the last order id. A client-supplied `session_id` must be 1 to 64 characters of letters, digits, `.`, `_` or `-`, because it becomes part of every idempotency key the engine echoes back in listings the model reads; anything else is a 400. When the store holds `MAX_SESSIONS`, sessions idle for longer than `SESSION_IDLE_SECS` are dropped, then the least recently used one. `POST /chat` takes `{"session_id": optional, "message": string}` and answers:
 
-A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) makes a retried POST, from a client that lost the response to a network error, return the earlier answer instead of running the turn, and its actions, again; the last sixteen answers per session are kept. Each session may start twenty turns per minute (`TURNS_PER_MINUTE`); the twenty-first within a minute is answered 429 without touching the model.
+A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) makes a retried POST, from a client that lost the response to a network error, return the earlier answer instead of running the turn, and its actions, again; the last sixteen answers per session are kept. Each session may start twenty turns per minute (`TURNS_PER_MINUTE`); the twenty-first within a minute is answered 429 without touching the model. A session also ends after `MAX_TURNS` (200) with a 409, so no conversation, and no history sent to the model, grows without bound.
 
 ```json
 {
@@ -106,6 +106,7 @@ A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) m
 | `CONFIRM_THRESHOLD_ETH` | `1` | orders at or above this size need a confirmation turn |
 | `CONFIRM_UNPRICED` | `1` | an order whose price or side the user never stated (the model chose it, as for "sell now" or "0.5 ETH @ 3000 please") needs a confirmation turn whatever its size |
 | `TURNS_PER_MINUTE` | `20` | turns one session may start per rolling minute; beyond it `POST /chat` answers 429 |
+| `MAX_TURNS` | `200` | turns one session may hold in total; beyond it `POST /chat` answers 409 and the client starts a new session |
 | `GATE_TOOLS` | `1` | permit action tools only on explicit intent (`0`: everything permitted, the verifier still runs) |
 | `NOTE_CHANNEL` | by model | `system` or `user`: how the per-turn permission note is sent |
 | `PROMPT_CACHE` | `1` | cache breakpoint on the system prompt plus automatic caching of the conversation |

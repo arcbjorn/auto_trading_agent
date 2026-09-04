@@ -108,5 +108,6 @@ See [06 Evaluation](06-evaluation.md). `make eval-oracle` and `make eval-null` n
 | `cache_read_input_tokens` stays 0 across turns | Something rewrites the prompt prefix. The tool list and system prompt must be byte-identical between requests; check `ANTHROPIC_MODEL` did not change mid-session |
 | `403 origin not allowed` on `/mcp` | Browser-based hosts must run on localhost; the server refuses foreign origins by design |
 | `429` from `/chat` | The session started more than `TURNS_PER_MINUTE` turns in the last minute; wait, or raise the limit |
+| `409` from `/chat` | The session reached `MAX_TURNS`; start a new session id |
 | `400 session_id must be ...` from `/chat` | Session ids are limited to 64 plain characters because they become idempotency keys the engine echoes back; use letters, digits, `.`, `_`, `-` |
 | A turn's `flags` contain `note_channel_downgraded` | The model rejected a system-role message; the service switched the permission note to the user turn for this process. Set `NOTE_CHANNEL=user` to skip the first failed request |
