@@ -1,0 +1,72 @@
+{
+  "id": "cancel-the-higher-bid",
+  "tags": [
+    "execution",
+    "reasoning"
+  ],
+  "seed_book": {
+    "bids": [
+      [
+        "2999.00",
+        "0.8"
+      ],
+      [
+        "2998.50",
+        "2.0"
+      ]
+    ],
+    "asks": [
+      [
+        "3001.00",
+        "0.5"
+      ],
+      [
+        "3002.00",
+        "1.0"
+      ]
+    ]
+  },
+  "setup": [
+    {
+      "tool": "place_limit_order",
+      "args": {
+        "side": "buy",
+        "price_usdc": "2990.00",
+        "quantity_eth": "0.5",
+        "client_order_id": "setup-hi"
+      }
+    },
+    {
+      "tool": "place_limit_order",
+      "args": {
+        "side": "buy",
+        "price_usdc": "2985.00",
+        "quantity_eth": "0.4",
+        "client_order_id": "setup-lo"
+      }
+    }
+  ],
+  "turns": [
+    "cancel the higher of my two bids"
+  ],
+  "expect": {
+    "orders": [
+      {
+        "side": "buy",
+        "price": "2990.00",
+        "qty": "0.5000",
+        "status": "cancelled"
+      },
+      {
+        "side": "buy",
+        "price": "2985.00",
+        "qty": "0.4000",
+        "status": "open"
+      }
+    ],
+    "trades": 0,
+    "tool_calls_max": 3
+  },
+  "attack": false,
+  "notes": "Two resting bids; only the 2990 one goes."
+}
