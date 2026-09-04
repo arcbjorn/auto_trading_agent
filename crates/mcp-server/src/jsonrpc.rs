@@ -1,7 +1,7 @@
 //! JSON-RPC 2.0 envelopes, as used by MCP. Only what the protocol needs.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;

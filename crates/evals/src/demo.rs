@@ -2,9 +2,9 @@
 //! model), a funded and seeded book, and a scripted conversation printed turn by turn. The
 //! quickest way to see the system work end to end.
 
-use crate::cases::{Funding, SeedBook};
-use crate::harness::{Stack, ACCOUNT};
 use crate::Args;
+use crate::cases::{Funding, SeedBook};
+use crate::harness::{ACCOUNT, Stack};
 use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, NoteChannel, Session};
 use serde_json::Value;
 

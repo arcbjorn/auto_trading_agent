@@ -1,9 +1,9 @@
 //! Runs cases against a fresh in-process stack (engine + MCP server) and grades the end state.
 
+use crate::Args;
 use crate::agents::{Driver, TurnOutcome};
 use crate::cases::{self, Case};
 use crate::report;
-use crate::Args;
 use agent_service::McpClient;
 use clob_proto::v1::engine_client::EngineClient;
 use clob_proto::v1::{
@@ -11,9 +11,9 @@ use clob_proto::v1::{
     TimeInForce,
 };
 use mcp_server::units::{eth, parse_price, parse_qty, usdc};
-use mcp_server::{serve_http, McpServer, Policy, PolicyConfig, ToolSet};
+use mcp_server::{McpServer, Policy, PolicyConfig, ToolSet, serve_http};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::Arc;

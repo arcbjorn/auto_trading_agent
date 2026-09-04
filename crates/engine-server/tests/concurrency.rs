@@ -6,7 +6,7 @@ use clob_proto::v1::{
     CancelOrderRequest, DepositRequest, GetBalancesRequest, GetOrderBookRequest, GetStatementRequest,
     ListTradesRequest, PlaceOrderRequest, Side, SubscribeRequest, TimeInForce, WithdrawRequest,
 };
-use engine_server::{serve, EngineConfig};
+use engine_server::{EngineConfig, serve};
 
 /// Plenty of both assets, so a test is about matching, not funding.
 async fn fund(c: &mut EngineClient<tonic::transport::Channel>, account: &str) {

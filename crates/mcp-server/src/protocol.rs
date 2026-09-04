@@ -6,9 +6,9 @@
 //! `prompts/list`, `prompts/get`, and `logging/setLevel` (accepted, no-op). Client notifications
 //! are consumed silently. Resource-updated notifications go out over stdio only.
 
-use crate::jsonrpc::{self, param, param_str, Request, RpcError, PARSE_ERROR, RESOURCE_NOT_FOUND};
+use crate::jsonrpc::{self, PARSE_ERROR, RESOURCE_NOT_FOUND, Request, RpcError, param, param_str};
 use crate::tools::ToolSet;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Protocol versions this server speaks. The subset it implements is identical across them.
 pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03-26"];
@@ -107,11 +107,7 @@ impl McpServer {
                         out.push(r);
                     }
                 }
-                if out.is_empty() {
-                    None
-                } else {
-                    Some(Value::Array(out))
-                }
+                if out.is_empty() { None } else { Some(Value::Array(out)) }
             }
             other => self.handle_one(other).await,
         }

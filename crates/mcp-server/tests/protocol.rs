@@ -2,9 +2,9 @@
 //! raw JSON-RPC messages exactly as a host would send them.
 use clob_proto::v1::engine_client::EngineClient;
 use clob_proto::v1::{DepositRequest, PlaceOrderRequest, Side, TimeInForce};
-use engine_server::{serve, EngineConfig, ServerHandle};
-use mcp_server::{serve_http, McpServer, Policy, PolicyConfig, ToolSet};
-use serde_json::{json, Value};
+use engine_server::{EngineConfig, ServerHandle, serve};
+use mcp_server::{McpServer, Policy, PolicyConfig, ToolSet, serve_http};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tonic::transport::Channel;
 
@@ -77,10 +77,12 @@ async fn lifecycle_and_discovery() {
         .await
         .unwrap();
     assert_eq!(r["result"]["protocolVersion"], "2025-11-25");
-    assert!(server
-        .handle_message(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
-        .await
-        .is_none());
+    assert!(
+        server
+            .handle_message(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .await
+            .is_none()
+    );
     assert_eq!(
         server.handle_message(req(3, "ping", json!({}))).await.unwrap()["result"],
         json!({})
@@ -274,10 +276,12 @@ async fn tools_against_a_real_engine() {
     let r = call(&server, 3, "get_order_book", json!({ "depth": 99 })).await;
     assert!(r["content"][0]["text"].as_str().unwrap().contains("between 1 and 20"));
     let r = call(&server, 4, "get_quote", json!({ "side": "long", "quantity_eth": "1" })).await;
-    assert!(r["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("\"buy\" or \"sell\""));
+    assert!(
+        r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"buy\" or \"sell\"")
+    );
     let r = call(&server, 5, "get_order_book", json!({ "depht": 3 })).await;
     assert!(r["content"][0]["text"].as_str().unwrap().contains("unknown field"));
 
@@ -516,10 +520,12 @@ async fn tools_against_a_real_engine() {
     );
     let foreign = call(&server, 31, "get_order", json!({ "order_id": "1" })).await; // the market maker's
     assert_eq!(foreign["isError"], true);
-    assert!(foreign["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Only this account"));
+    assert!(
+        foreign["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Only this account")
+    );
     let missing = call(&server, 32, "get_order", json!({ "order_id": 99999 })).await;
     assert!(missing["content"][0]["text"].as_str().unwrap().contains("list_orders"));
 
@@ -542,10 +548,12 @@ async fn tools_against_a_real_engine() {
     .await;
     assert_eq!(crossing["structuredContent"]["status"], "cancelled", "{crossing}");
     assert_eq!(crossing["structuredContent"]["cancel_reason"], "self_trade_prevention");
-    assert!(crossing["structuredContent"]["note"]
-        .as_str()
-        .unwrap()
-        .contains("own resting order"));
+    assert!(
+        crossing["structuredContent"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("own resting order")
+    );
     let listed = call(&server, 38, "list_orders", json!({ "status": "cancelled", "limit": 1 })).await;
     assert_eq!(
         listed["structuredContent"]["orders"][0]["cancel_reason"],
@@ -604,10 +612,12 @@ async fn tools_against_a_real_engine() {
     )
     .await;
     assert_eq!(smuggle["isError"], true, "{smuggle}");
-    assert!(smuggle["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("client_order_id must be"));
+    assert!(
+        smuggle["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("client_order_id must be")
+    );
     let long = "a".repeat(129);
     let long = call(
         &server,
@@ -641,10 +651,12 @@ async fn collar_uses_last_trade_or_the_quoted_side_when_the_book_is_one_sided() 
     )
     .await;
     assert_eq!(far["structuredContent"]["code"], "PRICE_COLLAR", "{far}");
-    assert!(far["structuredContent"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("reference price 3000.00"));
+    assert!(
+        far["structuredContent"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("reference price 3000.00")
+    );
     // A trade empties the ask side; the last trade price is the reference now.
     let hit = call(
         &server,

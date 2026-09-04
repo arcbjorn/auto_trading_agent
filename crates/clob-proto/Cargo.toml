@@ -16,4 +16,5 @@ prost = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = "0.14"
+prost-build = "0.14"
 protoc-bin-vendored = "3"

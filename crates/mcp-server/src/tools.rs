@@ -3,12 +3,12 @@
 //! (quotes, averages, notionals) done here in exact integer math.
 
 use crate::jsonrpc::RpcError;
-use crate::policy::{reference_price, Policy};
+use crate::policy::{Policy, reference_price};
 use crate::units::{average_price, eth, mid, parse_price, parse_qty, signed_usdc_from_micro, usdc, usdc_from_micro};
 use clob_proto::v1 as pb;
 use clob_proto::v1::engine_client::EngineClient;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tonic::transport::Channel;
 
@@ -659,7 +659,7 @@ impl ToolSet {
                 return ToolOutput::err(format!(
                     "client_order_id must be 1-{MAX_CLIENT_ID_LEN} characters of letters, digits, '.', '_', ':' or '-'; got {} characters",
                     id.chars().count()
-                ))
+                ));
             }
             None => new_client_order_id(),
         };
@@ -883,7 +883,7 @@ impl ToolSet {
             Some(other) => {
                 return ToolOutput::err(format!(
                     "status must be one of open, filled, cancelled, all; got {other:?}"
-                ))
+                ));
             }
         };
         let req = pb::ListOrdersRequest {

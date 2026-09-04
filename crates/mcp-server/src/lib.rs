@@ -18,8 +18,8 @@ pub mod tools;
 pub mod transport;
 pub mod units;
 
-pub use policy::{reference_price, Policy, PolicyConfig, Rejection};
-pub use protocol::{McpServer, LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS};
+pub use policy::{Policy, PolicyConfig, Rejection, reference_price};
+pub use protocol::{LATEST_PROTOCOL_VERSION, McpServer, SUPPORTED_PROTOCOL_VERSIONS};
 pub use tools::ToolSet;
-pub use transport::http::{serve_http, HttpServerHandle};
+pub use transport::http::{HttpServerHandle, serve_http};
 pub use transport::stdio::run_stdio;

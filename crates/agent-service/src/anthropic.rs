@@ -1,7 +1,7 @@
 //! Minimal Messages API client: one endpoint, one JSON body, typed just enough to drive the loop.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";

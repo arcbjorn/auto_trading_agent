@@ -4,7 +4,7 @@
 //! write-ahead journal on.
 use clob_proto::v1::engine_client::EngineClient;
 use clob_proto::v1::{DepositRequest, PlaceOrderRequest, Side, TimeInForce};
-use engine_server::{serve, EngineConfig};
+use engine_server::{EngineConfig, serve};
 use std::time::Instant;
 
 fn percentile(sorted: &[u128], p: f64) -> u128 {

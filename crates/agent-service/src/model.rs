@@ -5,7 +5,7 @@
 
 use crate::anthropic::{AnthropicClient, AnthropicConfig, ApiError, Message};
 use crate::deepseek::{DeepSeekClient, DeepSeekConfig};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub enum ModelClient {
     Anthropic(AnthropicClient),

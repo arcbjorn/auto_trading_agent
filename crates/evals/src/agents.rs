@@ -4,7 +4,7 @@
 use crate::cases::Case;
 use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, Session};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Default, Serialize)]

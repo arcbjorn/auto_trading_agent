@@ -20,7 +20,7 @@
 //! Clones share one chain, so every writer in a process appends through the same lock. One log
 //! belongs to one process: two processes appending to the same file would interleave two chains.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};

@@ -17,7 +17,7 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{header, Method, Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode, header};
 use hyper_util::rt::TokioIo;
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -85,7 +85,7 @@ async fn handle(req: Request<Incoming>, server: Arc<McpServer>) -> Result<Respon
                 .status(StatusCode::METHOD_NOT_ALLOWED)
                 .header(header::ALLOW, "POST")
                 .body(Full::new(Bytes::new()))
-                .expect("static response"))
+                .expect("static response"));
         }
         _ => return Ok(text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed")),
     }

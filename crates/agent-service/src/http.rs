@@ -8,9 +8,9 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{header, Method, Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode, header};
 use hyper_util::rt::TokioIo;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -167,7 +167,7 @@ impl State {
                                 return Err(Box::new(respond(
                                     StatusCode::TOO_MANY_REQUESTS,
                                     json!({ "error": "every session is busy; retry shortly", "session_id": id }),
-                                )))
+                                )));
                             }
                         }
                     }
@@ -233,7 +233,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     return Ok(respond(
                         StatusCode::PAYLOAD_TOO_LARGE,
                         json!({ "error": "body too large" }),
-                    ))
+                    ));
                 }
             };
             let input: Value = match serde_json::from_slice(&body) {
@@ -242,7 +242,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     return Ok(respond(
                         StatusCode::BAD_REQUEST,
                         json!({ "error": format!("invalid JSON: {e}") }),
-                    ))
+                    ));
                 }
             };
             let Some(message) = input["message"].as_str().filter(|m| !m.trim().is_empty()) else {
@@ -264,7 +264,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     return Ok(respond(
                         StatusCode::BAD_REQUEST,
                         json!({ "error": "session_id must be 1-64 characters of letters, digits, '.', '_' or '-'" }),
-                    ))
+                    ));
                 }
             };
             let request_id = match input["request_id"].as_str() {
@@ -274,7 +274,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     return Ok(respond(
                         StatusCode::BAD_REQUEST,
                         json!({ "error": "request_id must be 1-64 characters of letters, digits, '.', '_' or '-'" }),
-                    ))
+                    ));
                 }
             };
             let lease = match state.session(&session_id) {

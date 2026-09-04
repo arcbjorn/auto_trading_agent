@@ -1,6 +1,6 @@
 //! JSON-RPC client for an MCP server's Streamable HTTP endpoint (stateless mode).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, thiserror::Error)]

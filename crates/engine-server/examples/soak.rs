@@ -6,7 +6,7 @@
 //! `SOAK_ORDERS` (default 1,000,000) orders per round, `SOAK_ROUNDS` (default 3).
 use clob_proto::v1::engine_client::EngineClient;
 use clob_proto::v1::{CancelOrderRequest, DepositRequest, PlaceOrderRequest, Side, TimeInForce};
-use engine_server::{serve, EngineConfig};
+use engine_server::{EngineConfig, serve};
 use std::time::Instant;
 
 fn env_u64(name: &str, default: u64) -> u64 {

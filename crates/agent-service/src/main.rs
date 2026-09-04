@@ -23,7 +23,7 @@
 //!   TURNS_PER_MINUTE       turns one session may start per minute (default 20)
 //!   MAX_CONTEXT_TOKENS      prompt tokens a session's history may reach (default 150000)
 //!   MAX_TURNS              turns one session may hold in total (default 200)
-use agent_service::http::{serve, SessionLimits, State};
+use agent_service::http::{SessionLimits, State, serve};
 use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, NoteChannel};
 use std::sync::Arc;
 use std::time::Duration;

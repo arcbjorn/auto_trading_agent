@@ -11,7 +11,7 @@
 //! the MCP server without either the words or the confirmation.
 
 use mcp_server::units::{eth, parse_price, parse_qty, usdc_from_micro};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 pub const ACTION_TOOLS: [&str; 3] = ["place_limit_order", "cancel_order", "cancel_all_orders"];
@@ -197,10 +197,9 @@ fn clause_is_negated(clause: &str) -> bool {
     if ["n't", "cannot", "can not"].iter().any(|c| lower.contains(c)) {
         return true;
     }
-    let negated = words(&lower)
+    words(&lower)
         .map(|w| w.trim_matches(|c| c == '.' || c == ','))
-        .any(|w| NEGATIONS.contains(&w));
-    negated
+        .any(|w| NEGATIONS.contains(&w))
 }
 
 /// A question about what happened is not an instruction to do it.
@@ -1286,10 +1285,12 @@ mod tests {
         ) else {
             panic!("expected preview")
         };
-        assert!(unpriced["instruction"]
-            .as_str()
-            .unwrap()
-            .contains("did not state this price"));
+        assert!(
+            unpriced["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("did not state this price")
+        );
         pending = None;
         // The side was never stated ("0.5 ETH @ 3000 please"): the model chose it, so confirm.
         let Intercept::Reply(unsided) = gate.intercept(
@@ -1300,10 +1301,12 @@ mod tests {
         ) else {
             panic!("expected preview")
         };
-        assert!(unsided["instruction"]
-            .as_str()
-            .unwrap()
-            .contains("did not state the side"));
+        assert!(
+            unsided["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("did not state the side")
+        );
         pending = None;
         assert!(Permissions::note_confirming("cancel_order", "cancel order 7", "cfm-x").contains("cfm-x"));
         let lenient = ConfirmationGate {
@@ -1486,8 +1489,10 @@ mod tests {
 
     #[test]
     fn verifier_flags_unrequested_actions_and_invented_numbers() {
-        assert!(verify("show my orders", &[placed("3000", "0.5", true)], false)
-            .contains(&"intent_mismatch:place_limit_order".to_string()));
+        assert!(
+            verify("show my orders", &[placed("3000", "0.5", true)], false)
+                .contains(&"intent_mismatch:place_limit_order".to_string())
+        );
         assert!(verify("buy 0.5 eth at 3000", &[placed("3000", "0.5", true)], false).is_empty());
         assert!(verify("buy half an eth at 3,000", &[placed("3000.00", "0.5", true)], false).is_empty());
         assert!(verify("buy some eth", &[placed("3000", "0.5", true)], false).is_empty()); // no numbers to check

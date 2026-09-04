@@ -11,7 +11,7 @@
 //! and `deepseek-v4-flash` (1M context, up to 384K output, tool calls in thinking mode).
 
 use crate::anthropic::{ApiError, Message};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.deepseek.com";

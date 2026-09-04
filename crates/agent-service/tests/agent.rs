@@ -1,6 +1,6 @@
 //! The whole service against a real engine and MCP server, with the model replaced by a scripted
 //! mock of the Messages API. Every scenario checks the engine's end state, not the transcript.
-use agent_service::http::{serve as serve_api, State};
+use agent_service::http::{State, serve as serve_api};
 use agent_service::{
     Agent, AgentConfig, AnthropicClient, AnthropicConfig, Audit, DeepSeekClient, DeepSeekConfig, McpClient,
     NoteChannel, Session,
@@ -12,8 +12,8 @@ use http_body_util::{BodyExt, Full};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use mcp_server::{serve_http, McpServer, Policy, PolicyConfig, ToolSet};
-use serde_json::{json, Value};
+use mcp_server::{McpServer, Policy, PolicyConfig, ToolSet, serve_http};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tonic::transport::Channel;
@@ -236,19 +236,23 @@ async fn read_only_question_permits_no_action_tools() {
     // The user turn carries the user's words and the service's permission note.
     let first = requests[0]["messages"][0].clone();
     assert_eq!(first["content"][0]["text"], "What's ETH trading at?");
-    assert!(first["content"][1]["text"]
-        .as_str()
-        .unwrap()
-        .contains("place orders = confirmation required; cancel orders = confirmation required"));
+    assert!(
+        first["content"][1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("place orders = confirmation required; cancel orders = confirmation required")
+    );
     let last = requests[1]["messages"].as_array().unwrap().last().unwrap().clone();
     assert_eq!(last["role"], "user");
     assert_eq!(last["content"][0]["type"], "tool_result");
     assert_eq!(last["content"][0]["tool_use_id"], "tu_get_market_summary");
     // Caching: a breakpoint on the system block, automatic caching for the tail.
-    assert!(requests[0]["system"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Trade or cancel only"));
+    assert!(
+        requests[0]["system"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Trade or cancel only")
+    );
     assert_eq!(requests[0]["system"][0]["cache_control"]["type"], "ephemeral");
     assert_eq!(requests[0]["cache_control"]["type"], "ephemeral");
     assert_eq!(requests[0]["output_config"]["effort"], "medium");
@@ -277,10 +281,12 @@ async fn explicit_buy_places_an_order_with_an_idempotency_key() {
         .unwrap();
     assert!(turn.flags.is_empty(), "{:?}", turn.flags);
     assert_eq!(turn.permitted, vec!["place_limit_order".to_string()]);
-    assert!(turn.tool_calls[0].args["client_order_id"]
-        .as_str()
-        .unwrap()
-        .starts_with("t2-1-"));
+    assert!(
+        turn.tool_calls[0].args["client_order_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("t2-1-")
+    );
     let open = demo_orders(&mut s.engine, OrderStatus::Open).await;
     assert_eq!(open.len(), 1);
     assert_eq!((open[0].price_ticks, open[0].quantity_lots), (299_000, 5_000));
@@ -373,9 +379,11 @@ async fn unrequested_action_becomes_a_confirmation_request() {
     assert!(!turn.tool_calls[0].is_error && turn.tool_calls[0].intercepted);
     assert!(turn.tool_calls[0].result.contains("did not clearly ask to trade"));
     assert!(session.pending.is_some(), "the action waits for the user's word");
-    assert!(demo_orders(&mut s.engine, OrderStatus::StatusUnspecified)
-        .await
-        .is_empty());
+    assert!(
+        demo_orders(&mut s.engine, OrderStatus::StatusUnspecified)
+            .await
+            .is_empty()
+    );
 }
 
 /// A cancel in a language the keyword gate does not know: it is held, the user confirms in their
@@ -540,10 +548,12 @@ async fn permission_note_travels_as_a_system_message_on_supporting_models() {
     assert_eq!(m[0]["role"], "user");
     assert_eq!(m[0]["content"], "buy 0.5 eth at 2990");
     assert_eq!(m[1]["role"], "system");
-    assert!(m[1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("place orders = allowed; cancel orders = confirmation required"));
+    assert!(
+        m[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("place orders = allowed; cancel orders = confirmation required")
+    );
     // The second request keeps the same prefix and appends the assistant turn and the results.
     let m2 = requests[1]["messages"].as_array().unwrap();
     assert_eq!(&m2[..2], &m[..2]);
@@ -691,10 +701,12 @@ async fn deepseek_provider_round_trips_tool_calls_and_reasoning() {
     assert_eq!(first["thinking"]["type"], "enabled");
     assert_eq!(first["reasoning_effort"], "high");
     assert_eq!(first["messages"][0]["role"], "system");
-    assert!(first["messages"][1]["content"]
-        .as_str()
-        .unwrap()
-        .starts_with("buy 0.5 eth at 2990"));
+    assert!(
+        first["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("buy 0.5 eth at 2990")
+    );
     assert!(
         first["messages"][1]["content"].as_str().unwrap().contains("[service]"),
         "note travels inside the user turn"

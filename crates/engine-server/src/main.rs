@@ -16,7 +16,7 @@
 //!   ENGINE_FUND          accounts credited on an empty book, whole units: "demo:50000:10,mm:1000000:1000"
 //!                        (account:USDC:ETH); journaled, and skipped when a journal was replayed
 //!   RUST_LOG      tracing filter (default info)
-use engine_server::{serve, EngineConfig};
+use engine_server::{EngineConfig, serve};
 
 /// "account:USDC:ETH,..." in whole units -> (account, micro-USDC, lots).
 fn parse_funding(spec: &str) -> anyhow::Result<Vec<(String, u64, u64)>> {

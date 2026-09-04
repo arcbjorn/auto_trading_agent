@@ -11,9 +11,10 @@ pub mod journal;
 pub mod sequencer;
 
 pub use book::{
-    Balances, Book, BookBuilder, BookState, CancelReason, EngineError, Event, ExposureLimits, Ledger, LevelView, Order,
-    OrderId, PlaceRequest, Price, Qty, Retention, Seq, Side, Snapshot, SnapshotHeader, SnapshotLine, Status, Tif,
-    Trade, TradeId, MAX_PRICE, MAX_QTY, RECENT_EVENTS, RETAINED_CLOSED_ORDERS, RETAINED_FOR_NS, RETAINED_TRADES,
+    Balances, Book, BookBuilder, BookState, CancelReason, EngineError, Event, ExposureLimits, Ledger, LevelView,
+    MAX_PRICE, MAX_QTY, Order, OrderId, PlaceRequest, Price, Qty, RECENT_EVENTS, RETAINED_CLOSED_ORDERS,
+    RETAINED_FOR_NS, RETAINED_TRADES, Retention, Seq, Side, Snapshot, SnapshotHeader, SnapshotLine, Status, Tif, Trade,
+    TradeId,
 };
 pub use journal::{Journal, Record};
-pub use sequencer::{spawn, spawn_with_journal, Command, EngineHandle, Reply, Stats, Top, EVENT_BUFFER};
+pub use sequencer::{Command, EVENT_BUFFER, EngineHandle, Reply, Stats, Top, spawn, spawn_with_journal};

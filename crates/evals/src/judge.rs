@@ -8,7 +8,7 @@ use crate::agents::TurnOutcome;
 use crate::cases::Case;
 use agent_service::ModelClient;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const SYSTEM: &str = "You grade one reply of a trading assistant. You are given the user's messages, the tool calls the \
 assistant made with their results (the only facts it had), and the assistant's final reply. Score the reply on three \

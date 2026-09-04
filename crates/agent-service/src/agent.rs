@@ -4,11 +4,11 @@
 
 use crate::anthropic::ApiError;
 use crate::audit::Audit;
-use crate::gate::{self, ConfirmationGate, Executed, Intercept, PendingConfirmation, Permissions, ACTION_TOOLS};
+use crate::gate::{self, ACTION_TOOLS, ConfirmationGate, Executed, Intercept, PendingConfirmation, Permissions};
 use crate::mcp_client::{McpClient, McpError};
 use crate::model::ModelClient;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -452,10 +452,12 @@ impl Agent {
                                         Err(e) => {
                                             flags.push("audit_unavailable".into());
                                             (
-                                            format!("action refused: the audit log cannot be written ({e}); nothing was sent to the engine"),
-                                            true,
-                                            false,
-                                        )
+                                                format!(
+                                                    "action refused: the audit log cannot be written ({e}); nothing was sent to the engine"
+                                                ),
+                                                true,
+                                                false,
+                                            )
                                         }
                                         Ok(()) => match self.mcp.call_tool(&name, &clean).await {
                                             Ok(r) => {

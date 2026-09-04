@@ -10,7 +10,7 @@
 //!   POLICY_*      risk limits, see policy.rs; TRADING_HALTED=1 rejects every action
 //!   RUST_LOG      tracing filter (default info); logs go to stderr
 use clob_proto::v1::engine_client::EngineClient;
-use mcp_server::{run_stdio, serve_http, McpServer, Policy, PolicyConfig, ToolSet};
+use mcp_server::{McpServer, Policy, PolicyConfig, ToolSet, run_stdio, serve_http};
 use std::sync::Arc;
 
 #[tokio::main]

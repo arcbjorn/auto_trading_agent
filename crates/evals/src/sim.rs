@@ -1,8 +1,8 @@
 //! Simulation: a seeded market-maker bot moves the book for several rounds while the agent pursues
 //! a goal. Scores goal completion, rule violations and P&L against a scripted baseline.
 
-use crate::harness::{Stack, ACCOUNT};
 use crate::Args;
+use crate::harness::{ACCOUNT, Stack};
 use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, Session};
 use clob_proto::v1::{
     CancelOrderRequest, DepositRequest, GetBalancesRequest, GetOrderBookRequest, ListOrdersRequest, ListTradesRequest,
@@ -165,7 +165,9 @@ fn goal_prompt(round: u32, rounds: u32, filled: u64) -> String {
 }
 
 pub async fn run(args: &Args) -> anyhow::Result<()> {
-    let mut table = String::from("| seed | agent | filled ETH | avg cost | final mid | P&L USDC | goal | violations | tool calls |\n|---|---|---|---|---|---|---|---|---|\n");
+    let mut table = String::from(
+        "| seed | agent | filled ETH | avg cost | final mid | P&L USDC | goal | violations | tool calls |\n|---|---|---|---|---|---|---|---|---|\n",
+    );
     for seed in 0..args.seeds {
         let mut stack = Stack::start().await?;
         for (account, usdc, eth) in [
@@ -288,7 +290,10 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
         ));
         stack.shutdown().await;
     }
-    let md = format!("# Simulation ({} agent, {} seeds x {} rounds)\n\nGoal: accumulate 2 ETH at or below 3050.00 with limit bids, never more than 0.5% above the best bid.\n\n{table}", args.agent, args.seeds, args.rounds);
+    let md = format!(
+        "# Simulation ({} agent, {} seeds x {} rounds)\n\nGoal: accumulate 2 ETH at or below 3050.00 with limit bids, never more than 0.5% above the best bid.\n\n{table}",
+        args.agent, args.seeds, args.rounds
+    );
     std::fs::write(args.out_dir.join(format!("sim-{}.md", args.agent)), &md)?;
     println!("{md}");
     Ok(())
