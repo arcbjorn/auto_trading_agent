@@ -1,3 +1,7 @@
+# Local secrets (API keys) live in .env, which is git-ignored; every recipe sees them.
+-include .env
+export
+
 .PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent eval-oracle eval-null eval-unsafe eval-model eval-perturbed sim demo interop
 
 build:
