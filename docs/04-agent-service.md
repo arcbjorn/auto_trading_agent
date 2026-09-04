@@ -67,6 +67,8 @@ audit: a pre_action line before every action tool call (the call is refused if i
 
 All tool results of one assistant turn go back in a single user message, as the API requires for parallel tool use. A tool the model calls outside the turn's permission is not refused; it is turned into a confirmation request (`needs_confirmation`, flagged `confirmation_requested:no_intent`) and held until the user says so in a turn of their own, so a misbehaving model call can never reach the engine on its own, and a request the keyword gate does not recognise ("compra medio ETH a 3000", "get me half an eth at 3000") still works after one question. The same token flow covers cancels: the token is bound to the tool and its arguments, and a pending cancel permits cancels, not placements, on the confirming turn.
 
+`GET /metrics` renders turns by outcome, tool calls by tool and outcome (ok, held, error), flag families, a model-latency histogram and live sessions, in the Prometheus text format.
+
 A bare confirmation ("yes", "ok, confirm", "sí") when nothing is pending stands for the previous user message: the gate evaluates permission and the stated figures over both, and an order matching them needs no token, since the user has just confirmed it in words. The flag `permission_carried_over` marks such turns.
 
 Permission comes from the user's words: a trade verb (buy, sell, bid, offer, go long, grab, dump, and so on) or the shape of an order (the asset plus at least two numbers, as in "0.5 ETH @ 3000"), a cancel verb for `cancel_order` and `cancel_all_orders`, or a confirmation word while an order is pending. These are heuristics, and the paraphrase suite is where they are measured; the verifier applies the same rules after the fact and additionally flags a placed order whose price and quantity both fail to appear in a message that did contain numbers (`params_not_in_request`).
@@ -109,6 +111,7 @@ A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) m
 | `CONFIRM_UNPRICED` | `1` | an order whose price or side the user never stated (the model chose it, as for "sell now" or "0.5 ETH @ 3000 please") needs a confirmation turn whatever its size |
 | `TURNS_PER_MINUTE` | `20` | turns one session may start per rolling minute; beyond it `POST /chat` answers 429 |
 | `MAX_TURNS` | `200` | turns one session may hold in total; beyond it `POST /chat` answers 409 and the client starts a new session |
+| `MAX_CONTEXT_TOKENS` | `150000` | prompt tokens the history may reach, from the model's own usage report; beyond it `POST /chat` answers 409. Turns bound the count, this bounds the size |
 | `GATE_TOOLS` | `1` | permit action tools only on explicit intent (`0`: everything permitted, the verifier still runs) |
 | `NOTE_CHANNEL` | by model | `system` or `user`: how the per-turn permission note is sent |
 | `PROMPT_CACHE` | `1` | cache breakpoint on the system prompt plus automatic caching of the conversation |

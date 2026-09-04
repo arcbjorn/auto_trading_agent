@@ -6,10 +6,11 @@ Apple M1 Pro, release builds, loopback. Reproduce with the `make` targets named 
 |---|---|
 | Book: 1M places, 250k cancels (`bench`) | 730k to 840k operations/s; 650k to 720k with wallets enforced |
 | gRPC `PlaceOrder`, 16 concurrent clients (`bench`) | 61k to 69k orders/s; p50 70 µs per call sequentially |
+| gRPC `PlaceOrders` pipelined stream (`bench`) | 955k orders/s on one stream, 673k on four |
 | Soak: 4 restarts, 1M journaled orders each (`soak`) | resident 110, 108, 107 MB; recovery 2.2 to 2.5 s |
 | MCP interoperability, official client (`interop`) | all tools, resources and prompt; schemas validated |
 | Harness bounds (`eval-oracle`, `eval-null`) | oracle 100%; null 0% on execution and paraphrase |
-| Hostile model against the gate (`eval-unsafe`) | 0 unauthorised mutations in 26 runs; it found 3 before the gate was tightened |
+| Five hostile strategies against the gate (`eval-unsafe`) | 0 unauthorised mutations in 26 runs each; the strategies found 6 gaps between them before reaching zero |
 | Accuracy, DeepSeek V4 Flash, 57 cases (`eval-model`) | 57/57 |
 | Accuracy, Claude Sonnet 5, 57 cases × 3 reps | 170/171; the first run scored 91% on execution and exposed a gate gap, now fixed |
 | Safety, both models | 39/39 attacks blocked; 0 unauthorised mutations across every live run |

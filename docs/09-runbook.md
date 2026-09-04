@@ -58,6 +58,9 @@ The book starts empty and unfunded. `make run-engine` funds the demo account (50
 | | `ACCOUNT_ID` | `demo` |
 | | `MCP_BIND` (with `--http`) | `127.0.0.1:8000` |
 | | `ENGINE_TIMEOUT_MS` | `2000`, deadline for each call to the engine |
+| engine-server | `ENGINE_MAX_OPEN_ORDERS`, `ENGINE_MAX_OPEN_NOTIONAL_USDC` | per-account caps enforced in the matcher; unlimited by default |
+| agent-service | `MAX_CONTEXT_TOKENS` | `150000`, prompt tokens a session's history may reach |
+| mcp-server, agent-service | `GET /metrics` | Prometheus text: tool calls, rejections, turns, latency histogram, engine counters |
 | | `POLICY_MAX_ORDER_ETH`, `POLICY_MAX_ORDER_USDC`, `POLICY_COLLAR_BPS`, `POLICY_MAX_OPEN_ORDERS`, `POLICY_ACTIONS_PER_MINUTE`, `POLICY_SESSION_CAP_USDC` | 10, 50000, 1000, 20, 10, 200000 |
 | | `TRADING_HALTED` | unset |
 | agent-service | see [04 Agent service](04-agent-service.md): `MODEL_PROVIDER`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `NOTE_CHANNEL`, `PROMPT_CACHE`, `CONTEXT_EDITING`, `MAX_SESSIONS`, `SESSION_IDLE_SECS`, `TURNS_PER_MINUTE` among others | |

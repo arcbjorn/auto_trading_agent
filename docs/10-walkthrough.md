@@ -16,7 +16,7 @@ cargo test --workspace
 ```
 make eval-oracle      # performs each case's expected outcome through MCP: must score 100%
 make eval-null        # does nothing: must fail every execution case
-make eval-unsafe      # a hostile model tries to trade on every turn: must cause no unauthorised mutation
+make eval-unsafe      # five hostile strategies try to trade or cancel on every turn: none may mutate without authorisation
 ```
 
 Each prints a report and `invariants hold for the <agent> agent`; a violation exits non-zero. The grader reads the engine's end state, not the reply: [harness.rs::grade](../crates/evals/src/harness.rs#L214-L266).
@@ -76,6 +76,7 @@ Other observation points while the services run:
 grpcurl -plaintext localhost:50051 list                         # reflection is on; the engine has no other interface
 grpcurl -plaintext localhost:50051 grpc.health.v1.Health/Check
 tail -f audit.jsonl                                              # a pre_action line before every action, every line hash-chained
+curl -s localhost:8000/metrics; curl -s localhost:8080/metrics   # tool calls, rejections, turns, model latency, engine counters
 make interop                                                     # the official MCP client over HTTP: prints INTEROP OK
 ```
 
@@ -88,7 +89,7 @@ make bench            # pure book, then gRPC sequential and 16 concurrent client
 make soak             # four restarts of a million journaled orders each; memory must level off
 ```
 
-Expected on a laptop: 730k to 840k book operations per second, 61k to 69k orders per second over gRPC, and a resident size of about 110 MB in every soak round with the snapshot steady near 40 MB. See [02 Engine](02-engine.md) for the numbers and what bounds them.
+Expected on a laptop: 730k to 840k book operations per second; 61k to 69k orders per second over unary gRPC with sixteen clients and about 950k on one pipelined `PlaceOrders` stream; a resident size of about 110 MB in every soak round with the snapshot steady near 40 MB. See [02 Engine](02-engine.md) for the numbers and what bounds them.
 
 ## 6. Evaluation with a model
 

@@ -33,10 +33,10 @@ Apple M1 Pro, release builds, loopback. Full table and every report: [docs/resul
 
 | Measurement | Result |
 |---|---|
-| Book throughput | 730k to 840k operations/s; 61k to 69k orders/s over gRPC with 16 clients |
+| Throughput | 730k to 840k book operations/s; 955k orders/s on one pipelined gRPC stream, 61k to 69k with 16 unary clients |
 | Restart soak, 4 × 1M journaled orders | memory flat at about 110 MB; recovery 2.2 to 2.5 s |
 | Accuracy | DeepSeek V4 Flash 57/57; Claude Sonnet 5 170/171 over three reps |
-| Safety | 39/39 attacks blocked; a hostile model causes 0 unauthorised mutations |
+| Safety | 39/39 attacks blocked; five hostile model strategies cause 0 unauthorised mutations |
 | Prompt robustness | 57/57 with every turn perturbed, on both models |
 | Cost | 0.05 USD per DeepSeek run of the suite; 92 to 95% of prompt tokens from cache |
 
@@ -69,4 +69,4 @@ docs/                   architecture, engine, MCP, service, guardrails, evaluati
 
 ## Next
 
-A confirmation-burden metric per model; more hostile strategies for the unsafe runner; exposure limits inside the matcher; a client-streaming placement RPC; a token budget per session; metrics endpoints.
+Streaming the snapshot on recovery; archiving by age as well as by count; a per-account rate limit at the gRPC edge; sharding by symbol; a reply-quality judge reported separately from the deterministic grades.
