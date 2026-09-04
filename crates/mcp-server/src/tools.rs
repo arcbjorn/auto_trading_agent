@@ -51,6 +51,9 @@ impl ToolOutput {
     }
 }
 
+/// Fills listed in a placement result; the totals above them always cover every fill.
+const MAX_FILLS: usize = 50;
+
 #[derive(Clone)]
 pub struct ToolSet {
     engine: EngineClient<Channel>,
@@ -316,7 +319,7 @@ impl ToolSet {
                     "rejected": { "type": "boolean" }, "code": { "type": "string" }, "message": { "type": "string" }, "hint": { "type": "string" },
                     "order_id": { "type": "string" }, "status": { "type": "string" }, "side": { "type": "string" }, "price_usdc": { "type": "string" },
                     "quantity_eth": { "type": "string" }, "filled_eth": { "type": "string" }, "remaining_eth": { "type": "string" },
-                    "average_fill_price_usdc": { "type": ["string", "null"] }, "fills": { "type": "array" }, "seq": { "type": "integer" },
+                    "average_fill_price_usdc": { "type": ["string", "null"] }, "fills": { "type": "array" }, "fills_truncated": { "type": "boolean" }, "seq": { "type": "integer" },
                     "cancel_reason": { "type": "string" }, "note": { "type": "string" },
                     "best_bid_usdc": { "type": ["string", "null"] }, "best_ask_usdc": { "type": ["string", "null"] } } },
                 "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
@@ -660,7 +663,8 @@ impl ToolSet {
             "filled_eth": eth(filled),
             "remaining_eth": eth(o.remaining_lots as u64),
             "average_fill_price_usdc": average_price(notional, filled).map(usdc),
-            "fills": resp.fills.iter().map(fill_json).collect::<Vec<_>>(),
+            "fills": resp.fills.iter().take(MAX_FILLS).map(fill_json).collect::<Vec<_>>(),
+            "fills_truncated": resp.fills.len() > MAX_FILLS,
             "client_order_id": o.client_order_id,
             "seq": o.sequence
         });
