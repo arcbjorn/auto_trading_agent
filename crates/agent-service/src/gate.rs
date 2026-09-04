@@ -191,10 +191,16 @@ fn clauses(text: &str) -> impl Iterator<Item = &str> {
 }
 
 fn clause_is_negated(clause: &str) -> bool {
+    // Contractions keep their apostrophe in the text but lose it in tokens ("can't" -> "can",
+    // "t"), so they are matched on the text; plain words are matched on tokens.
     let lower = clause.to_lowercase();
-    NEGATIONS.iter().any(|n| {
-        words(&lower).any(|w| w.trim_matches(|c| c == '.' || c == ',') == *n) || (n.contains('\'') && lower.contains(n))
-    })
+    if ["n't", "cannot", "can not"].iter().any(|c| lower.contains(c)) {
+        return true;
+    }
+    let negated = words(&lower)
+        .map(|w| w.trim_matches(|c| c == '.' || c == ','))
+        .any(|w| NEGATIONS.contains(&w));
+    negated
 }
 
 /// A question about what happened is not an instruction to do it.
@@ -329,7 +335,62 @@ pub fn mentions_framing(text: &str) -> bool {
 }
 
 pub fn mentions_confirmation(text: &str) -> bool {
-    CONFIRM_WORDS.iter().any(|w| has_word(text, w))
+    // A clause that asks about confirming ("Can you confirm what is pending?", "Should I
+    // confirm?") is a question, not an answer. `has_word` already drops negated clauses, so
+    // "I can't confirm that" is not a confirmation either.
+    // Clause splitting drops the question mark, so the whole text is checked for one first: a
+    // message that asks something is not an answer.
+    if text.trim_end().ends_with('?') {
+        return false;
+    }
+    clauses(text)
+        .filter(|c| !clause_is_negated(c) && !is_question(c) && !asks_about_confirming(c))
+        .any(|c| CONFIRM_WORDS.iter().any(|w| word_in(c, w)))
+}
+
+/// A clause that ends in a question mark, or opens with a word that makes it a request for
+/// information rather than an instruction.
+fn asks_about_confirming(clause: &str) -> bool {
+    let lower = clause.trim().to_lowercase();
+    [
+        "can you",
+        "could you",
+        "should i",
+        "shall i",
+        "do i",
+        "would you",
+        "is there",
+        "are there",
+    ]
+    .iter()
+    .any(|q| lower.starts_with(q))
+}
+
+/// Whether a reply put a pending action's summary in front of the user. The figures that define
+/// the action must appear in the reply, in any wording: the model may phrase the ask as it likes,
+/// but it may not hide what it is asking about. For an order those are the quantity and the price,
+/// which the summary states first; the total it also carries is derived from them and a reply need
+/// not repeat it. For a cancel it is the order id. Compared on digits alone, so "3000.00" and
+/// "3,000" match, and a reply naming more than the summary is fine.
+pub fn summary_is_disclosed(summary: &str, reply: &str) -> bool {
+    let mut figures: Vec<String> = numbers(summary).iter().map(|n| digits_of(n)).collect();
+    figures.truncate(2);
+    if figures.is_empty() {
+        return true; // nothing to hide
+    }
+    let shown: Vec<String> = numbers(reply).iter().map(|n| digits_of(n)).collect();
+    figures.iter().all(|f| shown.iter().any(|s| s == f))
+}
+
+/// A number reduced to its significant digits: "3000.00" and "3,000" both become "3".
+fn digits_of(n: &str) -> String {
+    let n = n.replace(',', "");
+    let trimmed = if n.contains('.') {
+        n.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        n
+    };
+    trimmed.trim_start_matches('0').to_string()
 }
 
 /// A message that only confirms: "yes", "ok, confirm", "sí". No figures, no trade or cancel word,
@@ -404,6 +465,10 @@ pub struct PendingConfirmation {
     pub args: Value,
     pub summary: String,
     pub created: Instant,
+    /// Whether the turn that raised this action ended with a reply carrying its summary. A
+    /// confirmation can only answer a question the user was actually asked, so an action whose
+    /// summary the model kept to itself is never executed by a later "yes".
+    pub disclosed: bool,
     /// The turn on which the service asked. A token may only be spent on a later turn, and only
     /// one whose user message actually confirms, so the token is never authority by itself.
     pub asked_on_turn: u32,
@@ -469,6 +534,14 @@ impl ConfirmationGate {
         if !ACTION_TOOLS.contains(&tool) {
             return Intercept::Proceed(args.clone());
         }
+        if confirming_turn && pending.as_ref().is_some_and(|p| !p.disclosed) {
+            return Intercept::Reply(json!({
+                "rejected": true,
+                "code": "CONFIRMATION_NOT_DISCLOSED",
+                "message": "the pending action's summary was never shown to the user, so their confirmation cannot refer to it",
+                "hint": "tell the user the exact summary and ask again"
+            }));
+        }
         if actions_taken > 0 && !confirming_turn {
             return Intercept::Reply(json!({
                 "rejected": true,
@@ -496,6 +569,14 @@ impl ConfirmationGate {
                     "code": "CONFIRMATION_NOT_GIVEN",
                     "message": "this turn's message does not confirm anything; a confirmation_token only executes on a turn where the user confirms",
                     "hint": "tell the user the pending summary and wait for their answer"
+                }));
+            }
+            if pending.as_ref().is_some_and(|p| !p.disclosed) {
+                return Intercept::Reply(json!({
+                    "rejected": true,
+                    "code": "CONFIRMATION_NOT_DISCLOSED",
+                    "message": "the pending action's summary was never shown to the user, so their confirmation cannot refer to it",
+                    "hint": "tell the user the exact summary and ask again"
                 }));
             }
             return match pending.take() {
@@ -650,6 +731,8 @@ impl ConfirmationGate {
             summary: summary.clone(),
             created: Instant::now(),
             asked_on_turn: turn,
+            // Set at the end of the turn, once the reply is known.
+            disclosed: false,
         });
         Intercept::Reply(json!({
             "needs_confirmation": true,
@@ -762,6 +845,13 @@ mod tests {
     use super::*;
 
     /// A turn context for the gate: the common case, with no pending confirmation to answer.
+    /// Marks a pending action as shown to the user, which a real turn does from its reply.
+    fn disclose(pending: &mut Option<PendingConfirmation>) {
+        if let Some(p) = pending.as_mut() {
+            p.disclosed = true;
+        }
+    }
+
     fn cx<'a>(session_id: &'a str, turn: u32, user_text: &'a str, permitted: bool, carried: bool) -> TurnContext<'a> {
         cx_full(session_id, turn, user_text, permitted, carried, false)
     }
@@ -872,6 +962,44 @@ mod tests {
             ),
             Intercept::Proceed(_)
         ));
+    }
+
+    #[test]
+    fn asking_about_confirming_is_not_confirming() {
+        for text in [
+            "I can't confirm that",
+            "Can you confirm what is pending?",
+            "Should I confirm?",
+            "what am I confirming?",
+            "do not confirm it",
+        ] {
+            assert!(!mentions_confirmation(text), "{text}");
+            assert!(!is_bare_confirmation(text), "{text}");
+        }
+        for text in ["yes", "yes, confirm", "ok do it", "sí", "confirmed"] {
+            assert!(mentions_confirmation(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_summary_is_disclosed_only_when_its_figures_reach_the_user() {
+        let order = "buy 2.0000 ETH at 2990.00 USDC (up to 5980.00 USDC)";
+        // Any wording, as long as the quantity and the price are there.
+        assert!(summary_is_disclosed(
+            order,
+            "This is a large order: buy 2 ETH at 2990.00. Please confirm."
+        ));
+        assert!(summary_is_disclosed(order, "Confirm 2 ETH @ 2,990?"));
+        // Hiding either figure, or the whole thing, is not disclosure.
+        assert!(!summary_is_disclosed(order, "Done."));
+        assert!(!summary_is_disclosed(order, "Shall I place that order?"));
+        assert!(!summary_is_disclosed(order, "Confirm the purchase at 2990.00?"));
+        let cancel = "cancel order 7";
+        assert!(summary_is_disclosed(
+            cancel,
+            "Cancel order 7, the buy at 2990? Please confirm."
+        ));
+        assert!(!summary_is_disclosed(cancel, "Shall I cancel it?"));
     }
 
     #[test]
@@ -1214,6 +1342,8 @@ mod tests {
         assert!(preview["instruction"].as_str().unwrap().contains("large"));
         let token = preview["confirmation_token"].as_str().unwrap().to_string();
         assert!(pending.is_some());
+        // A real turn marks this from its reply; these tests exercise the branches after the ask.
+        disclose(&mut pending);
         let mut wrong = big.clone();
         wrong["quantity_eth"] = json!("3");
         wrong["confirmation_token"] = json!(token);
@@ -1303,6 +1433,7 @@ mod tests {
         };
         assert_eq!(r["summary"], "cancel order 7");
         let token = r["confirmation_token"].as_str().unwrap().to_string();
+        disclose(&mut pending);
         // The token confirms that cancel, not a placement and not another order.
         let place = json!({ "side": "buy", "price_usdc": "3000", "quantity_eth": "0.1", "confirmation_token": token });
         let Intercept::Reply(r) = gate.intercept(

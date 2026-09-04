@@ -10,6 +10,11 @@ use std::time::Instant;
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct TurnOutcome {
     pub reply: String,
+    /// Every turn's reply, in order. The grader needs them to check that a confirmed action was
+    /// actually put in front of the user, which the last reply alone cannot show.
+    pub replies: Vec<String>,
+    /// Every turn's flags, in order, for the same reason.
+    pub flags_per_turn: Vec<Vec<String>>,
     pub tool_calls: usize,
     pub tool_call_records: Vec<Value>,
     pub input_tokens: u64,
@@ -136,6 +141,8 @@ async fn drive(
                 let mut total = TurnOutcome::default();
                 for text in &case.turns {
                     let t = agent.chat_turn(&mut session, text).await?;
+                    total.replies.push(t.reply.clone());
+                    total.flags_per_turn.push(t.flags.clone());
                     total.reply = t.reply;
                     total.tool_calls += t.tool_calls.len();
                     total

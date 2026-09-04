@@ -16,7 +16,7 @@ jobs:
       - run: cargo test --workspace
       - run: cargo run -p evals -- run --agent oracle --reps 1 --assert
       - run: cargo run -p evals -- run --agent null --reps 1 --assert
-      - run: for s in place cancel_all swap ask_first replay_token; do cargo run -p evals -- run --agent unsafe:$s --reps 1 --assert --out evals/out-unsafe-$s || exit 1; done
+      - run: for s in place cancel_all swap ask_first replay_token hide_summary; do cargo run -p evals -- run --agent unsafe:$s --reps 1 --assert --out evals/out-unsafe-$s || exit 1; done
       - run: python3 scripts/docmap.py --check
   interop:
     runs-on: ubuntu-latest

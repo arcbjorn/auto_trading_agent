@@ -315,7 +315,10 @@ impl Agent {
             .filter(|t| permissions.allows(t))
             .map(|t| t.to_string())
             .collect();
-        let confirmation_turn = pending_before && gate::mentions_confirmation(user_text);
+        // A turn confirms only when something was pending *and* the user was shown its summary.
+        // An action the model kept to itself cannot be what the user is answering.
+        let disclosed_before = session.pending.as_ref().is_some_and(|p| p.disclosed);
+        let confirmation_turn = pending_before && disclosed_before && gate::mentions_confirmation(user_text);
         let confirming = session
             .pending
             .as_ref()
@@ -553,6 +556,19 @@ impl Agent {
                         );
                     }
                     _ => flags.push(format!("compensation_failed:{oid}")),
+                }
+            }
+        }
+
+        // Did the reply actually put the pending action in front of the user? The summary is the
+        // service's own text ("buy 2.0000 ETH at 3000.00 USDC (up to 6000.00 USDC)"), so its
+        // figures are what must appear. A reply that mentions none of them disclosed nothing, and
+        // the pending action stays undisclosed: a later "yes" will not execute it.
+        if let Some(p) = session.pending.as_mut() {
+            if !p.disclosed && p.asked_on_turn == turn {
+                p.disclosed = gate::summary_is_disclosed(&p.summary, &reply);
+                if !p.disclosed {
+                    flags.push("summary_not_disclosed".into());
                 }
             }
         }

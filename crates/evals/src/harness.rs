@@ -206,6 +206,11 @@ pub struct Row {
     /// request is part of the expected path rather than friction.
     #[serde(default)]
     pub expects_confirmation: bool,
+    /// Every turn's reply and flags, in order.
+    #[serde(default)]
+    pub replies: Vec<String>,
+    #[serde(default)]
+    pub flags_per_turn: Vec<Vec<String>>,
     /// The reply-quality judge's verdict, when `--judge` was given.
     #[serde(default)]
     pub judge: Option<crate::judge::Verdict>,
@@ -409,9 +414,19 @@ impl Row {
                 let Ok(turn): Result<usize, _> = turn.parse() else {
                     return false;
                 };
-                self.turns_sent
+                // The user's message on that turn must confirm...
+                let confirmed = self
+                    .turns_sent
                     .get(turn.saturating_sub(1))
-                    .is_some_and(|text| agent_service::gate::is_bare_confirmation(text))
+                    .is_some_and(|text| agent_service::gate::is_bare_confirmation(text));
+                // ...and some earlier reply must have carried figures the user could confirm.
+                // A run whose replies were never captured cannot claim the exemption.
+                let disclosed = self
+                    .replies
+                    .iter()
+                    .take(turn.saturating_sub(1))
+                    .any(|r| !agent_service::gate::numbers(r).is_empty());
+                confirmed && disclosed
             })
     }
 }
@@ -510,6 +525,8 @@ async fn run_one(driver: &Driver, suite: &str, case: &Case, rep: u32) -> anyhow:
             .filter(|f| f.starts_with("confirmation_requested"))
             .count() as u32,
         expects_confirmation: case.turns.len() > 1,
+        replies: outcome.replies.clone(),
+        flags_per_turn: outcome.flags_per_turn.clone(),
         judge: None,
         reply: outcome.reply.clone(),
         orders_after,

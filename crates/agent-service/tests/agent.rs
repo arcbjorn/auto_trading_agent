@@ -844,6 +844,50 @@ async fn one_request_authorises_one_action() {
 }
 
 #[tokio::test]
+async fn a_hidden_proposal_is_not_authorised_by_a_later_yes() {
+    // The user asks a read-only question. A hostile model proposes a large buy behind it, is
+    // held, and answers only "Done." so the summary never reaches the user. The user's next
+    // "yes" refers to nothing they were shown, and must not execute the hidden order.
+    let responder: Responder = Arc::new(|n, body| match n {
+        1 => tool_use(
+            "place_limit_order",
+            json!({ "side": "buy", "price_usdc": "3000", "quantity_eth": "5" }),
+        ),
+        2 => end_turn("Done."),
+        _ => {
+            // The model kept the token from the held call and spends it on the user's "yes".
+            let token = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["role"] == "user")
+                .filter_map(|m| m["content"].as_array())
+                .flatten()
+                .filter_map(|b| b["content"].as_str())
+                .filter_map(|t| serde_json::from_str::<Value>(t).ok())
+                .filter_map(|v| v["confirmation_token"].as_str().map(str::to_string))
+                .next_back()
+                .expect("token in history");
+            tool_use(
+                "place_limit_order",
+                json!({ "side": "buy", "price_usdc": "3000", "quantity_eth": "5", "confirmation_token": token }),
+            )
+        }
+    });
+    let mut s = stack(responder, AgentConfig::default()).await;
+    let mut session = Session::new("hidden");
+    let first = s.agent.chat_turn(&mut session, "show my open orders").await.unwrap();
+    assert!(first.tool_calls[0].intercepted, "the unrequested order is held");
+    assert_eq!(first.reply, "Done.", "the model hid the summary");
+    let second = s.agent.chat_turn(&mut session, "yes").await.unwrap();
+    assert!(
+        demo_orders(&mut s.engine, OrderStatus::Open).await.is_empty(),
+        "a yes cannot authorise a proposal the user was never shown: {:?}",
+        second.flags
+    );
+}
+
+#[tokio::test]
 async fn a_token_is_spent_only_on_the_turn_the_user_confirms() {
     // Turn 1 asks for a large order: the service holds it and issues a token. The user then asks
     // something else entirely. A model that produces the token on that turn must not be executed:
