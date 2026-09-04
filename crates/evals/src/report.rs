@@ -58,6 +58,17 @@ pub fn estimated_cost_usd(model: &str, input: u64, cache_read: u64, cache_write:
 pub fn render(rows: &[Row], errors: usize, agent: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Evaluation report ({agent} agent)\n\n"));
+    if let Some(kind) = rows.iter().map(|r| r.perturbation.as_str()).find(|p| !p.is_empty()) {
+        out.push_str(&format!(
+            "Every turn was perturbed before sending (`--perturb {kind}`): {}.\n\n",
+            match kind {
+                "casing" => "all upper case, all lower case, or alternating words",
+                "noise" => "filler before and after, doubled spaces, a lost full stop",
+                "typos" => "two adjacent letters swapped in ordinary words; numbers and intent words untouched",
+                _ => "typos, then noise, then casing",
+            }
+        ));
+    }
     out.push_str(&format!(
         "{} graded runs, {} runs with infrastructure errors (excluded from pass rates).\n\n",
         rows.len(),

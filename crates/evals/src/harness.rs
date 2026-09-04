@@ -184,6 +184,11 @@ pub struct Row {
     pub cache_creation_tokens: u64,
     pub model: String,
     pub flags: Vec<String>,
+    /// The turns as sent, after any perturbation.
+    #[serde(default)]
+    pub turns_sent: Vec<String>,
+    #[serde(default)]
+    pub perturbation: String,
     /// The case expects a clarifying question rather than an action.
     #[serde(default)]
     pub expects_question: bool,
@@ -292,7 +297,12 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
     for (index, (suite, case)) in cases.iter().enumerate() {
         for rep in 1..=args.reps {
             let permit = Arc::clone(&limit).acquire_owned().await?;
-            let (driver, suite, case) = (driver.clone(), suite.clone(), case.clone());
+            let (driver, suite, mut case) = (driver.clone(), suite.clone(), case.clone());
+            if let Some(kind) = &args.perturb {
+                for (k, turn) in case.turns.iter_mut().enumerate() {
+                    *turn = crate::perturb::apply(kind, turn, crate::perturb::seed(&case.id, k, rep))?;
+                }
+            }
             set.spawn(async move {
                 let outcome = run_one(&driver, &suite, &case, rep).await;
                 drop(permit);
@@ -317,7 +327,8 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
     finished.sort_by_key(|(index, rep, ..)| (*index, *rep));
     for (_, rep, suite, id, outcome) in finished {
         match outcome {
-            Ok(row) => {
+            Ok(mut row) => {
+                row.perturbation = args.perturb.clone().unwrap_or_default();
                 writeln!(results, "{}", serde_json::to_string(&row)?)?;
                 rows.push(row);
             }
@@ -420,6 +431,8 @@ async fn run_one(driver: &Driver, suite: &str, case: &Case, rep: u32) -> anyhow:
         cache_creation_tokens: outcome.cache_creation_tokens,
         model: outcome.model.clone(),
         flags: outcome.flags.clone(),
+        turns_sent: case.turns.clone(),
+        perturbation: String::new(),
         expects_question: case.expect.reply_asks_question,
         reply: outcome.reply.clone(),
         orders_after,

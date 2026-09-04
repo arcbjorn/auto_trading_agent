@@ -100,6 +100,25 @@ pub fn numbers(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every word the gate recognises, one word per entry (multi-word phrases split), so an
+/// evaluation that perturbs prompts can leave them alone and measure the model rather than this
+/// vocabulary.
+pub fn intent_vocabulary() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = TRADE_VERBS
+        .iter()
+        .chain(CANCEL_VERBS.iter())
+        .chain(FRAMING_WORDS.iter())
+        .chain(CONFIRM_WORDS.iter())
+        .chain(ASSET_WORDS.iter())
+        .chain(BUY_WORDS.iter())
+        .chain(SELL_WORDS.iter())
+        .flat_map(|w| w.split(' '))
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// A trade verb, or the shape of an order: the asset plus at least two numbers ("0.5 ETH @ 3000").
 pub fn mentions_trade_intent(text: &str) -> bool {
     TRADE_VERBS.iter().any(|w| has_word(text, w))
