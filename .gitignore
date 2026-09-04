@@ -6,3 +6,6 @@ audit.jsonl
 .env
 *.pdf
 /evals/out-*/
+
+# the presenter's private notes
+script.md

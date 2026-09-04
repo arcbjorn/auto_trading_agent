@@ -11,7 +11,8 @@ import re
 import sys
 from pathlib import Path
 
-DOCS = ["README.md", *sorted(str(p) for p in Path("docs").glob("*.md"))]
+# script.md is the presenter's private, git-ignored notes; it is checked when present.
+DOCS = ["README.md", *sorted(str(p) for p in Path("docs").glob("*.md")), "script.md"]
 LINK = re.compile(r"\[([\w./-]+\.rs)::([\w:]+)\]\(([^)#\s]+\.rs)(#L\d+(?:-L\d+)?)?\)")
 ITEM = re.compile(r"^\s*(?:pub(?:\([\w:]+\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:fn|struct|enum|const|static|trait|type|mod)\s+{name}\b")
 IMPL = re.compile(r"^\s*(?:pub\s+)?impl(?:<[^>]*>)?\s+(?:[\w:<>, ]+\s+for\s+)?{name}\b")
