@@ -879,6 +879,48 @@ async fn a_session_whose_history_outgrew_the_budget_is_closed() {
 }
 
 #[tokio::test]
+async fn metrics_count_turns_tool_calls_and_flags() {
+    let responder: Responder = Arc::new(|n, _| {
+        if n == 1 {
+            tool_use(
+                "place_limit_order",
+                json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "0.2" }),
+            )
+        } else {
+            end_turn("placed")
+        }
+    });
+    let s = stack(responder, AgentConfig::default()).await;
+    let state = Arc::new(State::new(s.agent));
+    let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::clone(&state))
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    client
+        .post(format!("http://{addr}/chat"))
+        .json(&json!({ "session_id": "m", "message": "buy 0.2 ETH at 2990" }))
+        .send()
+        .await
+        .unwrap();
+    let text = client
+        .get(format!("http://{addr}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(text.contains("agent_turns_total{outcome=\"ok\"} 1"), "{text}");
+    assert!(
+        text.contains("agent_tool_calls_total{tool=\"place_limit_order\",outcome=\"ok\"} 1"),
+        "{text}"
+    );
+    assert!(text.contains("agent_sessions_active 1"), "{text}");
+    assert!(text.contains("agent_model_latency_seconds_count 1"), "{text}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn session_store_is_bounded() {
     let responder: Responder = Arc::new(|_, _| end_turn("ok"));
     let s = stack(responder, AgentConfig::default()).await;

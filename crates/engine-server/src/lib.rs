@@ -519,6 +519,22 @@ impl Engine for Svc {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
+    async fn get_stats(&self, _req: Request<pb::GetStatsRequest>) -> Result<Response<pb::EngineStats>, Status> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let s = self.engine.stats();
+        Ok(Response::new(pb::EngineStats {
+            commands: s.commands.load(Relaxed),
+            batches: s.batches.load(Relaxed),
+            max_batch: s.max_batch.load(Relaxed),
+            events: s.events.load(Relaxed),
+            orders_retained: s.orders_retained.load(Relaxed),
+            trades_retained: s.trades_retained.load(Relaxed),
+            sequence: s.seq.load(Relaxed),
+            queue_free: self.engine.free_capacity() as u32,
+            queue_capacity: self.engine.queue_capacity() as u32,
+        }))
+    }
+
     async fn get_market(&self, _req: Request<pb::GetMarketRequest>) -> Result<Response<pb::Market>, Status> {
         let snap = self.engine.snapshot();
         Ok(Response::new(pb::Market {

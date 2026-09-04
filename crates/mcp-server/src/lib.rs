@@ -11,6 +11,7 @@
 //! * [`transport`] stdio (newline-delimited JSON) and Streamable HTTP (POST /mcp)
 
 pub mod jsonrpc;
+pub mod metrics;
 pub mod policy;
 pub mod protocol;
 pub mod tools;

@@ -91,11 +91,26 @@ struct Envelope {
     reply: ReplySender,
 }
 
+/// Counters the matcher thread updates once per batch, read lock-free by anyone holding a
+/// handle. What an operator wants to see on a dashboard: how much work, in how many batches, how
+/// full the queue is, how big the book is.
+#[derive(Debug, Default)]
+pub struct Stats {
+    pub commands: std::sync::atomic::AtomicU64,
+    pub batches: std::sync::atomic::AtomicU64,
+    pub max_batch: std::sync::atomic::AtomicU64,
+    pub events: std::sync::atomic::AtomicU64,
+    pub orders_retained: std::sync::atomic::AtomicU64,
+    pub trades_retained: std::sync::atomic::AtomicU64,
+    pub seq: std::sync::atomic::AtomicU64,
+}
+
 #[derive(Clone)]
 pub struct EngineHandle {
     tx: mpsc::Sender<Envelope>,
     snapshot: Arc<ArcSwap<Snapshot>>,
     events: broadcast::Sender<Arc<Event>>,
+    stats: Arc<Stats>,
 }
 
 fn now_ns() -> i64 {
@@ -207,6 +222,8 @@ pub fn spawn_with_journal(mut book: Book, capacity: usize, depth: usize, mut jou
     let published = Arc::clone(&snapshot);
     let (events, _) = broadcast::channel::<Arc<Event>>(EVENT_BUFFER);
     let feed = events.clone();
+    let stats = Arc::new(Stats::default());
+    let counters = Arc::clone(&stats);
     // Events already in the book (a replayed journal) are history, not news.
     book.take_new_events();
     std::thread::Builder::new()
@@ -234,8 +251,20 @@ pub fn spawn_with_journal(mut book: Book, capacity: usize, depth: usize, mut jou
                 }
                 published.store(Arc::new(book.snapshot(depth)));
                 // Subscribers see every event of the batch, in sequence order, after the snapshot.
+                let mut events_sent = 0u64;
                 for e in book.take_new_events() {
                     let _ = feed.send(Arc::new(e));
+                    events_sent += 1;
+                }
+                {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    counters.commands.fetch_add(pending.len() as u64, Relaxed);
+                    counters.batches.fetch_add(1, Relaxed);
+                    counters.max_batch.fetch_max(pending.len() as u64, Relaxed);
+                    counters.events.fetch_add(events_sent, Relaxed);
+                    counters.orders_retained.store(book.retained_orders() as u64, Relaxed);
+                    counters.trades_retained.store(book.retained_trades() as u64, Relaxed);
+                    counters.seq.store(book.seq(), Relaxed);
                 }
                 for (reply, result) in pending.drain(..) {
                     let _ = reply.send(result);
@@ -243,7 +272,12 @@ pub fn spawn_with_journal(mut book: Book, capacity: usize, depth: usize, mut jou
             }
         })
         .expect("spawn matcher thread");
-    EngineHandle { tx, snapshot, events }
+    EngineHandle {
+        tx,
+        snapshot,
+        events,
+        stats,
+    }
 }
 
 impl EngineHandle {
@@ -273,6 +307,15 @@ impl EngineHandle {
     /// Number of commands that can still be queued before `submit` answers `Busy`.
     pub fn free_capacity(&self) -> usize {
         self.tx.capacity()
+    }
+
+    pub fn queue_capacity(&self) -> usize {
+        self.tx.max_capacity()
+    }
+
+    /// Matcher counters, updated once per batch.
+    pub fn stats(&self) -> &Stats {
+        &self.stats
     }
 
     /// A live feed of every event from now on, in sequence order. A receiver that falls more than

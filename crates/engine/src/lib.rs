@@ -16,4 +16,4 @@ pub use book::{
     RECENT_EVENTS, RETAINED_CLOSED_ORDERS, RETAINED_TRADES,
 };
 pub use journal::{Journal, Record};
-pub use sequencer::{spawn, spawn_with_journal, Command, EngineHandle, Reply, Top, EVENT_BUFFER};
+pub use sequencer::{spawn, spawn_with_journal, Command, EngineHandle, Reply, Stats, Top, EVENT_BUFFER};

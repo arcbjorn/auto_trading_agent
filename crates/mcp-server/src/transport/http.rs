@@ -54,6 +54,17 @@ async fn handle(req: Request<Incoming>, server: Arc<McpServer>) -> Result<Respon
     if path == "/healthz" && req.method() == Method::GET {
         return Ok(text(StatusCode::OK, "ok"));
     }
+    if path == "/metrics" && req.method() == Method::GET {
+        // The engine's counters are fetched on each scrape; a stalled engine leaves them out.
+        let engine = server
+            .tools()
+            .engine_client()
+            .get_stats(clob_proto::v1::GetStatsRequest {})
+            .await
+            .ok()
+            .map(|r| r.into_inner());
+        return Ok(text(StatusCode::OK, &server.metrics().render(engine.as_ref())));
+    }
     if path != MCP_PATH {
         return Ok(text(StatusCode::NOT_FOUND, "not found"));
     }

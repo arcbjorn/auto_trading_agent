@@ -20,6 +20,7 @@ pub mod deepseek;
 pub mod gate;
 pub mod http;
 pub mod mcp_client;
+pub mod metrics;
 pub mod model;
 
 pub use agent::{Agent, AgentConfig, AgentError, NoteChannel, Session, ToolCallRecord, TurnResult};

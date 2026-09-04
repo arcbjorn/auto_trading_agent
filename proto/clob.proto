@@ -37,6 +37,23 @@ service Engine {
   // counterparty of a trade hidden. A subscriber that falls too far behind is told so and must
   // resynchronise from GetOrderBook / ListOrders.
   rpc Subscribe(SubscribeRequest) returns (stream EngineEvent);
+  // Matcher counters for dashboards: commands and batches so far, the largest batch, events
+  // broadcast, orders and trades retained, the sequence, and how full the command queue is.
+  rpc GetStats(GetStatsRequest) returns (EngineStats);
+}
+
+message GetStatsRequest {}
+
+message EngineStats {
+  uint64 commands = 1;
+  uint64 batches = 2;
+  uint64 max_batch = 3;
+  uint64 events = 4;
+  uint64 orders_retained = 5;
+  uint64 trades_retained = 6;
+  uint64 sequence = 7;
+  uint32 queue_free = 8;
+  uint32 queue_capacity = 9;
 }
 
 enum Side {

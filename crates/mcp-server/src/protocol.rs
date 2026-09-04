@@ -28,6 +28,7 @@ pub const PROMPT_NAME: &str = "trading_assistant";
 
 pub struct McpServer {
     tools: ToolSet,
+    metrics: crate::metrics::Metrics,
     /// Resource URIs a client subscribed to. Notifications need a server-to-client stream, which
     /// only the stdio transport has; the HTTP transport refuses subscriptions up front.
     subscriptions: std::sync::Mutex<std::collections::BTreeSet<String>>,
@@ -37,11 +38,16 @@ impl McpServer {
     pub fn new(tools: ToolSet) -> Self {
         Self {
             tools,
+            metrics: crate::metrics::Metrics::default(),
             subscriptions: std::sync::Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
     /// The URIs a client asked to be told about, in a stable order.
+    pub fn metrics(&self) -> &crate::metrics::Metrics {
+        &self.metrics
+    }
+
     pub fn subscriptions(&self) -> Vec<String> {
         self.subscriptions
             .lock()
@@ -190,6 +196,17 @@ impl McpServer {
             Some(_) => return Err(RpcError::invalid_params("arguments must be an object")),
         };
         let out = self.tools.call(name, &args).await?;
+        let outcome = if out.is_error {
+            "error"
+        } else if out.structured.as_ref().is_some_and(|s| s["rejected"] == true) {
+            if let Some(code) = out.structured.as_ref().and_then(|s| s["code"].as_str()) {
+                self.metrics.rejection(code);
+            }
+            "rejected"
+        } else {
+            "ok"
+        };
+        self.metrics.tool_call(name, outcome);
         let mut result = json!({
             "content": [ { "type": "text", "text": out.text } ],
             "isError": out.is_error

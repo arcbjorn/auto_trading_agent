@@ -60,6 +60,7 @@ pub struct State {
     pub agent: Agent,
     limits: SessionLimits,
     sessions: Mutex<HashMap<String, Entry>>,
+    pub metrics: crate::metrics::Metrics,
 }
 
 impl State {
@@ -72,6 +73,7 @@ impl State {
             agent,
             limits,
             sessions: Mutex::new(HashMap::new()),
+            metrics: crate::metrics::Metrics::default(),
         }
     }
 
@@ -128,6 +130,11 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
     let path = req.uri().path().to_string();
     match (req.method().clone(), path.as_str()) {
         (Method::GET, "/healthz") => Ok(respond(StatusCode::OK, json!({ "ok": true }))),
+        (Method::GET, "/metrics") => Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
+            .body(Full::new(Bytes::from(state.metrics.render(state.session_count()))))
+            .expect("metrics response")),
         (Method::GET, p) if p.starts_with("/sessions/") => {
             let id = p.trim_start_matches("/sessions/");
             let session = state.session(id);
@@ -204,12 +211,14 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 }
             }
             if s.context_tokens >= state.limits.max_context_tokens {
+                state.metrics.turn_refused("context_full");
                 return Ok(respond(
                     StatusCode::CONFLICT,
                     json!({ "error": format!("this session's history reached {} prompt tokens; start a new session", s.context_tokens), "session_id": session_id }),
                 ));
             }
             if s.turns >= state.limits.max_turns {
+                state.metrics.turn_refused("session_full");
                 return Ok(respond(
                     StatusCode::CONFLICT,
                     json!({ "error": format!("this session reached its {} turns; start a new session", state.limits.max_turns), "session_id": session_id }),
@@ -232,6 +241,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             s.turn_times.push_back(now);
             match state.agent.chat_turn(&mut s, message).await {
                 Ok(turn) => {
+                    state.metrics.turn(&turn);
                     let body = serde_json::to_value(turn).unwrap_or_default();
                     if let Some(id) = request_id {
                         if s.responses.len() >= REMEMBERED_RESPONSES {
@@ -242,6 +252,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     Ok(respond(StatusCode::OK, body))
                 }
                 Err(e) => {
+                    state.metrics.turn_refused("error");
                     tracing::error!(error = %e, session = %session_id, "turn failed");
                     Ok(respond(
                         StatusCode::BAD_GATEWAY,
