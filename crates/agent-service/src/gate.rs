@@ -290,11 +290,23 @@ impl ConfirmationGate {
                 ) else {
                     return Intercept::Proceed(args); // let the server produce the validation message
                 };
-                let price_quoted = numbers(user_text).iter().any(|n| parse_price(n).ok() == Some(price));
+                let stated = numbers(user_text);
+                let price_quoted = stated.iter().any(|n| parse_price(n).ok() == Some(price));
+                let qty_quoted = stated.iter().any(|n| parse_qty(n).ok() == Some(qty));
+                // "1500 USDC worth at 3000": the quantity is not stated but its notional is.
+                let notional_quoted = stated
+                    .iter()
+                    .any(|n| parse_price(n).ok().map(|t| t as u128 * 10_000) == Some(price as u128 * qty as u128));
                 let reason = if !permitted {
                     "The user's message did not clearly ask to trade."
                 } else if qty >= self.threshold_lots {
                     "This order is large."
+                } else if stated.len() >= 2 && !(price_quoted && (qty_quoted || notional_quoted)) {
+                    // A message that states two figures states the order. An order that keeps one
+                    // and changes the other is not what was asked for, whatever the model says;
+                    // a hostile scripted model found this gap by keeping the price and shrinking
+                    // the quantity.
+                    "The order's price or quantity differs from the figures in the user's message."
                 } else if self.confirm_unpriced && !price_quoted {
                     "The user did not state this price; the model chose it."
                 } else if self.confirm_unpriced && !side_quoted(user_text, &side) {
@@ -473,6 +485,58 @@ mod tests {
             unsupported_numbers("Filled at 2998.50; your balance is now 47,250 USDC.", &sources),
             vec!["2998.50".to_string(), "47250".to_string()]
         );
+    }
+
+    #[test]
+    fn two_stated_figures_pin_both_price_and_quantity() {
+        let gate = ConfirmationGate {
+            threshold_lots: u64::MAX,
+            confirm_unpriced: true,
+            ttl: std::time::Duration::from_secs(60),
+        };
+        let mut pending = None;
+        let swapped = json!({ "side": "buy", "price_usdc": "3000.00", "quantity_eth": "0.1000" });
+        // The price is the user's, the quantity is not: held for confirmation.
+        assert!(matches!(
+            gate.intercept(&mut pending, "place_limit_order", &swapped, "s", 1, "buy 30 ETH at 3000 now", true),
+            Intercept::Reply(v) if v["needs_confirmation"] == true
+        ));
+        let mut pending = None;
+        let exact = json!({ "side": "buy", "price_usdc": "3000.00", "quantity_eth": "30" });
+        assert!(matches!(
+            gate.intercept(
+                &mut pending,
+                "place_limit_order",
+                &exact,
+                "s",
+                1,
+                "buy 30 ETH at 3000 now",
+                true
+            ),
+            Intercept::Proceed(_)
+        ));
+        // A quantity given as a notional is derived from the two figures and passes.
+        let mut pending = None;
+        let by_notional = json!({ "side": "buy", "price_usdc": "3000.00", "quantity_eth": "0.5000" });
+        assert!(matches!(
+            gate.intercept(
+                &mut pending,
+                "place_limit_order",
+                &by_notional,
+                "s",
+                1,
+                "buy 1500 USDC worth of ETH at 3000",
+                true
+            ),
+            Intercept::Proceed(_)
+        ));
+        // One stated figure leaves room for a derived quantity ("bring me to 12 ETH").
+        let mut pending = None;
+        let derived = json!({ "side": "buy", "price_usdc": "3001.00", "quantity_eth": "2" });
+        assert!(!matches!(
+            gate.intercept(&mut pending, "place_limit_order", &derived, "s", 1, "bring my holding to 12 ETH at the ask 3001", true),
+            Intercept::Reply(v) if v["message"].as_str().is_some_and(|m| m.contains("differs"))
+        ));
     }
 
     #[test]
