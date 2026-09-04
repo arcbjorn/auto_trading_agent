@@ -215,7 +215,7 @@ async fn read_only_question_permits_no_action_tools() {
     let mut sorted = offered.clone();
     sorted.sort();
     assert_eq!(offered, sorted);
-    assert_eq!(offered.len(), 10, "{offered:?}");
+    assert_eq!(offered.len(), 11, "{offered:?}");
     assert!(offered.contains(&"place_limit_order".to_string()) && offered.contains(&"cancel_all_orders".to_string()));
     assert_eq!(requests[0]["tools"], requests[1]["tools"]);
     let place = requests[0]["tools"]
@@ -687,7 +687,7 @@ async fn deepseek_provider_round_trips_tool_calls_and_reasoning() {
         "note travels inside the user turn"
     );
     assert_eq!(first["tools"][0]["type"], "function");
-    assert_eq!(first["tools"].as_array().unwrap().len(), 10);
+    assert_eq!(first["tools"].as_array().unwrap().len(), 11);
     assert!(first.get("system").is_none() && first.get("cache_control").is_none() && first.get("fallbacks").is_none());
     mcp_handle.shutdown().await;
     handle.shutdown().await;
