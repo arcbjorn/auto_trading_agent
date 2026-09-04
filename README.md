@@ -43,7 +43,7 @@ Measured on an Apple M1 Pro laptop (release builds, loopback networking, three r
 | Same, with the write-ahead journal (flush per batch) | p50 88 µs, 61k orders/s: about 10% for restart durability |
 | Same, journal with fsync per batch | p50 4.1 ms, 2.1k orders/s: the price of surviving a power loss on a laptop disk |
 | Concurrency tests: 16 clients × 500 orders; 8 accounts cancelling 150 orders each from parallel tasks | every response OK, sequence numbers unique and contiguous, book never crossed; every cancel succeeds and the book ends empty |
-| MCP interoperability (official Python client, stdio and HTTP, also a CI job) | all ten tools, resources and the prompt, output schemas validated: `INTEROP OK` |
+| MCP interoperability (official Python client, stdio and HTTP, also a CI job) | all eleven tools, resources and the prompt, output schemas validated: `INTEROP OK` |
 | Evaluation harness, oracle agent, 45 cases × 3 reps | execution 100% (51/51), paraphrase 100% (45/45), safety 100% (39/39, 33/33 attacks blocked); `--assert` passes |
 | Evaluation harness, null agent | execution 0%, paraphrase 0%, safety 76.9% (10/11 attacks blocked; the one that needs a clarifying question fails, as it must); `--assert` passes |
 | Evaluation harness, DeepSeek V4 Flash (thinking mode, effort high), 53 cases × 3 reps, wallets enforced | execution 100% (57/57), paraphrase 100% (57/57), safety 100% (45/45, 39/39 attacks blocked, including a sell the wallet cannot cover); Spanish, French, unlisted-verb and side-less requests complete through the confirmation flow; turn p50 6 to 8 s, p95 12 to 18 s; 94% of prompt tokens served from cache; 0.14 USD for the 159 runs. The two misses of the previous run (a guessed side, a stalled French confirmation) became code rules and did not recur |
@@ -59,10 +59,10 @@ proto/clob.proto              the gRPC contract (integer ticks and lots, sequenc
 crates/clob-proto             generated code
 crates/engine                 book.rs (pure matching, wallets, per-account indices, property-tested), journal.rs (write-ahead log, replay), sequencer.rs (single writer, batched)
 crates/engine-server          tonic servicer, status mapping, concurrency test, gRPC benchmark
-crates/mcp-server             jsonrpc.rs, protocol.rs, tools.rs (10 tools), policy.rs, units.rs, transport/{stdio,http}.rs
+crates/mcp-server             jsonrpc.rs, protocol.rs, tools.rs (11 tools), policy.rs, units.rs, transport/{stdio,http}.rs
 crates/agent-service          anthropic.rs (caching, context editing), deepseek.rs (V4 chat completions), model.rs (provider switch), mcp_client.rs, gate.rs (permissions, confirmation, verifier), agent.rs, audit.rs, http.rs, prompts/system.md
 crates/evals                  cases.rs, agents.rs, harness.rs (+ CI invariants), report.rs, sim.rs
-evals/cases/                  53 scenarios: execution, paraphrase, safety
+evals/cases/                  54 scenarios: execution, paraphrase, safety
 scripts/mcp_interop_check.py  drives the MCP server with the official Python client
 docs/                         architecture, engine, MCP, agent service, guardrails, evaluation, decisions, dependencies, runbook
 ```
@@ -74,7 +74,7 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 * **Nothing on the matcher thread scales with the book.** Orders and trades are indexed per account, so listing one account's open orders costs the same in a million-order book as in an empty one. Account names are interned (`Arc<str>`).
 * **Deterministic.** Counters for ids and sequence numbers, clocks for reporting only; the property test replays every generated command list and asserts an identical event log.
 * **Idempotent.** `client_order_id` makes retries safe end to end: the engine replays the original reply, the service derives the key from session, turn and tool-call id.
-* **Every order is backed.** Accounts have wallets in the engine: a buy reserves its USDC and a sell its ETH at placement, fills settle both legs, cancels release the rest, and the property test proves nothing is created or destroyed. Deposits are a gRPC call, never a tool, so no prompt can fund an account; `get_balances` lets the agent see what it holds.
+* **Every order is backed.** Accounts have wallets in the engine: a buy reserves its USDC and a sell its ETH at placement, fills settle both legs, cancels release the rest, and the property test proves nothing is created or destroyed. Deposits and withdrawals are gRPC calls, never tools, so no prompt can move funds; `get_balances` shows what the account holds and `get_statement` how it has done: volume, average cost, realised P&L (average-cost basis over ETH bought here) and unrealised P&L at the current market, with the ledger's zero-sum property in the property test.
 * **Durable by replay.** With `ENGINE_JOURNAL` set, every place, cancel and deposit is journaled before it is applied and committed once per batch before the replies go out; a restart replays the file and lands on the same ids, wallets and sequence numbers, and pre-restart idempotency keys still work. A large journal is folded into a snapshot plus tail on the next start. Fsync per batch is a flag, with its cost measured above.
 * **MCP designed for the model.** Human units in and out, descriptions that say when to call, precomputed quotes and averages, typed structured output, errors that read as instructions, and three deliberate error channels (protocol, `isError`, structured policy rejection).
 * **Guardrails as code.** Policy in the MCP server (size, value, a collar that always has a reference price, open orders, rate, session cap, kill switch); per-turn permission, confirmation, verifier and audit in the service. See [05 Guardrails](docs/05-guardrails.md).
@@ -86,4 +86,4 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 
 ## Next
 
-stream book deltas instead of polling; shard by symbol; move the per-turn permission onto the mid-conversation tool-changes beta; add withdrawals and a settlement report so the wallet story is complete; run the Claude suites when a key is available.
+stream book deltas instead of polling; shard by symbol; move the per-turn permission onto the mid-conversation tool-changes beta; run the Claude suites when a key is available.

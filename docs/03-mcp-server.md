@@ -1,7 +1,7 @@
 # 03 · The MCP server
 
 MCP is how a host asks a server "what can you do?" and calls those things over JSON-RPC 2.0.
-This server is a thin translator: one gRPC client, ten tools, three resources, one prompt. The
+This server is a thin translator: one gRPC client, eleven tools, three resources, one prompt. The
 design work is ergonomics for the model — say just enough, in its units, with the arithmetic
 already done, and make every error fixable in one retry.
 
@@ -40,6 +40,7 @@ Envelope rules follow JSON-RPC 2.0: `jsonrpc` must be `"2.0"`, an `id` must be a
 | `get_quote` | `side`, `quantity_eth` | walks up to 200 levels: fillable quantity, whether fully fillable, average price, worst price, notional, levels consumed | read-only, idempotent |
 | `place_limit_order` | `side`, `price_usdc`, `quantity_eth`, optional `client_order_id` | order id, status, filled and remaining quantity, average fill price, fills; or `{rejected: true, code, message, hint}` from the policy | not read-only, non-destructive, idempotent with a client id |
 | `get_balances` | none | available and reserved USDC and ETH of this account in human units, and whether the engine enforces balances. Deposits are an operator action over gRPC, deliberately not a tool | read-only, idempotent |
+| `get_statement` | none | how the account has done: deposits and withdrawals, ETH bought and sold with USDC paid and received, venue inventory at its average cost, realised P&L, and unrealised P&L at the current reference price (mid, else last trade, else the quoted side), all in human units with a note on what realised means | read-only, idempotent |
 | `get_order` | `order_id` | one of this account's orders with its current status and remaining quantity, whatever its age; another account's id is denied | read-only, idempotent |
 | `cancel_order` | `order_id` | final status and cancelled quantity | destructive, idempotent |
 | `cancel_all_orders` | none | every open order of the account cancelled in one call: count, the cancelled orders, and any that were already gone. One policy action, however many orders, so "cancel everything" cannot trip the rate limit | destructive, idempotent |
@@ -71,7 +72,7 @@ Design rules applied throughout:
 
 ## Resources and prompt
 
-A tool the model does not need on a turn still costs context: the ten definitions are about a thousand tokens on the Messages API side. The chat service keeps that cost to one cache write per session by never changing the list (see [04](04-agent-service.md)).
+A tool the model does not need on a turn still costs context: the eleven definitions are about a thousand tokens on the Messages API side. The chat service keeps that cost to one cache write per session by never changing the list (see [04](04-agent-service.md)).
 
 Resources are application-controlled: a host may attach them to context without the model asking. `market://ETH-USDC/summary`, `market://ETH-USDC/book` (5 levels), the template `market://ETH-USDC/book/{depth}` and `orders://me/open`, all `application/json`. The `trading_assistant` prompt carries the unit rules and the "only trade on explicit instruction" rule for hosts that support prompts. Hosts use tools far more reliably than resources, so the tools are self-sufficient.
 

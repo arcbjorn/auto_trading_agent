@@ -87,6 +87,8 @@ The property test funds two buyers and two sellers, one of each tightly, runs ra
 
 The accounting costs about 10% of pure-book throughput (650k to 720k operations/s against 690k to 850k without it).
 
+**Withdrawals and the ledger.** `Withdraw` debits what is available; reserved amounts back live orders and cannot leave. Next to the wallet, every account has a ledger the matcher updates on each fill: deposits and withdrawals, ETH bought and sold with the USDC paid and received, the ETH still held from purchases on this venue and what it cost (so average cost is the ratio), and realised P&L, booked on every sell as price minus average cost over the part that came from that inventory. ETH that arrived by deposit has no cost basis here: a sell beyond the venue inventory is counted separately and earns no P&L, rather than inventing one. `GetStatement` returns the ledger; the MCP tool adds unrealised P&L at the current market. The property test checks the ledgers are zero-sum across accounts (USDC paid equals USDC received, ETH bought equals ETH sold) and that each account's inventory equals what it bought minus what it sold from it. Deposits and withdrawals are events with sequence numbers and journal records, and the ledger is part of the snapshot.
+
 ## Balances and settlement
 
 Every account has a wallet: USDC in micro-USDC (one tick times one lot, so notionals need no rounding) and ETH in lots, each split into *available* and *reserved*. A buy reserves price times quantity in USDC at placement, a sell reserves the quantity in ETH; an order that the wallet cannot back is refused before it gets an id (`FAILED_PRECONDITION`, "insufficient USDC: the order needs 1500.00, 1000.00 available"). Every fill settles both legs at the maker's price: the buyer's reservation at its own limit is charged at the trade price and the difference returns to available, the seller's reserved ETH moves to the buyer, the buyer's USDC to the seller. A cancel, an IOC remainder, a self-trade-prevention cancel and a FOK that never rested all release what they held. Deposits (`Deposit`) are events with a sequence number, so a replayed journal restores wallets as well as orders.
@@ -113,7 +115,7 @@ The batching is what keeps the fsync variant usable under concurrency: one `fsyn
 
 ## gRPC contract
 
-`proto/clob.proto` defines nine unary RPCs: `PlaceOrder`, `CancelOrder`, `GetOrder`, `ListOrders`, `ListTrades`, `GetOrderBook`, `GetMarket`, `Deposit`, `GetBalances`. The generated code lives in `crates/clob-proto`; `build.rs` runs the real `protoc` (a system one when `PROTOC` is set, otherwise the binary vendored by `protoc-bin-vendored`), so a fresh checkout builds with nothing but cargo.
+`proto/clob.proto` defines eleven unary RPCs: `PlaceOrder`, `CancelOrder`, `GetOrder`, `ListOrders`, `ListTrades`, `GetOrderBook`, `GetMarket`, `Deposit`, `Withdraw`, `GetBalances`, `GetStatement`. The generated code lives in `crates/clob-proto`; `build.rs` runs the real `protoc` (a system one when `PROTOC` is set, otherwise the binary vendored by `protoc-bin-vendored`), so a fresh checkout builds with nothing but cargo.
 
 `Trade` carries `taker_side`, `maker_account` and `taker_account`. An account-scoped `ListTrades` fills in only the requesting account's id and leaves the counterparty blank; an unscoped listing (the harness, an operator) carries both.
 
@@ -134,7 +136,7 @@ The batching is what keeps the fsync variant usable under concurrency: one `fsyn
 
 | What | Where | Command |
 |---|---|---|
-| 12 unit tests (rules, cancel, idempotency, IOC/FOK, self-trade, listings, indexed listings against a log scan, reserve/settle/release) and 2 property tests (book invariants and replay; balance conservation) | `crates/engine/src/book.rs` | `cargo test -p engine` |
+| 14 unit tests (rules, cancel, idempotency, IOC/FOK, self-trade, listings, indexed listings against a log scan, reserve/settle/release, ledger and withdrawals, state round trip) and 2 property tests (book invariants and replay; balance conservation and zero-sum ledgers) | `crates/engine/src/book.rs` | `cargo test -p engine` |
 | Concurrency (placements, racing cancels), restart from the journal, and status-code integration tests over a real tonic server | `crates/engine-server/tests/concurrency.rs` | `cargo test -p engine-server` |
 | Journal replay identity | `crates/engine/src/journal.rs` | `cargo test -p engine` |
 | Pure book throughput and listing cost in a million-order book | `crates/engine/examples/bench.rs` | `cargo run --release -p engine --example bench` |

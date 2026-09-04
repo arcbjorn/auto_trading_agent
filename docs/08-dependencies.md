@@ -36,7 +36,7 @@ Download counts are from crates.io on 2026-09-03; "since" is the first release.
 | rmcp (official MCP SDK) | First published March 2025; API changes between minor versions, deprecations within months. Replaced by ~400 lines of hand-written JSON-RPC |
 | axum, actix-web | Two routes per server do not justify a framework; hyper is already present |
 | rust_decimal | Exact decimal parsing and formatting for two fixed scales is 60 lines in `units.rs` |
-| schemars | Ten hand-written schemas give full control over what the model reads |
+| schemars | Eleven hand-written schemas give full control over what the model reads |
 | criterion | Two small benchmark binaries with `std::time::Instant` avoid a heavy dev dependency |
 | governor | The per-account rate limit is a sliding window in `policy.rs` |
 | rand | The benchmarks and the simulation use a seeded xorshift generator |

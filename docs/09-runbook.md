@@ -36,7 +36,7 @@ curl -s localhost:8080/chat -H 'content-type: application/json' \
   -d '{"session_id":"me","message":"buy 0.5 ETH at 3000"}'
 ```
 
-The book starts empty and unfunded. `make run-engine` funds the demo account (50,000 USDC, 10 ETH) and a market maker through `ENGINE_FUND`; without it, deposit over gRPC (`grpcurl -plaintext -proto proto/clob.proto -d '{"account_id":"demo","usdc_micro":50000000000,"eth_lots":100000}' localhost:50051 clob.v1.Engine/Deposit`; the server does not enable reflection). Seed liquidity by placing orders under a funded market-maker account, or run the evaluation harness, which funds and seeds for every case.
+The book starts empty and unfunded. `make run-engine` funds the demo account (50,000 USDC, 10 ETH) and a market maker through `ENGINE_FUND`; without it, deposit over gRPC (`grpcurl -plaintext -proto proto/clob.proto -d '{"account_id":"demo","usdc_micro":50000000000,"eth_lots":100000}' localhost:50051 clob.v1.Engine/Deposit`; the server does not enable reflection). Seed liquidity by placing orders under a funded market-maker account, or run the evaluation harness, which funds and seeds for every case. Withdrawals go the same way (`clob.v1.Engine/Withdraw` with the same fields) and only ever take what is available.
 
 ## Demo conversation
 

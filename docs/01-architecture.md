@@ -44,7 +44,7 @@ proto/clob.proto              the gRPC contract
 crates/clob-proto             generated code (build.rs runs the vendored protoc)
 crates/engine                 book.rs (pure matching), sequencer.rs (single writer), examples/bench.rs
 crates/engine-server          tonic servicer, status mapping, tests/concurrency.rs, examples/grpc_bench.rs
-crates/mcp-server             jsonrpc.rs, protocol.rs, tools.rs (10 tools), policy.rs, units.rs, transport/{stdio,http}.rs
+crates/mcp-server             jsonrpc.rs, protocol.rs, tools.rs (11 tools), policy.rs, units.rs, transport/{stdio,http}.rs
 crates/agent-service          anthropic.rs, mcp_client.rs, gate.rs (permissions, confirmation, verifier), agent.rs, audit.rs, http.rs, prompts/system.md
 crates/evals                  cases.rs, agents.rs, harness.rs, report.rs, sim.rs
 evals/cases/{execution,paraphrase,safety}   scenario files
