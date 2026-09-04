@@ -11,7 +11,10 @@ use crate::journal::{Journal, Record};
 use arc_swap::ArcSwap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
+
+/// Events kept for a slow subscriber before it is told it lagged.
+pub const EVENT_BUFFER: usize = 8_192;
 
 pub enum Command {
     Place(PlaceRequest),
@@ -73,6 +76,7 @@ struct Envelope {
 pub struct EngineHandle {
     tx: mpsc::Sender<Envelope>,
     snapshot: Arc<ArcSwap<Snapshot>>,
+    events: broadcast::Sender<Arc<Event>>,
 }
 
 fn now_ns() -> i64 {
@@ -176,6 +180,10 @@ pub fn spawn_with_journal(mut book: Book, capacity: usize, depth: usize, mut jou
     let (tx, mut rx) = mpsc::channel::<Envelope>(capacity.max(1));
     let snapshot = Arc::new(ArcSwap::from_pointee(book.snapshot(depth)));
     let published = Arc::clone(&snapshot);
+    let (events, _) = broadcast::channel::<Arc<Event>>(EVENT_BUFFER);
+    let feed = events.clone();
+    // Events already in the book (a replayed journal) are history, not news.
+    let mut announced = book.events().len();
     std::thread::Builder::new()
         .name("matcher".into())
         .spawn(move || {
@@ -200,13 +208,18 @@ pub fn spawn_with_journal(mut book: Book, capacity: usize, depth: usize, mut jou
                     }
                 }
                 published.store(Arc::new(book.snapshot(depth)));
+                // Subscribers see every event of the batch, in sequence order, after the snapshot.
+                for e in &book.events()[announced..] {
+                    let _ = feed.send(Arc::new(e.clone()));
+                }
+                announced = book.events().len();
                 for (reply, result) in pending.drain(..) {
                     let _ = reply.send(result);
                 }
             }
         })
         .expect("spawn matcher thread");
-    EngineHandle { tx, snapshot }
+    EngineHandle { tx, snapshot, events }
 }
 
 impl EngineHandle {
@@ -223,6 +236,12 @@ impl EngineHandle {
     /// Number of commands that can still be queued before `submit` answers `Busy`.
     pub fn free_capacity(&self) -> usize {
         self.tx.capacity()
+    }
+
+    /// A live feed of every event from now on, in sequence order. A receiver that falls more than
+    /// [`EVENT_BUFFER`] events behind gets `Lagged` and should resynchronise from a snapshot.
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<Event>> {
+        self.events.subscribe()
     }
 
     /// Latest published top of book. Lock-free: a pointer load, no channel round trip.

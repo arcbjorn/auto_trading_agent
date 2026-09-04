@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::{transport::Server, Request, Response, Status};
 
 pub const SYMBOL: &str = "ETH-USDC";
@@ -60,6 +60,53 @@ pub struct Svc {
 impl Svc {
     pub fn new(engine: EngineHandle, enforced: bool) -> Self {
         Self { engine, enforced }
+    }
+}
+
+fn cancel_reason_name(r: engine::CancelReason) -> String {
+    match r {
+        engine::CancelReason::User => "user",
+        engine::CancelReason::Ioc => "ioc",
+        engine::CancelReason::Fok => "fok",
+        engine::CancelReason::SelfTradePrevention => "self_trade_prevention",
+    }
+    .into()
+}
+
+/// One engine event as the stream carries it; `viewer` hides trade counterparties.
+pub fn event_to_pb(e: &engine::Event, viewer: Option<&str>) -> pb::EngineEvent {
+    use pb::engine_event::Event as E;
+    let event = match e {
+        engine::Event::Accepted(o) => E::Accepted(order_to_pb(o)),
+        engine::Event::Traded(t) => E::Traded(trade_to_pb(t, viewer)),
+        engine::Event::Cancelled {
+            id, account, reason, ..
+        } => E::Cancelled(pb::OrderCancelled {
+            order_id: id.to_string(),
+            account_id: account.to_string(),
+            reason: cancel_reason_name(*reason),
+        }),
+        engine::Event::Rejected {
+            id, account, reason, ..
+        } => E::Rejected(pb::OrderRejected {
+            order_id: id.to_string(),
+            account_id: account.to_string(),
+            reason: reason.clone(),
+        }),
+        engine::Event::Deposited { account, usdc, eth, .. } => E::Deposited(pb::Transfer {
+            account_id: account.to_string(),
+            usdc_micro: (*usdc).min(u64::MAX as u128) as u64,
+            eth_lots: *eth,
+        }),
+        engine::Event::Withdrawn { account, usdc, eth, .. } => E::Withdrawn(pb::Transfer {
+            account_id: account.to_string(),
+            usdc_micro: (*usdc).min(u64::MAX as u128) as u64,
+            eth_lots: *eth,
+        }),
+    };
+    pb::EngineEvent {
+        sequence: e.seq(),
+        event: Some(event),
     }
 }
 
@@ -393,6 +440,42 @@ impl Engine for Svc {
             Reply::Statement(l) => Ok(Response::new(statement_to_pb(&r.account_id, &l))),
             _ => Err(Status::internal("unexpected reply")),
         }
+    }
+
+    type SubscribeStream = ReceiverStream<Result<pb::EngineEvent, Status>>;
+
+    /// Forwards the matcher's broadcast to one client. The forwarding task ends when the client
+    /// goes away or when the client lagged behind the buffer, in which case the last message is a
+    /// DATA_LOSS status telling it to resynchronise.
+    async fn subscribe(&self, req: Request<pb::SubscribeRequest>) -> Result<Response<Self::SubscribeStream>, Status> {
+        let account = req.into_inner().account_id;
+        let viewer = (!account.is_empty()).then_some(account);
+        let mut feed = self.engine.subscribe();
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
+        tokio::spawn(async move {
+            loop {
+                match feed.recv().await {
+                    Ok(e) => {
+                        if viewer.as_deref().is_some_and(|a| !e.involves(a)) {
+                            continue;
+                        }
+                        if tx.send(Ok(event_to_pb(&e, viewer.as_deref()))).await.is_err() {
+                            break; // the client hung up
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        let _ = tx
+                            .send(Err(Status::data_loss(format!(
+                                "subscriber fell {n} events behind; resynchronise from GetOrderBook and ListOrders, then subscribe again"
+                            ))))
+                            .await;
+                        break;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 
     async fn get_market(&self, _req: Request<pb::GetMarketRequest>) -> Result<Response<pb::Market>, Status> {

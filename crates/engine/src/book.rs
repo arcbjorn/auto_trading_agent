@@ -198,14 +198,41 @@ pub enum Event {
     },
     Cancelled {
         id: OrderId,
+        account: Arc<str>,
         reason: CancelReason,
         seq: Seq,
     },
     Rejected {
         id: OrderId,
+        account: Arc<str>,
         reason: String,
         seq: Seq,
     },
+}
+
+impl Event {
+    pub fn seq(&self) -> Seq {
+        match self {
+            Event::Accepted(o) => o.seq,
+            Event::Traded(t) => t.seq,
+            Event::Deposited { seq, .. }
+            | Event::Withdrawn { seq, .. }
+            | Event::Cancelled { seq, .. }
+            | Event::Rejected { seq, .. } => *seq,
+        }
+    }
+
+    /// Whether `account` is a party to this event.
+    pub fn involves(&self, account: &str) -> bool {
+        match self {
+            Event::Accepted(o) => &*o.account == account,
+            Event::Traded(t) => t.side_for(account).is_some(),
+            Event::Deposited { account: a, .. }
+            | Event::Withdrawn { account: a, .. }
+            | Event::Cancelled { account: a, .. }
+            | Event::Rejected { account: a, .. } => &**a == account,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -713,6 +740,7 @@ impl Book {
             o.status = Status::Rejected;
             self.events.push(Event::Rejected {
                 id: o.id,
+                account: Arc::clone(&o.account),
                 reason: "FOK: insufficient quantity available at this price".into(),
                 seq: o.seq,
             });
@@ -846,7 +874,12 @@ impl Book {
                 release(&mut self.balances, &o.account, o.side, o.price, o.remaining);
             }
             let seq = self.bump_seq();
-            self.events.push(Event::Cancelled { id: o.id, reason, seq });
+            self.events.push(Event::Cancelled {
+                id: o.id,
+                account: Arc::clone(&o.account),
+                reason,
+                seq,
+            });
         }
         self.orders.insert(o.id, o.clone());
         self.original_replies.insert(o.id, (o.clone(), fills.clone()));
@@ -884,6 +917,7 @@ impl Book {
         let seq = self.bump_seq();
         self.events.push(Event::Cancelled {
             id,
+            account: owner,
             reason: CancelReason::User,
             seq,
         });
@@ -1421,11 +1455,7 @@ mod tests {
                         }
                     }
                 }
-                let seqs: Vec<u64> = b.events().iter().map(|e| match e {
-                    Event::Accepted(o) => o.seq,
-                    Event::Traded(t) => t.seq,
-                    Event::Cancelled { seq, .. } | Event::Rejected { seq, .. } | Event::Deposited { seq, .. } | Event::Withdrawn { seq, .. } => *seq,
-                }).collect();
+                let seqs: Vec<u64> = b.events().iter().map(Event::seq).collect();
                 let mut sorted = seqs.clone();
                 sorted.sort_unstable();
                 sorted.dedup();

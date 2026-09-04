@@ -15,4 +15,4 @@ pub use book::{
     Price, Qty, Seq, Side, Snapshot, Status, Tif, Trade, TradeId,
 };
 pub use journal::{Journal, Record};
-pub use sequencer::{spawn, spawn_with_journal, Command, EngineHandle, Reply};
+pub use sequencer::{spawn, spawn_with_journal, Command, EngineHandle, Reply, EVENT_BUFFER};

@@ -28,6 +28,11 @@ service Engine {
   rpc Withdraw(WithdrawRequest) returns (Balances);
   // The account's trading ledger: flows, volume, venue inventory at average cost, realised P&L.
   rpc GetStatement(GetStatementRequest) returns (Statement);
+  // Every event from now on, in sequence order: accepted orders, trades, cancels, rejects,
+  // deposits and withdrawals. With an account_id only that account's events are sent, with the
+  // counterparty of a trade hidden. A subscriber that falls too far behind is told so and must
+  // resynchronise from GetOrderBook / ListOrders.
+  rpc Subscribe(SubscribeRequest) returns (stream EngineEvent);
 }
 
 enum Side {
@@ -192,6 +197,40 @@ message OrderBook {
   repeated PriceLevel bids = 2; // highest price first
   repeated PriceLevel asks = 3; // lowest price first
   uint64 sequence = 4;          // sequence number of the last event reflected
+}
+
+message SubscribeRequest {
+  string account_id = 1; // empty = every event
+}
+
+message OrderCancelled {
+  string order_id = 1;
+  string account_id = 2;
+  string reason = 3; // user, ioc, fok, self_trade_prevention
+}
+
+message OrderRejected {
+  string order_id = 1;
+  string account_id = 2;
+  string reason = 3;
+}
+
+message Transfer {
+  string account_id = 1;
+  uint64 usdc_micro = 2;
+  uint64 eth_lots = 3;
+}
+
+message EngineEvent {
+  uint64 sequence = 1;
+  oneof event {
+    Order accepted = 2;
+    Trade traded = 3;
+    OrderCancelled cancelled = 4;
+    OrderRejected rejected = 5;
+    Transfer deposited = 6;
+    Transfer withdrawn = 7;
+  }
 }
 
 message Market {

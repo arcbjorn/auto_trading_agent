@@ -4,7 +4,7 @@
 use clob_proto::v1::engine_client::EngineClient;
 use clob_proto::v1::{
     CancelOrderRequest, DepositRequest, GetBalancesRequest, GetOrderBookRequest, GetStatementRequest,
-    ListTradesRequest, PlaceOrderRequest, Side, TimeInForce, WithdrawRequest,
+    ListTradesRequest, PlaceOrderRequest, Side, SubscribeRequest, TimeInForce, WithdrawRequest,
 };
 use engine_server::{serve, EngineConfig};
 
@@ -401,6 +401,97 @@ async fn restart_replays_the_journal() {
     assert!(next.order.unwrap().sequence > book_before.sequence);
     handle.shutdown().await;
     let _ = std::fs::remove_file(&path);
+}
+
+/// A subscriber scoped to one account sees that account's deposits, orders, trades and cancels in
+/// sequence order, never the other account's own orders, and never a counterparty id.
+#[tokio::test]
+async fn subscribers_receive_their_events_in_order() {
+    use clob_proto::v1::engine_event::Event as E;
+    let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), EngineConfig::default())
+        .await
+        .unwrap();
+    let mut c = EngineClient::connect(format!("http://{addr}")).await.unwrap();
+    let mut stream = c
+        .subscribe(SubscribeRequest { account_id: "a".into() })
+        .await
+        .unwrap()
+        .into_inner();
+    fund(&mut c, "a").await;
+    fund(&mut c, "b").await; // not a's business
+    let order = |account: &str, cid: &str, side: Side, price: i64, lots: i64| PlaceOrderRequest {
+        account_id: account.into(),
+        client_order_id: cid.into(),
+        side: side as i32,
+        price_ticks: price,
+        quantity_lots: lots,
+        tif: TimeInForce::Gtc as i32,
+    };
+    c.place_order(order("b", "b1", Side::Sell, 300_000, 500)).await.unwrap(); // b's resting ask: not a's business
+    let a1 = c
+        .place_order(order("a", "a1", Side::Buy, 300_000, 200))
+        .await
+        .unwrap()
+        .into_inner()
+        .order
+        .unwrap(); // trades 200 with b
+    let a2 = c
+        .place_order(order("a", "a2", Side::Buy, 299_000, 100))
+        .await
+        .unwrap()
+        .into_inner()
+        .order
+        .unwrap();
+    c.cancel_order(CancelOrderRequest {
+        account_id: "a".into(),
+        order_id: a2.order_id.clone(),
+    })
+    .await
+    .unwrap();
+    let mut got = Vec::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while got.len() < 5 {
+        let next = tokio::time::timeout_at(deadline, stream.message())
+            .await
+            .expect("events in time")
+            .unwrap();
+        match next {
+            Some(e) => got.push(e),
+            None => break,
+        }
+    }
+    let seqs: Vec<u64> = got.iter().map(|e| e.sequence).collect();
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "sequence order: {seqs:?}");
+    let kinds: Vec<String> = got
+        .iter()
+        .map(|e| match e.event.as_ref().unwrap() {
+            E::Deposited(t) => format!("deposit:{}", t.account_id),
+            E::Accepted(o) => format!("accepted:{}", o.client_order_id),
+            E::Traded(t) => format!("traded:{}:{}:{}", t.quantity_lots, t.maker_account, t.taker_account),
+            E::Cancelled(x) => format!("cancelled:{}:{}", x.order_id, x.reason),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "deposit:a".to_string(),
+            "accepted:a1".into(),
+            "traded:200::a".into(), // the maker (b) is hidden from a
+            "accepted:a2".into(),
+            format!("cancelled:{}:user", a2.order_id),
+        ]
+    );
+    assert_eq!(
+        got[1]
+            .event
+            .as_ref()
+            .map(|e| matches!(e, E::Accepted(o) if o.order_id == a1.order_id)),
+        Some(true)
+    );
+    // A live subscription holds the connection open; graceful shutdown waits for it, so end it first.
+    drop(stream);
+    handle.shutdown().await;
 }
 
 #[tokio::test]
