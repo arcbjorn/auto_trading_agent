@@ -412,7 +412,8 @@ async fn unrecognised_cancel_is_confirmed_then_executed() {
         .await
         .unwrap();
     let mut session = Session::new("t11");
-    let first = s.agent.chat_turn(&mut session, "cancela la orden 4").await.unwrap();
+    // Dutch: a cancel verb the gate does not list, so the cancel must be confirmed first.
+    let first = s.agent.chat_turn(&mut session, "annuleer order 4").await.unwrap();
     assert!(
         first
             .flags
@@ -804,6 +805,35 @@ async fn a_reused_request_id_replays_or_conflicts() {
     assert_eq!(conflict.status(), 409, "same id with a different message is refused");
     assert_eq!(state.session_count(), 1);
     handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_confirmation_in_words_carries_the_previous_request() {
+    // Turn 1: the model asks in words without calling a tool. Turn 2: the user says yes and the
+    // model places the exact order described. No token exists, yet the order goes through, and a
+    // different order in the same position would not.
+    let responder: Responder = Arc::new(|n, _| match n {
+        1 => end_turn("That is 2 ETH at 3000, about 6000 USDC. Shall I place it?"),
+        2 => tool_use(
+            "place_limit_order",
+            json!({ "side": "buy", "price_usdc": "3000", "quantity_eth": "2" }),
+        ),
+        _ => end_turn("Placed."),
+    });
+    let mut s = stack(responder, AgentConfig::default()).await;
+    let mut session = Session::new("carry");
+    let first = s.agent.chat_turn(&mut session, "buy 2 ETH at 3000").await.unwrap();
+    assert!(first.tool_calls.is_empty());
+    let second = s.agent.chat_turn(&mut session, "yes, confirm").await.unwrap();
+    assert!(
+        second.flags.iter().any(|f| f == "permission_carried_over"),
+        "{:?}",
+        second.flags
+    );
+    assert!(!second.tool_calls[0].intercepted, "{}", second.tool_calls[0].result);
+    let open = demo_orders(&mut s.engine, OrderStatus::Open).await;
+    assert_eq!(open.len(), 1);
+    assert_eq!((open[0].price_ticks, open[0].quantity_lots), (300_000, 20_000));
 }
 
 #[tokio::test]

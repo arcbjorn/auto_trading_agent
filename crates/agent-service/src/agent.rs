@@ -169,6 +169,25 @@ pub struct Agent {
 /// An MCP tool definition has exactly what a Messages API tool needs: name, description, schema.
 /// The list is sorted by name so it is byte-identical on every request (it is the cache prefix),
 /// and the action tools gain the service's `confirmation_token` field once, here.
+/// The text of the last user turn in the history, without the service's note and without tool
+/// results.
+fn previous_user_text(messages: &[Value]) -> Option<String> {
+    messages.iter().rev().filter(|m| m["role"] == "user").find_map(|m| {
+        let text = match &m["content"] {
+            Value::String(s) => s.clone(),
+            Value::Array(blocks) => blocks
+                .iter()
+                .filter(|b| b["type"] == "text")
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        };
+        let text = text.split("[service]").next().unwrap_or("").trim().to_string();
+        (!text.is_empty()).then_some(text)
+    })
+}
+
 pub fn api_tools(mcp_tools: &[Value]) -> Vec<Value> {
     let mut tools: Vec<Value> = mcp_tools
         .iter()
@@ -277,7 +296,17 @@ impl Agent {
         let turn = session.turns;
         let pending_before = session.pending.is_some();
         let pending_tool = session.pending.as_ref().map(|p| p.tool.clone());
-        let permissions = Permissions::for_turn(user_text, pending_tool.as_deref(), self.cfg.gate_tools);
+        // A bare "yes" after a request the model answered with a question of its own (without
+        // calling a tool) has nothing pending in the gate. It stands for the previous request:
+        // that message's words grant the permission and its figures pin the order.
+        let carried: Option<String> = (!pending_before && self.cfg.gate_tools && gate::is_bare_confirmation(user_text))
+            .then(|| previous_user_text(&session.messages))
+            .flatten();
+        let gate_text: String = match &carried {
+            Some(prev) => format!("{prev}\n{user_text}"),
+            None => user_text.to_string(),
+        };
+        let permissions = Permissions::for_turn(&gate_text, pending_tool.as_deref(), self.cfg.gate_tools);
         let permitted: Vec<String> = ACTION_TOOLS
             .iter()
             .filter(|t| permissions.allows(t))
@@ -387,8 +416,9 @@ impl Agent {
                                 &args,
                                 &session.id,
                                 turn,
-                                user_text,
+                                &gate_text,
                                 permitted,
+                                carried.is_some(),
                             ) {
                                 Intercept::Reply(v) => {
                                     if v["needs_confirmation"] == true {
@@ -478,7 +508,14 @@ impl Agent {
             }
         }
 
-        flags.extend(gate::verify(user_text, &executed, confirmation_turn));
+        if carried.is_some() {
+            flags.push("permission_carried_over".into());
+        }
+        flags.extend(gate::verify(
+            &gate_text,
+            &executed,
+            confirmation_turn || carried.is_some(),
+        ));
         {
             let mut sources: Vec<String> = vec![self.system.clone(), user_text.to_string()];
             sources.extend(session.messages.iter().map(Value::to_string));
