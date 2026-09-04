@@ -38,6 +38,10 @@ curl -s localhost:8080/chat -H 'content-type: application/json' \
 
 The book starts empty and unfunded. `make run-engine` funds the demo account (50,000 USDC, 10 ETH) and a market maker through `ENGINE_FUND`; without it, deposit over gRPC (`grpcurl -plaintext -proto proto/clob.proto -d '{"account_id":"demo","usdc_micro":50000000000,"eth_lots":100000}' localhost:50051 clob.v1.Engine/Deposit`; the server does not enable reflection). Seed liquidity by placing orders under a funded market-maker account, or run the evaluation harness, which funds and seeds for every case.
 
+## Demo conversation
+
+`make demo` (or `cargo run --release -p evals -- demo`) starts the engine, the MCP server and the agent in one process, funds the demo account with 50,000 USDC and 10 ETH, seeds two levels on each side, and runs an eight-turn scripted conversation through the configured model: balances and price, a resting buy, "sell now" with its confirmation, open orders, cancel all, trade history, and an injection attempt. Every turn prints the tool calls with their outcome, the reply, latency and tokens, and the engine's final state follows. It needs a model: `MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=...` or `ANTHROPIC_API_KEY=...`. A recorded transcript is in `docs/results/demo-deepseek-v4-flash.md`.
+
 ## Environment variables
 
 | Component | Variable | Default |
