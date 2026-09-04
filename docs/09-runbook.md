@@ -46,6 +46,7 @@ The book starts empty and unfunded. `make run-engine` funds the demo account (50
 | | `ENGINE_QUEUE` | `10000` |
 | | `ENGINE_JOURNAL` | unset (in memory only); a path enables the write-ahead journal and replay on start |
 | | `ENGINE_JOURNAL_FSYNC` | `0`; `1` fsyncs every batch before replying |
+| | `ENGINE_JOURNAL_COMPACT_MB` | `64`; on start, a journal larger than this is folded into `<journal>.snapshot` and emptied; `0` never |
 | | `ENGINE_BALANCES` | `1`; `0` runs without wallet checks |
 | | `ENGINE_FUND` | unset; `demo:50000:10,mm:1000000:1000` credits accounts (whole USDC and ETH) on an empty book |
 | mcp-server | `ENGINE_ADDR` | `http://127.0.0.1:50051` |
@@ -95,6 +96,7 @@ See [06 Evaluation](06-evaluation.md). `make eval-oracle` and `make eval-null` n
 | `DEEPSEEK_API_KEY is not set` | `MODEL_PROVIDER=deepseek` needs the DeepSeek key; `DEEPSEEK_MODEL` picks `deepseek-v4-flash` (default) or `deepseek-v4-pro` |
 | DeepSeek answers 400 mentioning `reasoning_content` | The history lost a turn's reasoning; the service replays it from the `reasoning` block, so this points at a hand-edited session or a proxy that strips fields |
 | `insufficient USDC` or `insufficient ETH` from a tool | The wallet cannot back the order; `get_balances` shows what is available. Fund the account with `Deposit` (or `ENGINE_FUND` on a fresh engine) |
+| `cannot recover journal ... snapshot ... balance checks` on start | The snapshot was taken with the other `ENGINE_BALANCES` setting; keep the setting the journal was written with |
 | `cannot replay journal` on start | The journal file is corrupt or unreadable; the engine refuses to start on partial data. Move the file aside to start empty, or repair the bad line |
 | A tool answers `RESOURCE_EXHAUSTED` | The engine's bounded queue is full under load; retry once, or raise `ENGINE_QUEUE` |
 | `{"rejected": true, "code": "RATE_LIMIT"}` | More than `POLICY_ACTIONS_PER_MINUTE` actions on one account; wait a minute (`cancel_all_orders` counts as one) |
