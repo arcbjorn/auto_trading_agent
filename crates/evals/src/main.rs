@@ -2,6 +2,7 @@
 //!
 //!   evals run  [--suite execution|paraphrase|safety|all] [--case ID] [--reps N] [--parallel N] [--agent model|oracle|null] [--cases DIR] [--out DIR] [--assert]
 //!   evals sim  [--seeds N] [--rounds R] [--agent model|baseline|null] [--out DIR]
+//!   evals demo                       the whole stack in one process and a scripted conversation
 //!
 //! `--agent model` calls the Messages API and needs ANTHROPIC_API_KEY. `oracle` performs the
 //! expected actions directly (it must score 100% on execution) and `null` does nothing (it must
@@ -9,6 +10,7 @@
 //! `--assert` turns those expectations into a non-zero exit code, for CI.
 mod agents;
 mod cases;
+mod demo;
 mod harness;
 mod report;
 mod sim;
@@ -83,7 +85,8 @@ async fn main() -> anyhow::Result<()> {
     match args.command.as_str() {
         "run" => harness::run(&args).await,
         "sim" => sim::run(&args).await,
+        "demo" => demo::run(&args).await,
         "report" => report::regenerate(&args.out_dir),
-        other => anyhow::bail!("unknown command {other}; use run, sim or report"),
+        other => anyhow::bail!("unknown command {other}; use run, sim, demo or report"),
     }
 }

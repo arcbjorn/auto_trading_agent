@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt bench run-engine run-mcp run-mcp-stdio run-agent eval-oracle eval-null eval-model sim interop
+.PHONY: build test lint fmt bench run-engine run-mcp run-mcp-stdio run-agent eval-oracle eval-null eval-model sim demo interop
 
 build:
 	cargo build --workspace --release
@@ -37,6 +37,9 @@ eval-null:
 
 eval-model:
 	cargo run --release -p evals -- run --agent model --reps 3
+
+demo:
+	cargo run --release -p evals -- demo
 
 sim:
 	cargo run --release -p evals -- sim --agent baseline --seeds 5 --rounds 8
