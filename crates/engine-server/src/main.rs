@@ -7,6 +7,8 @@
 //!   ENGINE_JOURNAL_FSYNC 1 to fsync every batch before replying (default 0: flush to the OS)
 //!   ENGINE_JOURNAL_COMPACT_MB  compact the journal into a snapshot on start when larger (default 64; 0 never)
 //!   ENGINE_BALANCES      0 to run without balance checks (default 1: every order must be funded)
+//!   ENGINE_MAX_OPEN_ORDERS        live orders one account may rest at once (default unlimited)
+//!   ENGINE_MAX_OPEN_NOTIONAL_USDC sum of price x remaining one account may rest, in USDC (default unlimited)
 //!   ENGINE_FUND          accounts credited on an empty book, whole units: "demo:50000:10,mm:1000000:1000"
 //!                        (account:USDC:ETH); journaled, and skipped when a journal was replayed
 //!   RUST_LOG      tracing filter (default info)
@@ -55,6 +57,17 @@ async fn main() -> anyhow::Result<()> {
             std::env::var("ENGINE_BALANCES").as_deref(),
             Ok("0") | Ok("false") | Ok("no")
         ),
+        exposure_limits: engine::ExposureLimits {
+            max_open_orders: std::env::var("ENGINE_MAX_OPEN_ORDERS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(u32::MAX),
+            max_open_notional: std::env::var("ENGINE_MAX_OPEN_NOTIONAL_USDC")
+                .ok()
+                .and_then(|v| v.parse::<u128>().ok())
+                .map(|usdc| usdc * 1_000_000)
+                .unwrap_or(u128::MAX),
+        },
         fund_at_start: parse_funding(&std::env::var("ENGINE_FUND").unwrap_or_default())?,
         journal_compact_bytes: std::env::var("ENGINE_JOURNAL_COMPACT_MB")
             .ok()

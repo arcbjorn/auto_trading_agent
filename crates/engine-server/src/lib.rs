@@ -32,6 +32,8 @@ pub struct EngineConfig {
     pub journal_compact_bytes: u64,
     /// Every order must be backed by the account's balance (deposits through `Deposit`).
     pub enforce_balances: bool,
+    /// Per-account limits on what may rest at once, enforced inside the matcher.
+    pub exposure_limits: engine::ExposureLimits,
     /// Accounts credited when the engine starts on an empty book: (account, micro-USDC, lots).
     /// Journaled like any deposit, and skipped when a journal was replayed, so a restart never
     /// funds twice. A convenience for demos; production funding goes through `Deposit`.
@@ -48,6 +50,7 @@ impl Default for EngineConfig {
             journal_compact_bytes: 64 << 20,
             enforce_balances: true,
             fund_at_start: Vec::new(),
+            exposure_limits: engine::ExposureLimits::default(),
         }
     }
 }
@@ -69,6 +72,7 @@ fn cancel_reason_name(r: engine::CancelReason) -> String {
         engine::CancelReason::Ioc => "ioc",
         engine::CancelReason::Fok => "fok",
         engine::CancelReason::SelfTradePrevention => "self_trade_prevention",
+        engine::CancelReason::ExposureLimit => "exposure_limit",
     }
     .into()
 }
@@ -217,6 +221,7 @@ pub fn order_to_pb(o: &engine::Order) -> pb::Order {
             Some(engine::CancelReason::Ioc) => "ioc".into(),
             Some(engine::CancelReason::Fok) => "fok".into(),
             Some(engine::CancelReason::SelfTradePrevention) => "self_trade_prevention".into(),
+            Some(engine::CancelReason::ExposureLimit) => "exposure_limit".into(),
         },
     }
 }
@@ -524,7 +529,7 @@ pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(Socke
     let bound = listener.local_addr()?;
     let (mut book, mut journal) = match &cfg.journal_path {
         Some(path) => {
-            let (book, replayed) = Journal::recover(path, cfg.enforce_balances)
+            let (book, replayed) = Journal::recover(path, cfg.enforce_balances, cfg.exposure_limits)
                 .map_err(|e| anyhow::anyhow!("cannot recover journal {}: {e}", path.display()))?;
             tracing::info!(journal = %path.display(), replayed, seq = book.seq(), "journal recovered");
             let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -536,11 +541,12 @@ pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(Socke
             (book, Some(Journal::open(path, cfg.journal_fsync)?))
         }
         None => (
-            if cfg.enforce_balances {
+            (if cfg.enforce_balances {
                 Book::with_balances()
             } else {
                 Book::new()
-            },
+            })
+            .with_exposure_limits(cfg.exposure_limits),
             None,
         ),
     };

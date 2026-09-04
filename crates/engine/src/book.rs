@@ -96,6 +96,33 @@ pub enum CancelReason {
     Ioc,
     Fok,
     SelfTradePrevention,
+    /// Resting the remainder would have taken the account past its open-order or open-notional
+    /// limit; the fills stand, the remainder does not rest.
+    ExposureLimit,
+}
+
+/// Per-account limits on what may rest in the book at once, enforced inside the matcher so two
+/// concurrent placements cannot both pass a check made outside it. Unlimited by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExposureLimits {
+    pub max_open_orders: u32,
+    /// Sum over live orders of price times remaining, in micro-USDC.
+    pub max_open_notional: u128,
+}
+
+impl Default for ExposureLimits {
+    fn default() -> Self {
+        Self {
+            max_open_orders: u32::MAX,
+            max_open_notional: u128::MAX,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Exposure {
+    open: u32,
+    notional: u128,
 }
 
 /// Orders are cloned on every reply and event, so the two strings are shared, not copied.
@@ -382,6 +409,30 @@ pub struct Book {
     enforce_balances: bool,
     balances: HashMap<Arc<str>, Balances>,
     ledgers: HashMap<Arc<str>, Ledger>,
+    exposure_limits: ExposureLimits,
+    /// Live orders and their notional per account, kept incrementally for the limits.
+    exposure: HashMap<Arc<str>, Exposure>,
+}
+
+/// One more live order for the account: `qty` at `price` now rests.
+fn exposure_add(exposure: &mut HashMap<Arc<str>, Exposure>, account: &Arc<str>, price: Price, qty: Qty) {
+    let e = exposure.entry(Arc::clone(account)).or_default();
+    e.open += 1;
+    e.notional += price as u128 * qty as u128;
+}
+
+/// Removes `qty` at `price` from the account's exposure, and one order when it closed. A free
+/// function, like the wallet helpers, so it can run while a price level is borrowed.
+fn exposure_sub(exposure: &mut HashMap<Arc<str>, Exposure>, account: &Arc<str>, price: Price, qty: Qty, closed: bool) {
+    if let Some(e) = exposure.get_mut(account) {
+        e.notional = e.notional.saturating_sub(price as u128 * qty as u128);
+        if closed {
+            e.open = e.open.saturating_sub(1);
+        }
+        if *e == Exposure::default() {
+            exposure.remove(account);
+        }
+    }
 }
 
 /// Moves `needed` from available to reserved for a new order (the funds check happened first).
@@ -472,6 +523,9 @@ pub struct BookState {
     pub next_trade: TradeId,
     pub next_seq: Seq,
     pub enforce_balances: bool,
+    /// The limits in force when the state was written; replay under other limits would differ.
+    #[serde(default)]
+    pub exposure_limits: ExposureLimits,
 }
 
 impl Book {
@@ -506,6 +560,7 @@ impl Book {
             next_trade: self.next_trade,
             next_seq: self.next_seq,
             enforce_balances: self.enforce_balances,
+            exposure_limits: self.exposure_limits,
         }
     }
 
@@ -515,6 +570,7 @@ impl Book {
     pub fn from_state(state: BookState) -> Self {
         let mut book = Book {
             enforce_balances: state.enforce_balances,
+            exposure_limits: state.exposure_limits,
             last_trade_price: state.last_trade_price,
             next_order: state.next_order,
             next_trade: state.next_trade,
@@ -540,6 +596,11 @@ impl Book {
                 live.push((o.side, o.price, o.id, o.remaining));
             }
             book.orders.insert(o.id, o);
+        }
+        for o in book.orders.values().filter(|o| o.status.is_live()) {
+            let e = book.exposure.entry(Arc::clone(&o.account)).or_default();
+            e.open += 1;
+            e.notional += o.price as u128 * o.remaining as u128;
         }
         live.sort_by_key(|(_, _, id, _)| *id);
         for (side, price, id, remaining) in live {
@@ -594,6 +655,24 @@ impl Book {
 
     pub fn enforces_balances(&self) -> bool {
         self.enforce_balances
+    }
+
+    /// Sets the per-account exposure limits. Part of the durable state, since matching under
+    /// other limits would rest different orders.
+    pub fn with_exposure_limits(mut self, limits: ExposureLimits) -> Self {
+        self.exposure_limits = limits;
+        self
+    }
+
+    pub fn exposure_limits(&self) -> ExposureLimits {
+        self.exposure_limits
+    }
+
+    /// Whether resting `qty` more at `price` keeps the account within its limits.
+    fn exposure_allows(&self, account: &str, price: Price, qty: Qty) -> bool {
+        let e = self.exposure.get(account).copied().unwrap_or_default();
+        e.open < self.exposure_limits.max_open_orders
+            && e.notional + price as u128 * qty as u128 <= self.exposure_limits.max_open_notional
     }
 
     /// Sets how much closed history is kept and applies it at once. Everything an order or
@@ -738,6 +817,20 @@ impl Book {
             if let Some(id) = ids.iter().find(|id| !self.orders.contains_key(id)) {
                 return Err(format!("the account index holds archived order {id}"));
             }
+        }
+        let mut expected_exposure: HashMap<&Arc<str>, Exposure> = HashMap::new();
+        for o in self.orders.values().filter(|o| o.status.is_live()) {
+            let e = expected_exposure.entry(&o.account).or_default();
+            e.open += 1;
+            e.notional += o.price as u128 * o.remaining as u128;
+        }
+        for (account, e) in &self.exposure {
+            if expected_exposure.get(account) != Some(e) {
+                return Err(format!("{account}: exposure {e:?} does not match its live orders"));
+            }
+        }
+        if expected_exposure.len() != self.exposure.len() {
+            return Err("an account with live orders has no exposure entry".into());
         }
         if self.enforce_balances {
             for (account, b) in &self.balances {
@@ -1100,8 +1193,10 @@ impl Book {
                 level.live -= 1;
                 self.closed.push_back(maker_id);
             }
+            let maker_closed = maker.remaining == 0;
             let level_empty = level.total == 0;
             let maker_account = Arc::clone(&maker.account);
+            exposure_sub(&mut self.exposure, &maker_account, px, q, maker_closed);
             if self.enforce_balances {
                 settle(&mut self.balances, &o.account, o.side, o.price, &maker_account, px, q);
             }
@@ -1146,6 +1241,9 @@ impl Book {
                 cancel = Some(CancelReason::SelfTradePrevention);
             } else {
                 match tif {
+                    Tif::Gtc if !self.exposure_allows(&o.account, o.price, o.remaining) => {
+                        cancel = Some(CancelReason::ExposureLimit)
+                    }
                     Tif::Gtc => {
                         let same = match o.side {
                             Side::Buy => &mut self.bids,
@@ -1155,6 +1253,7 @@ impl Book {
                         level.total += o.remaining;
                         level.live += 1;
                         level.queue.push_back(o.id);
+                        exposure_add(&mut self.exposure, &o.account, o.price, o.remaining);
                     }
                     Tif::Ioc => cancel = Some(CancelReason::Ioc),
                     Tif::Fok => cancel = Some(CancelReason::Fok),
@@ -1213,6 +1312,7 @@ impl Book {
         o.cancel_reason = Some(CancelReason::User);
         let (side, price, remaining) = (o.side, o.price, o.remaining);
         let owner = Arc::clone(&o.account);
+        exposure_sub(&mut self.exposure, &owner, price, remaining, true);
         if self.enforce_balances {
             release(&mut self.balances, &owner, side, price, remaining);
         }
@@ -1550,6 +1650,50 @@ mod tests {
         b.place(req("a", "ok", Side::Buy, MAX_PRICE, MAX_QTY, Tif::Gtc), 0)
             .unwrap();
         b.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn exposure_limits_stop_the_remainder_from_resting() {
+        let limits = ExposureLimits {
+            max_open_orders: 2,
+            max_open_notional: 2_000 * 300_000, // 600 USDC at 3000: two small orders, not three
+        };
+        let mut b = Book::new().with_exposure_limits(limits);
+        b.place(req("a", "1", Side::Buy, 300_000, 1_000, Tif::Gtc), 0).unwrap();
+        b.place(req("a", "2", Side::Buy, 299_000, 1_000, Tif::Gtc), 0).unwrap();
+        // A third resting order is over the count: cancelled with the reason, nothing rests.
+        let (third, _) = b.place(req("a", "3", Side::Buy, 298_000, 1_000, Tif::Gtc), 0).unwrap();
+        assert_eq!(
+            (third.status, third.cancel_reason),
+            (Status::Cancelled, Some(CancelReason::ExposureLimit))
+        );
+        assert_eq!(b.open_orders_for("a").len(), 2);
+        // A crossing order still fills: the limit is on what rests, not on what trades.
+        let (hit, fills) = b.place(req("s", "s1", Side::Sell, 300_000, 500, Tif::Gtc), 0).unwrap();
+        assert_eq!((hit.status, fills.len()), (Status::Filled, 1));
+        // Another account has its own room.
+        assert_eq!(
+            b.place(req("z", "z1", Side::Buy, 297_000, 1_000, Tif::Gtc), 0)
+                .unwrap()
+                .0
+                .status,
+            Status::Open
+        );
+        // Cancelling makes room again; the notional limit then bites before the count does.
+        b.cancel("a", 2).unwrap();
+        let (big, _) = b.place(req("a", "4", Side::Buy, 300_000, 1_600, Tif::Gtc), 0).unwrap();
+        assert_eq!(
+            big.cancel_reason,
+            Some(CancelReason::ExposureLimit),
+            "500 + 1600 lots at 3000 exceeds 600 USDC"
+        );
+        let (fits, _) = b.place(req("a", "5", Side::Buy, 300_000, 1_400, Tif::Gtc), 0).unwrap();
+        assert_eq!(fits.status, Status::Open);
+        b.check_invariants().unwrap();
+        // The limits travel with the state.
+        let r = Book::from_state(b.state());
+        assert_eq!(r.exposure_limits(), limits);
+        r.check_invariants().unwrap();
     }
 
     #[test]

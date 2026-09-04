@@ -201,6 +201,10 @@ fn cancel_note(o: &pb::Order) -> Option<&'static str> {
         ),
         "ioc" => Some("Immediate-or-cancel: whatever did not fill at once was cancelled."),
         "fok" => Some("Fill-or-kill: the full quantity was not available, nothing was filled."),
+        "exposure_limit" => Some(
+            "The account has reached its limit on open orders or open notional in the engine, so the unfilled remainder was \
+             cancelled. Cancel a resting order first.",
+        ),
         _ => None,
     }
 }

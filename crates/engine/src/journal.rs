@@ -9,7 +9,7 @@
 //! The matcher flushes the writer once per batch, so under load one write system call covers many
 //! commands; `fsync` per batch is optional (crash durability at a latency cost, see the README).
 
-use crate::book::{Book, BookState, OrderId, PlaceRequest, Qty};
+use crate::book::{Book, BookState, ExposureLimits, OrderId, PlaceRequest, Qty};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -89,7 +89,7 @@ impl Journal {
 
     /// Rebuilds a book from the snapshot (if any) and the journal tail after it. Returns the book
     /// and how many journal records were replayed on top of the snapshot.
-    pub fn recover(journal: &Path, enforce_balances: bool) -> std::io::Result<(Book, u64)> {
+    pub fn recover(journal: &Path, enforce_balances: bool, limits: ExposureLimits) -> std::io::Result<(Book, u64)> {
         let snapshot = Self::snapshot_path(journal);
         let mut book = match File::open(&snapshot) {
             Ok(f) => {
@@ -110,14 +110,26 @@ impl Journal {
                         ),
                     ));
                 }
+                if state.exposure_limits != limits {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "snapshot {} was taken with exposure limits {:?}; the engine is configured with {:?}",
+                            snapshot.display(),
+                            state.exposure_limits,
+                            limits
+                        ),
+                    ));
+                }
                 Book::from_state(state)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if enforce_balances {
+                let book = if enforce_balances {
                     Book::with_balances()
                 } else {
                     Book::new()
-                }
+                };
+                book.with_exposure_limits(limits)
             }
             Err(e) => return Err(e),
         };
@@ -302,7 +314,7 @@ mod tests {
             }
             j.commit().unwrap();
         }
-        let (mut compacted, replayed) = Journal::recover(&compact_path, false).unwrap();
+        let (mut compacted, replayed) = Journal::recover(&compact_path, false, ExposureLimits::default()).unwrap();
         assert_eq!(replayed, 50);
         Journal::compact(&compact_path, &compacted).unwrap();
         assert_eq!(std::fs::metadata(&compact_path).unwrap().len(), 0, "journal emptied");
@@ -322,7 +334,7 @@ mod tests {
         .unwrap();
         tail.commit().unwrap();
         let _ = compacted.place(more, 60);
-        let (recovered, replayed) = Journal::recover(&compact_path, false).unwrap();
+        let (recovered, replayed) = Journal::recover(&compact_path, false, ExposureLimits::default()).unwrap();
         assert_eq!(replayed, 1, "only the tail after the snapshot is replayed");
         recovered.check_invariants().unwrap();
         assert_eq!(recovered.snapshot(100), compacted.snapshot(100));
@@ -332,7 +344,7 @@ mod tests {
             compacted.orders_for("b0", |_| true, 100)
         );
         assert!(
-            Journal::recover(&compact_path, true).is_err(),
+            Journal::recover(&compact_path, true, ExposureLimits::default()).is_err(),
             "a snapshot's balance mode is binding"
         );
         let _ = std::fs::remove_file(&compact_path);
