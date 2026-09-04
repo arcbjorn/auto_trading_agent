@@ -1892,6 +1892,23 @@ mod tests {
     }
 
     #[test]
+    fn the_caps_keep_every_value_inside_the_wire_types() {
+        // The gRPC contract carries prices and quantities as int64 and notionals as decimal
+        // strings. These caps are what make those conversions total: raise one past this and the
+        // test fails here rather than a price wrapping negative on a client's screen.
+        assert!(MAX_PRICE <= i64::MAX as u64 && MAX_QTY <= i64::MAX as u64);
+        let notional = MAX_PRICE as u128 * MAX_QTY as u128;
+        assert!(
+            notional < i64::MAX as u128,
+            "a full-size order's notional must fit an i64"
+        );
+        assert!(
+            notional.checked_mul(RETAINED_CLOSED_ORDERS as u128).is_some(),
+            "an account's whole retained exposure must fit the u128 it is summed in"
+        );
+    }
+
+    #[test]
     fn hard_caps_reject_absurd_orders_before_anything_else() {
         let mut b = Book::new();
         assert!(matches!(

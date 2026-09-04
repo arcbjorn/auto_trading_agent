@@ -3,13 +3,13 @@
 
 use clob_proto::v1 as pb;
 use clob_proto::v1::engine_server::{Engine, EngineServer};
-use engine::{spawn_with_journal, Book, Command, EngineError, EngineHandle, Journal, PlaceRequest, Reply, Top};
+use engine::{Book, Command, EngineError, EngineHandle, Journal, PlaceRequest, Reply, Top, spawn_with_journal};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{Request, Response, Status, transport::Server};
 
 pub const SYMBOL: &str = "ETH-USDC";
 pub const MAX_DEPTH: u32 = 200;
@@ -258,15 +258,25 @@ fn status_to_pb(s: engine::Status) -> pb::OrderStatus {
     }
 }
 
+/// A price or quantity on the wire. The proto carries them as `int64` while the engine holds
+/// `u64`, so every conversion crosses a signedness boundary. `MAX_PRICE` and `MAX_QTY` keep every
+/// accepted value far below `i64::MAX` (their product is a thousandth of it), which the assertion
+/// below pins: a future change to either cap that broke this would fail the build's tests rather
+/// than wrap a price negative on the wire. A value that somehow arrived above the cap saturates
+/// instead of wrapping.
+fn wire(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
 pub fn order_to_pb(o: &engine::Order) -> pb::Order {
     pb::Order {
         order_id: o.id.to_string(),
         account_id: o.account.to_string(),
         client_order_id: o.client_order_id.to_string(),
         side: side_to_pb(o.side) as i32,
-        price_ticks: o.price as i64,
-        quantity_lots: o.qty as i64,
-        remaining_lots: o.remaining as i64,
+        price_ticks: wire(o.price),
+        quantity_lots: wire(o.qty),
+        remaining_lots: wire(o.remaining),
         status: status_to_pb(o.status) as i32,
         sequence: o.seq,
         created_at_unix_ns: o.created_at_unix_ns,
@@ -295,8 +305,8 @@ pub fn trade_to_pb(t: &engine::Trade, viewer: Option<&str>) -> pb::Trade {
         trade_id: t.id.to_string(),
         maker_order_id: t.maker.to_string(),
         taker_order_id: t.taker.to_string(),
-        price_ticks: t.price as i64,
-        quantity_lots: t.qty as i64,
+        price_ticks: wire(t.price),
+        quantity_lots: wire(t.qty),
         sequence: t.seq,
         executed_at_unix_ns: t.executed_at_unix_ns,
         taker_side: side_to_pb(t.taker_side) as i32,
@@ -315,8 +325,8 @@ pub fn trade_to_pb(t: &engine::Trade, viewer: Option<&str>) -> pb::Trade {
 
 fn level_to_pb(l: &engine::LevelView) -> pb::PriceLevel {
     pb::PriceLevel {
-        price_ticks: l.price as i64,
-        quantity_lots: l.qty as i64,
+        price_ticks: wire(l.price),
+        quantity_lots: wire(l.qty),
         order_count: l.orders,
     }
 }
@@ -328,11 +338,7 @@ fn parse_id(s: &str) -> Result<u64, Status> {
 }
 
 fn limit(v: u32) -> usize {
-    if v == 0 {
-        10
-    } else {
-        v.min(MAX_LIST) as usize
-    }
+    if v == 0 { 10 } else { v.min(MAX_LIST) as usize }
 }
 
 #[tonic::async_trait]
@@ -616,9 +622,9 @@ impl Engine for Svc {
             symbol: SYMBOL.into(),
             tick_size_ticks: 1,
             lot_size_lots: 1,
-            best_bid_ticks: snap.best_bid().map(|p| p as i64).unwrap_or(0),
-            best_ask_ticks: snap.best_ask().map(|p| p as i64).unwrap_or(0),
-            last_trade_price_ticks: snap.last_trade_price.map(|p| p as i64).unwrap_or(0),
+            best_bid_ticks: snap.best_bid().map(wire).unwrap_or(0),
+            best_ask_ticks: snap.best_ask().map(wire).unwrap_or(0),
+            last_trade_price_ticks: snap.last_trade_price.map(wire).unwrap_or(0),
             sequence: snap.seq,
         }))
     }
@@ -654,8 +660,8 @@ fn placed_to_pb(reply: Reply) -> Result<pb::PlaceOrderResponse, Status> {
 
 fn top_to_pb(t: &Top) -> pb::TopOfBook {
     pb::TopOfBook {
-        best_bid_ticks: t.best_bid.map(|p| p as i64).unwrap_or(0),
-        best_ask_ticks: t.best_ask.map(|p| p as i64).unwrap_or(0),
+        best_bid_ticks: t.best_bid.map(wire).unwrap_or(0),
+        best_ask_ticks: t.best_ask.map(wire).unwrap_or(0),
         sequence: t.seq,
     }
 }
@@ -708,7 +714,7 @@ pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(Socke
     if book.seq() == 0 && !cfg.fund_at_start.is_empty() {
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as i64)
+            .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
             .unwrap_or(0);
         for (account, usdc, eth) in &cfg.fund_at_start {
             book.deposit(account, *usdc as u128, *eth)
