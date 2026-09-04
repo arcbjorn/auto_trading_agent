@@ -142,11 +142,19 @@ struct ListTradesArgs {
     limit: Option<i64>,
 }
 
+/// A price or quantity arriving from the engine. The proto carries them as `int64` and the
+/// engine only ever emits values inside its own caps, so this is total in practice; a negative
+/// could only come from a corrupted peer, and reading it as zero is the safe failure (an order
+/// shown as free is obviously wrong, one shown as astronomically large might be acted on).
+fn from_wire(v: i64) -> u64 {
+    u64::try_from(v).unwrap_or(0)
+}
+
 /// The best prices after an action, so the model can report the market without another call.
 fn add_top(out: &mut Value, top: Option<&pb::TopOfBook>) {
     if let Some(t) = top {
-        out["best_bid_usdc"] = json!((t.best_bid_ticks > 0).then(|| usdc(t.best_bid_ticks as u64)));
-        out["best_ask_usdc"] = json!((t.best_ask_ticks > 0).then(|| usdc(t.best_ask_ticks as u64)));
+        out["best_bid_usdc"] = json!((t.best_bid_ticks > 0).then(|| usdc(from_wire(t.best_bid_ticks))));
+        out["best_ask_usdc"] = json!((t.best_ask_ticks > 0).then(|| usdc(from_wire(t.best_ask_ticks))));
     }
 }
 
@@ -184,9 +192,9 @@ fn order_json(o: &pb::Order) -> Value {
         "order_id": o.order_id,
         "client_order_id": o.client_order_id,
         "side": side_name(o.side),
-        "price_usdc": usdc(o.price_ticks as u64),
-        "quantity_eth": eth(o.quantity_lots as u64),
-        "remaining_eth": eth(o.remaining_lots as u64),
+        "price_usdc": usdc(from_wire(o.price_ticks)),
+        "quantity_eth": eth(from_wire(o.quantity_lots)),
+        "remaining_eth": eth(from_wire(o.remaining_lots)),
         "status": status_name(o.status),
         "seq": o.sequence
     });
@@ -214,7 +222,7 @@ fn cancel_note(o: &pb::Order) -> Option<&'static str> {
 }
 
 fn fill_json(t: &pb::Trade) -> Value {
-    json!({ "price_usdc": usdc(t.price_ticks as u64), "quantity_eth": eth(t.quantity_lots as u64) })
+    json!({ "price_usdc": usdc(from_wire(t.price_ticks)), "quantity_eth": eth(from_wire(t.quantity_lots)) })
 }
 
 fn grpc_error(status: tonic::Status) -> ToolOutput {
@@ -242,7 +250,7 @@ fn bounded(v: Option<i64>, default: i64, max: i64, name: &str) -> Result<u32, To
     if v < 1 || v > max {
         return Err(ToolOutput::err(format!("{name} must be between 1 and {max}, got {v}")));
     }
-    Ok(v as u32)
+    Ok(u32::try_from(v).unwrap_or(u32::MAX))
 }
 
 impl ToolSet {
@@ -495,15 +503,15 @@ impl ToolSet {
             Ok(m) => m,
             Err(e) => return e,
         };
-        let bid = (m.best_bid_ticks > 0).then_some(m.best_bid_ticks as u64);
-        let ask = (m.best_ask_ticks > 0).then_some(m.best_ask_ticks as u64);
+        let bid = (m.best_bid_ticks > 0).then_some(from_wire(m.best_bid_ticks));
+        let ask = (m.best_ask_ticks > 0).then_some(from_wire(m.best_ask_ticks));
         ToolOutput::ok(json!({
             "symbol": SYMBOL,
             "best_bid_usdc": bid.map(usdc),
             "best_ask_usdc": ask.map(usdc),
             "mid_usdc": bid.zip(ask).map(|(b, a)| mid(b, a)),
             "spread_usdc": bid.zip(ask).map(|(b, a)| usdc(a.saturating_sub(b))),
-            "last_trade_usdc": (m.last_trade_price_ticks > 0).then(|| usdc(m.last_trade_price_ticks as u64)),
+            "last_trade_usdc": (m.last_trade_price_ticks > 0).then(|| usdc(from_wire(m.last_trade_price_ticks))),
             "tick_size_usdc": "0.01",
             "lot_size_eth": "0.0001",
             "seq": m.sequence
@@ -523,9 +531,9 @@ impl ToolSet {
             Ok(b) => b,
             Err(e) => return e,
         };
-        let level = |l: &pb::PriceLevel| json!({ "price_usdc": usdc(l.price_ticks as u64), "quantity_eth": eth(l.quantity_lots as u64), "orders": l.order_count });
-        let bid = book.bids.first().map(|l| l.price_ticks as u64);
-        let ask = book.asks.first().map(|l| l.price_ticks as u64);
+        let level = |l: &pb::PriceLevel| json!({ "price_usdc": usdc(from_wire(l.price_ticks)), "quantity_eth": eth(from_wire(l.quantity_lots)), "orders": l.order_count });
+        let bid = book.bids.first().map(|l| from_wire(l.price_ticks));
+        let ask = book.asks.first().map(|l| from_wire(l.price_ticks));
         ToolOutput::ok(json!({
             "symbol": SYMBOL,
             "bids": book.bids.iter().map(level).collect::<Vec<_>>(),
@@ -562,11 +570,11 @@ impl ToolSet {
             if remaining == 0 {
                 break;
             }
-            let take = remaining.min(l.quantity_lots as u64);
-            notional += take as u128 * l.price_ticks as u128;
+            let take = remaining.min(from_wire(l.quantity_lots));
+            notional += u128::from(take) * u128::from(from_wire(l.price_ticks));
             remaining -= take;
             consumed += 1;
-            worst = Some(l.price_ticks as u64);
+            worst = Some(from_wire(l.price_ticks));
         }
         let filled = wanted - remaining;
         ToolOutput::ok(json!({
@@ -613,7 +621,9 @@ impl ToolSet {
             .into_inner()
             .orders;
         let existing = orders.into_iter().find(|o| o.client_order_id == client_order_id)?;
-        if existing.price_ticks as u64 != price || existing.quantity_lots as u64 != qty || existing.side != side as i32
+        if from_wire(existing.price_ticks) != price
+            || from_wire(existing.quantity_lots) != qty
+            || existing.side != side as i32
         {
             return None; // a different order under the same key: the engine answers ALREADY_EXISTS
         }
@@ -641,7 +651,7 @@ impl ToolSet {
         };
         let reference = match self.market().await {
             Ok(m) => {
-                let positive = |v: i64| (v > 0).then_some(v as u64);
+                let positive = |v: i64| (v > 0).then_some(from_wire(v));
                 reference_price(
                     positive(m.best_bid_ticks),
                     positive(m.best_ask_ticks),
@@ -679,8 +689,8 @@ impl ToolSet {
             account_id: self.account.clone(),
             client_order_id,
             side: side as i32,
-            price_ticks: price as i64,
-            quantity_lots: qty as i64,
+            price_ticks: i64::try_from(price).unwrap_or(i64::MAX),
+            quantity_lots: i64::try_from(qty).unwrap_or(i64::MAX),
             tif: pb::TimeInForce::Gtc as i32,
         };
         let resp = match self.engine.clone().place_order(req).await {
@@ -692,20 +702,20 @@ impl ToolSet {
             }
         };
         let o = resp.order.unwrap_or_default();
-        let filled: u64 = resp.fills.iter().map(|f| f.quantity_lots as u64).sum();
+        let filled: u64 = resp.fills.iter().map(|f| from_wire(f.quantity_lots)).sum();
         let notional: u128 = resp
             .fills
             .iter()
-            .map(|f| f.quantity_lots as u128 * f.price_ticks as u128)
+            .map(|f| u128::from(from_wire(f.quantity_lots)) * u128::from(from_wire(f.price_ticks)))
             .sum();
         let mut out = json!({
             "order_id": o.order_id,
             "status": status_name(o.status),
             "side": side_name(o.side),
-            "price_usdc": usdc(o.price_ticks as u64),
-            "quantity_eth": eth(o.quantity_lots as u64),
+            "price_usdc": usdc(from_wire(o.price_ticks)),
+            "quantity_eth": eth(from_wire(o.quantity_lots)),
             "filled_eth": eth(filled),
-            "remaining_eth": eth(o.remaining_lots as u64),
+            "remaining_eth": eth(from_wire(o.remaining_lots)),
             "average_fill_price_usdc": average_price(notional, filled).map(usdc),
             "fills": resp.fills.iter().take(MAX_FILLS).map(fill_json).collect::<Vec<_>>(),
             "fills_truncated": resp.fills.len() > MAX_FILLS,
@@ -743,9 +753,9 @@ impl ToolSet {
                 let mut out = json!({
                     "order_id": o.order_id,
                     "status": status_name(o.status),
-                    "cancelled_eth": eth(o.remaining_lots as u64),
+                    "cancelled_eth": eth(from_wire(o.remaining_lots)),
                     "side": side_name(o.side),
-                    "price_usdc": usdc(o.price_ticks as u64)
+                    "price_usdc": usdc(from_wire(o.price_ticks))
                 });
                 add_top(&mut out, r.top.as_ref());
                 ToolOutput::ok(out)
@@ -791,7 +801,7 @@ impl ToolSet {
         };
         let reference = match self.market().await {
             Ok(m) => {
-                let positive = |v: i64| (v > 0).then_some(v as u64);
+                let positive = |v: i64| (v > 0).then_some(from_wire(v));
                 reference_price(
                     positive(m.best_bid_ticks),
                     positive(m.best_ask_ticks),
@@ -800,8 +810,10 @@ impl ToolSet {
             }
             Err(e) => return e,
         };
-        let unrealised =
-            reference.map(|r| (s.inventory_lots as u128 * r as u128) as i128 - s.inventory_cost_micro as i128);
+        let unrealised = reference.map(|r| {
+            let marked = u128::from(s.inventory_lots) * u128::from(r);
+            i128::try_from(marked).unwrap_or(i128::MAX) - i128::from(s.inventory_cost_micro)
+        });
         ToolOutput::ok(json!({
             "deposits_usdc": usdc_from_micro(s.deposits_usdc_micro as u128),
             "deposits_eth": eth(s.deposits_eth_lots),
@@ -934,8 +946,8 @@ impl ToolSet {
                             "trade_id": t.trade_id,
                             "side": side_name(side as i32),
                             "role": if taker { "taker" } else { "maker" },
-                            "price_usdc": usdc(t.price_ticks as u64),
-                            "quantity_eth": eth(t.quantity_lots as u64),
+                            "price_usdc": usdc(from_wire(t.price_ticks)),
+                            "quantity_eth": eth(from_wire(t.quantity_lots)),
                             "order_id": if taker { &t.taker_order_id } else { &t.maker_order_id },
                             "seq": t.sequence
                         })

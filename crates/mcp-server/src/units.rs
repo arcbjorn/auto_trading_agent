@@ -33,7 +33,7 @@ pub fn parse_fixed(input: &str, decimals: u32, what: &str, step: &str) -> Result
     if !int_part.chars().all(|c| c.is_ascii_digit()) || !frac_part.chars().all(|c| c.is_ascii_digit()) {
         return Err(format!("{what} {input:?} is not a number"));
     }
-    if frac_part.len() as u32 > decimals {
+    if frac_part.len() > decimals as usize {
         return Err(format!(
             "{what} {input:?} has more than {decimals} decimals; it must be a multiple of {step}. Round it and retry"
         ));
@@ -51,7 +51,7 @@ pub fn parse_fixed(input: &str, decimals: u32, what: &str, step: &str) -> Result
             .parse()
             .map_err(|_| format!("{what} {input:?} is not a number"))?
     };
-    frac_value *= pow10(decimals - frac_part.len() as u32);
+    frac_value *= pow10(decimals - u32::try_from(frac_part.len()).unwrap_or(u32::MAX));
     let value = int_value
         .checked_mul(scale)
         .and_then(|v| v.checked_add(frac_value))
@@ -87,7 +87,7 @@ pub fn eth(lots: u64) -> String {
 /// Notional in micro-USDC (ticks * lots) formatted as USDC with 2 decimals, rounded half up.
 pub fn usdc_from_micro(micro: u128) -> String {
     let cents = (micro + 5_000) / 10_000;
-    format_fixed(cents.min(u64::MAX as u128) as u64, PRICE_DECIMALS)
+    format_fixed(u64::try_from(cents).unwrap_or(u64::MAX), PRICE_DECIMALS)
 }
 
 /// A signed amount in micro-USDC as USDC with 2 decimals, rounded half up away from zero.
@@ -115,7 +115,8 @@ pub fn average_price(notional_micro: u128, lots: u64) -> Option<u64> {
     if lots == 0 {
         return None;
     }
-    Some(((notional_micro + lots as u128 / 2) / lots as u128) as u64)
+    // The average of values the engine capped: it cannot exceed a single price.
+    u64::try_from((notional_micro + u128::from(lots) / 2) / u128::from(lots)).ok()
 }
 
 #[cfg(test)]

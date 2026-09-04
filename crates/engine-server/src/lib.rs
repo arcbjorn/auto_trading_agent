@@ -1,6 +1,7 @@
 //! tonic servicer for `clob.v1.Engine`. Every RPC is a thin translation: protobuf in, a command to
 //! the sequencer, protobuf out. Engine errors map one-to-one onto gRPC status codes.
 
+#![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 use clob_proto::v1 as pb;
 use clob_proto::v1::engine_server::{Engine, EngineServer};
 use engine::{Book, Command, EngineError, EngineHandle, Journal, PlaceRequest, Reply, Top, spawn_with_journal};
@@ -92,7 +93,10 @@ impl RateLimiter {
             *tokens -= 1.0;
             Ok(())
         } else {
-            let wait_ms = ((1.0 - *tokens) / rate * 1000.0).ceil() as u64;
+            // A retry hint in milliseconds: the value is a small positive float by construction
+            // (tokens is in [0, 1) and rate is positive), and rounding it is the point.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let wait_ms = ((1.0 - *tokens) / rate * 1000.0).ceil().max(0.0) as u64;
             Err(Status::resource_exhausted(format!(
                 "account {account} exceeded {} mutations per second; retry in {wait_ms} ms",
                 self.rate
@@ -154,12 +158,12 @@ pub fn event_to_pb(e: &engine::Event, viewer: Option<&str>) -> pb::EngineEvent {
         }),
         engine::Event::Deposited { account, usdc, eth, .. } => E::Deposited(pb::Transfer {
             account_id: account.to_string(),
-            usdc_micro: (*usdc).min(u64::MAX as u128) as u64,
+            usdc_micro: u64::try_from(*usdc).unwrap_or(u64::MAX),
             eth_lots: *eth,
         }),
         engine::Event::Withdrawn { account, usdc, eth, .. } => E::Withdrawn(pb::Transfer {
             account_id: account.to_string(),
-            usdc_micro: (*usdc).min(u64::MAX as u128) as u64,
+            usdc_micro: u64::try_from(*usdc).unwrap_or(u64::MAX),
             eth_lots: *eth,
         }),
     };
@@ -170,7 +174,7 @@ pub fn event_to_pb(e: &engine::Event, viewer: Option<&str>) -> pb::EngineEvent {
 }
 
 fn statement_to_pb(account: &str, l: &engine::Ledger) -> pb::Statement {
-    let clamp = |v: u128| v.min(u64::MAX as u128) as u64;
+    let clamp = |v: u128| u64::try_from(v).unwrap_or(u64::MAX);
     pb::Statement {
         account_id: account.to_string(),
         deposits_usdc_micro: clamp(l.deposits_usdc),
@@ -184,7 +188,11 @@ fn statement_to_pb(account: &str, l: &engine::Ledger) -> pb::Statement {
         inventory_lots: l.inventory_lots,
         inventory_cost_micro: clamp(l.inventory_cost),
         sold_from_deposits_lots: l.sold_from_deposits_lots,
-        realised_pnl_micro: l.realised_pnl.clamp(i64::MIN as i128, i64::MAX as i128) as i64,
+        realised_pnl_micro: i64::try_from(l.realised_pnl).unwrap_or(if l.realised_pnl.is_negative() {
+            i64::MIN
+        } else {
+            i64::MAX
+        }),
         trades: l.trades,
     }
 }
@@ -192,8 +200,8 @@ fn statement_to_pb(account: &str, l: &engine::Ledger) -> pb::Statement {
 fn balances_to_pb(account: &str, b: &engine::Balances, enforced: bool) -> pb::Balances {
     pb::Balances {
         account_id: account.to_string(),
-        usdc_available_micro: b.usdc_available.min(u64::MAX as u128) as u64,
-        usdc_reserved_micro: b.usdc_reserved.min(u64::MAX as u128) as u64,
+        usdc_available_micro: u64::try_from(b.usdc_available).unwrap_or(u64::MAX),
+        usdc_reserved_micro: u64::try_from(b.usdc_reserved).unwrap_or(u64::MAX),
         eth_available_lots: b.eth_available,
         eth_reserved_lots: b.eth_reserved,
         enforced,
@@ -611,8 +619,8 @@ impl Engine for Svc {
             orders_retained: s.orders_retained.load(Relaxed),
             trades_retained: s.trades_retained.load(Relaxed),
             sequence: s.seq.load(Relaxed),
-            queue_free: self.engine.free_capacity() as u32,
-            queue_capacity: self.engine.queue_capacity() as u32,
+            queue_free: u32::try_from(self.engine.free_capacity()).unwrap_or(u32::MAX),
+            queue_capacity: u32::try_from(self.engine.queue_capacity()).unwrap_or(u32::MAX),
         }))
     }
 
@@ -632,17 +640,21 @@ impl Engine for Svc {
 
 /// The wire request as a matcher command, or the status that refuses it.
 fn place_command(r: pb::PlaceOrderRequest) -> Result<Command, Status> {
-    if r.price_ticks <= 0 || r.quantity_lots <= 0 {
-        return Err(Status::invalid_argument(
-            "price_ticks and quantity_lots must be positive",
-        ));
-    }
+    // One conversion, one refusal: `try_from` rejects a negative price outright rather than
+    // letting a separate guard three lines away be the only thing between it and a u64 the size
+    // of the universe.
+    let positive = |v: i64, field: &str| {
+        u64::try_from(v)
+            .ok()
+            .filter(|v| *v > 0)
+            .ok_or_else(|| Status::invalid_argument(format!("{field} must be positive")))
+    };
     Ok(Command::Place(PlaceRequest {
         account: r.account_id,
         client_order_id: r.client_order_id,
         side: side_from_pb(r.side)?,
-        price: r.price_ticks as u64,
-        qty: r.quantity_lots as u64,
+        price: positive(r.price_ticks, "price_ticks")?,
+        qty: positive(r.quantity_lots, "quantity_lots")?,
         tif: tif_from_pb(r.tif),
     }))
 }

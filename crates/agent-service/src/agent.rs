@@ -495,7 +495,7 @@ impl Agent {
                             result: text.clone(),
                             is_error,
                             intercepted,
-                            latency_ms: t1.elapsed().as_millis() as u64,
+                            latency_ms: u64::try_from(t1.elapsed().as_millis()).unwrap_or(u64::MAX),
                         });
                         results.push(
                             json!({ "type": "tool_result", "tool_use_id": id, "content": text, "is_error": is_error }),
@@ -584,8 +584,8 @@ impl Agent {
             model,
             stop_reason,
             iterations,
-            latency_ms: started.elapsed().as_millis() as u64,
-            model_latency_ms: model_latency.as_millis() as u64,
+            latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            model_latency_ms: u64::try_from(model_latency.as_millis()).unwrap_or(u64::MAX),
             flags,
             permitted,
         };

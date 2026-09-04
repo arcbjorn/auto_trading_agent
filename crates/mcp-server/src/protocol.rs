@@ -136,7 +136,7 @@ impl McpServer {
         let params = req.params.clone().unwrap_or_else(|| json!({}));
         let started = std::time::Instant::now();
         let result = self.dispatch(&req, params).await;
-        tracing::debug!(method = %req.method, ok = result.is_ok(), elapsed_us = started.elapsed().as_micros() as u64, "handled");
+        tracing::debug!(method = %req.method, ok = result.is_ok(), elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX), "handled");
         Some(match result {
             Ok(v) => jsonrpc::success(id, v),
             Err(e) => jsonrpc::failure(id, e),

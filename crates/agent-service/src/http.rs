@@ -320,7 +320,7 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
             {
                 s.turn_times.pop_front();
             }
-            if s.turn_times.len() as u32 >= state.limits.turns_per_minute {
+            if s.turn_times.len() >= state.limits.turns_per_minute as usize {
                 return Ok(respond(
                     StatusCode::TOO_MANY_REQUESTS,
                     json!({ "error": format!("this session may start {} turns per minute; wait before the next one", state.limits.turns_per_minute), "session_id": session_id }),

@@ -13,6 +13,7 @@
 //! * [`audit`]      JSON-lines audit log, reused by the evaluation harness
 //! * [`http`]       the hyper API server
 
+#![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 pub mod agent;
 pub mod anthropic;
 pub mod audit;

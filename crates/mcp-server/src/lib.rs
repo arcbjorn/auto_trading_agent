@@ -10,6 +10,7 @@
 //! * [`units`]    exact decimal <-> integer conversion (no floats anywhere)
 //! * [`transport`] stdio (newline-delimited JSON) and Streamable HTTP (POST /mcp)
 
+#![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 pub mod jsonrpc;
 pub mod metrics;
 pub mod policy;

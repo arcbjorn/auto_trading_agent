@@ -126,7 +126,7 @@ impl Policy {
         {
             state.actions.pop_front();
         }
-        if state.actions.len() as u32 >= self.cfg.actions_per_minute {
+        if u32::try_from(state.actions.len()).unwrap_or(u32::MAX) >= self.cfg.actions_per_minute {
             return Err(Rejection::new(
                 "RATE_LIMIT",
                 format!("more than {} actions in the last minute", self.cfg.actions_per_minute),
