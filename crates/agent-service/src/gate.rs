@@ -197,6 +197,29 @@ pub fn side_quoted(text: &str, side: &str) -> bool {
     words.iter().any(|w| has_word(text, w))
 }
 
+/// Words that make a request cover every order: without one, "cancel my order" never means all
+/// of them.
+const ALL_WORDS: [&str; 14] = [
+    "all",
+    "everything",
+    "every",
+    "todo",
+    "todos",
+    "todas",
+    "tout",
+    "tous",
+    "toutes",
+    "alle",
+    "alles",
+    "tutti",
+    "tutto",
+    "tudo",
+];
+
+pub fn mentions_all(text: &str) -> bool {
+    ALL_WORDS.iter().any(|w| has_word(text, w))
+}
+
 pub fn mentions_cancel_intent(text: &str) -> bool {
     CANCEL_VERBS.iter().any(|w| has_word(text, w))
 }
@@ -377,6 +400,28 @@ impl ConfirmationGate {
                         .ok()
                         .is_some_and(|t| t != price && t as u128 * 10_000 == price as u128 * qty as u128)
                 });
+                // A proposal that contradicts what the user stated is refused outright rather than
+                // offered for confirmation: a "yes" to the gate's summary must never turn a stated
+                // sell into a buy, or a stated price into another. A quantity the model adjusted
+                // (the wallet holds less than asked) still goes to confirmation, since the user
+                // sees the exact figure before saying yes.
+                if permitted && stated.len() >= 2 && !price_quoted {
+                    return Intercept::Reply(json!({
+                        "rejected": true,
+                        "code": "PRICE_NOT_REQUESTED",
+                        "message": format!("the user's message states figures and {} is not one of them", mcp_server::units::usdc(price)),
+                        "hint": "use the price the user stated, or ask the user for a price"
+                    }));
+                }
+                let opposite = if side == "buy" { "sell" } else { "buy" };
+                if permitted && side_quoted(user_text, opposite) && !side_quoted(user_text, &side) {
+                    return Intercept::Reply(json!({
+                        "rejected": true,
+                        "code": "SIDE_CONTRADICTS_REQUEST",
+                        "message": format!("the user asked to {opposite}, this order would {side}"),
+                        "hint": "use the side the user asked for"
+                    }));
+                }
                 let reason = if !permitted {
                     "The user's message did not clearly ask to trade."
                 } else if stated.len() >= 2 && !(price_quoted && (qty_quoted || notional_quoted)) {
@@ -413,6 +458,10 @@ impl ConfirmationGate {
             _ => {
                 let reason = if !permitted {
                     "The user's message did not clearly ask to cancel."
+                } else if tool == "cancel_all_orders" && !mentions_all(user_text) {
+                    // "cancel my order" grants a cancel, never every cancel: a hostile model
+                    // that cancelled everything on an ambiguous request found this gap.
+                    "The user did not ask to cancel every order."
                 } else if framed {
                     "The request was framed as a demo or test."
                 } else {
@@ -593,6 +642,54 @@ mod tests {
             assert!(mentions_cancel_intent(text), "{text}");
         }
         assert!(intent_vocabulary().contains(&"annule"));
+    }
+
+    #[test]
+    fn contradictions_are_refused_and_cancel_all_needs_the_word_all() {
+        let gate = ConfirmationGate {
+            threshold_lots: u64::MAX,
+            confirm_unpriced: true,
+            ttl: std::time::Duration::from_secs(60),
+        };
+        let mut pending = None;
+        // The user said sell at 3005; a buy at 3000 is refused, not offered for confirmation.
+        let buy = json!({ "side": "buy", "price_usdc": "3000.00", "quantity_eth": "5" });
+        assert!(matches!(
+            gate.intercept(&mut pending, "place_limit_order", &buy, "s", 1, "sell 2 ETH at 3005", true, false),
+            Intercept::Reply(v) if v["code"] == "PRICE_NOT_REQUESTED"
+        ));
+        let buy_right_price = json!({ "side": "buy", "price_usdc": "3005.00", "quantity_eth": "5" });
+        assert!(matches!(
+            gate.intercept(&mut pending, "place_limit_order", &buy_right_price, "s", 1, "sell 2 ETH at 3005", true, false),
+            Intercept::Reply(v) if v["code"] == "SIDE_CONTRADICTS_REQUEST"
+        ));
+        assert!(pending.is_none(), "a refused proposal leaves nothing to confirm");
+        // A smaller quantity on the stated side and price still goes to confirmation.
+        let smaller = json!({ "side": "sell", "price_usdc": "3005.00", "quantity_eth": "1" });
+        assert!(matches!(
+            gate.intercept(&mut pending, "place_limit_order", &smaller, "s", 1, "sell 2 ETH at 3005", true, false),
+            Intercept::Reply(v) if v["needs_confirmation"] == true
+        ));
+        // Cancelling everything needs the word.
+        let mut pending = None;
+        assert!(matches!(
+            gate.intercept(&mut pending, "cancel_all_orders", &json!({}), "s", 1, "cancel my order", true, false),
+            Intercept::Reply(v) if v["needs_confirmation"] == true
+        ));
+        let mut pending = None;
+        assert!(matches!(
+            gate.intercept(
+                &mut pending,
+                "cancel_all_orders",
+                &json!({}),
+                "s",
+                1,
+                "cancel all my orders",
+                true,
+                false
+            ),
+            Intercept::Proceed(_)
+        ));
     }
 
     #[test]
@@ -797,7 +894,7 @@ mod tests {
         let Intercept::Reply(unpriced) = gate.intercept(
             &mut pending,
             "place_limit_order",
-            &small,
+            &json!({"side":"sell","price_usdc":"3000","quantity_eth":"0.5"}),
             "s",
             1,
             "sell 0.5 eth now",
@@ -838,7 +935,7 @@ mod tests {
             lenient.intercept(
                 &mut pending,
                 "place_limit_order",
-                &small,
+                &json!({"side":"sell","price_usdc":"3000","quantity_eth":"0.5"}),
                 "s",
                 1,
                 "sell 0.5 eth now",
