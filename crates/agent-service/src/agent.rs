@@ -43,6 +43,11 @@ pub struct Session {
     pub turns: u32,
     pub pending: Option<PendingConfirmation>,
     pub last_order_id: Option<String>,
+    /// Recent `(request_id, response)` pairs, so a retried `POST /chat` returns the same answer
+    /// instead of running the turn (and its actions) again.
+    pub responses: Vec<(String, Value)>,
+    /// Start times of recent turns, for the per-session rate limit.
+    pub turn_times: std::collections::VecDeque<Instant>,
 }
 
 impl Session {
@@ -230,6 +235,11 @@ impl Agent {
             .map(|t| t.to_string())
             .collect();
         let confirmation_turn = pending_before && gate::mentions_confirmation(user_text);
+        let confirming = session
+            .pending
+            .as_ref()
+            .filter(|_| confirmation_turn)
+            .map(|p| (p.tool.clone(), p.summary.clone(), p.token.clone()));
         let confirm = ConfirmationGate {
             threshold_lots: self.cfg.confirm_threshold_lots,
             confirm_unpriced: self.cfg.confirm_unpriced,
@@ -237,7 +247,10 @@ impl Agent {
         };
         // The user's words, then the service's note on what this turn permits. Both are appended
         // to the history and never edited afterwards.
-        let note = self.cfg.gate_tools.then(|| permissions.note());
+        let note = self.cfg.gate_tools.then(|| match &confirming {
+            Some((tool, summary, token)) => Permissions::note_confirming(tool, summary, token),
+            None => permissions.note(),
+        });
         let mut channel = self.note_channel();
         self.push_user_turn(session, user_text, note.as_deref(), channel);
         let turn_start = session.messages.len()

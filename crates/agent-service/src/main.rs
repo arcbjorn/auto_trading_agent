@@ -20,6 +20,7 @@
 //!   CONTEXT_EDITING        1 lets the API clear old tool results server-side (default 0)
 //!   MAX_SESSIONS           sessions kept in memory (default 1000)
 //!   SESSION_IDLE_SECS      idle sessions are dropped first when the store is full (default 3600)
+//!   TURNS_PER_MINUTE       turns one session may start per minute (default 20)
 use agent_service::http::{serve, SessionLimits, State};
 use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, NoteChannel};
 use std::sync::Arc;
@@ -62,6 +63,10 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3_600),
         ),
+        turns_per_minute: std::env::var("TURNS_PER_MINUTE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20),
     };
     tracing::info!(model = %model.describe(), %mcp_url, ?cfg, ?limits, "agent-service starting");
     let mcp = McpClient::connect(&mcp_url)

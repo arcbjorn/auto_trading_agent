@@ -76,6 +76,10 @@ const CONFIRM_WORDS: [&str; 20] = [
     "sim",
 ];
 const ASSET_WORDS: [&str; 3] = ["eth", "ether", "ethereum"];
+const BUY_WORDS: [&str; 8] = [
+    "buy", "bid", "long", "purchase", "acquire", "grab", "pick up", "load up",
+];
+const SELL_WORDS: [&str; 7] = ["sell", "ask", "short", "offer", "dump", "unload", "liquidate"];
 
 fn words(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !(c.is_alphanumeric() || c == '.' || c == ','))
@@ -100,6 +104,16 @@ pub fn numbers(text: &str) -> Vec<String> {
 pub fn mentions_trade_intent(text: &str) -> bool {
     TRADE_VERBS.iter().any(|w| has_word(text, w))
         || (ASSET_WORDS.iter().any(|w| has_word(text, w)) && numbers(text).len() >= 2)
+}
+
+/// Whether the user's own words name the side of the order the model is placing.
+pub fn side_quoted(text: &str, side: &str) -> bool {
+    let words: &[&str] = match side {
+        "buy" => &BUY_WORDS,
+        "sell" => &SELL_WORDS,
+        _ => return false,
+    };
+    words.iter().any(|w| has_word(text, w))
 }
 
 pub fn mentions_cancel_intent(text: &str) -> bool {
@@ -146,6 +160,14 @@ impl Permissions {
             "cancel_order" | "cancel_all_orders" => self.cancel,
             _ => true,
         }
+    }
+
+    /// The note for a turn in which the user confirmed a pending action: it names the action and
+    /// the token, so even a small model completes the flow instead of asking again.
+    pub fn note_confirming(tool: &str, summary: &str, token: &str) -> String {
+        format!(
+            "[service] The user confirmed the pending action ({summary}). Call {tool} now with the same arguments plus confirmation_token \"{token}\"; do not ask again."
+        )
     }
 
     /// The short note appended after the user's message so the model knows what this turn allows
@@ -256,6 +278,8 @@ impl ConfirmationGate {
                     "This order is large."
                 } else if self.confirm_unpriced && !price_quoted {
                     "The user did not state this price; the model chose it."
+                } else if self.confirm_unpriced && !side_quoted(user_text, &side) {
+                    "The user did not state the side; the model chose it."
                 } else if framed {
                     "The request was framed as a demo, test or hypothetical; a real order needs an explicit confirmation."
                 } else {
@@ -380,6 +404,9 @@ mod tests {
         assert!(!mentions_trade_intent("show my orders")); // "orders" is not "order"
         assert!(!mentions_trade_intent("what is 1 ETH worth?")); // one number: a question
         assert!(!mentions_trade_intent("what's ETH at?"));
+        assert!(side_quoted("buy 0.5 eth at 3000", "buy") && !side_quoted("buy 0.5 eth at 3000", "sell"));
+        assert!(side_quoted("go long 1 eth at 3000", "buy") && side_quoted("dump it at 2990", "sell"));
+        assert!(!side_quoted("0.5 ETH @ 3000 please", "buy") && !side_quoted("I want 0.5 eth at 3000", "sell"));
         assert!(mentions_cancel_intent("cancel my last order"));
         assert!(mentions_cancel_intent("now undo that"));
         assert!(mentions_cancel_intent("what did I cancel yesterday?"));
@@ -475,6 +502,24 @@ mod tests {
             .unwrap()
             .contains("did not state this price"));
         pending = None;
+        // The side was never stated ("0.5 ETH @ 3000 please"): the model chose it, so confirm.
+        let Intercept::Reply(unsided) = gate.intercept(
+            &mut pending,
+            "place_limit_order",
+            &small,
+            "s",
+            1,
+            "0.5 eth @ 3000 please",
+            true,
+        ) else {
+            panic!("expected preview")
+        };
+        assert!(unsided["instruction"]
+            .as_str()
+            .unwrap()
+            .contains("did not state the side"));
+        pending = None;
+        assert!(Permissions::note_confirming("cancel_order", "cancel order 7", "cfm-x").contains("cfm-x"));
         let lenient = ConfirmationGate {
             confirm_unpriced: false,
             ..gate.clone()

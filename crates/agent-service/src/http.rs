@@ -1,4 +1,6 @@
-//! The HTTP API: `POST /chat {session_id?, message}` and `GET /healthz`.
+//! The HTTP API: `POST /chat {session_id?, request_id?, message}`, `GET /sessions/{id}` and
+//! `GET /healthz`. A `request_id` makes a retried POST return the earlier answer instead of running
+//! the turn again; each session is limited to a number of turns per minute.
 
 use crate::agent::{Agent, Session};
 use bytes::Bytes;
@@ -23,6 +25,8 @@ pub struct SessionLimits {
     pub max_sessions: usize,
     /// A session untouched for this long is dropped once the store is full.
     pub idle_ttl: Duration,
+    /// Turns one session may start per rolling minute; beyond it `POST /chat` answers 429.
+    pub turns_per_minute: u32,
 }
 
 impl Default for SessionLimits {
@@ -30,9 +34,13 @@ impl Default for SessionLimits {
         Self {
             max_sessions: 1_000,
             idle_ttl: Duration::from_secs(3_600),
+            turns_per_minute: 20,
         }
     }
 }
+
+/// Responses remembered per session for `request_id` retries.
+const REMEMBERED_RESPONSES: usize = 16;
 
 struct Entry {
     last_seen: Instant,
@@ -154,10 +162,49 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     ))
                 }
             };
+            let request_id = match input["request_id"].as_str() {
+                None => None,
+                Some(id) if valid_session_id(id) => Some(id.to_string()),
+                Some(_) => {
+                    return Ok(respond(
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "request_id must be 1-64 characters of letters, digits, '.', '_' or '-'" }),
+                    ))
+                }
+            };
             let session = state.session(&session_id);
             let mut s = session.lock().await;
+            if let Some(id) = &request_id {
+                if let Some((_, earlier)) = s.responses.iter().find(|(r, _)| r == id) {
+                    return Ok(respond(StatusCode::OK, earlier.clone()));
+                }
+            }
+            let now = Instant::now();
+            while s
+                .turn_times
+                .front()
+                .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
+            {
+                s.turn_times.pop_front();
+            }
+            if s.turn_times.len() as u32 >= state.limits.turns_per_minute {
+                return Ok(respond(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    json!({ "error": format!("this session may start {} turns per minute; wait before the next one", state.limits.turns_per_minute), "session_id": session_id }),
+                ));
+            }
+            s.turn_times.push_back(now);
             match state.agent.chat_turn(&mut s, message).await {
-                Ok(turn) => Ok(respond(StatusCode::OK, serde_json::to_value(turn).unwrap_or_default())),
+                Ok(turn) => {
+                    let body = serde_json::to_value(turn).unwrap_or_default();
+                    if let Some(id) = request_id {
+                        if s.responses.len() >= REMEMBERED_RESPONSES {
+                            s.responses.remove(0);
+                        }
+                        s.responses.push((id, body.clone()));
+                    }
+                    Ok(respond(StatusCode::OK, body))
+                }
                 Err(e) => {
                     tracing::error!(error = %e, session = %session_id, "turn failed");
                     Ok(respond(

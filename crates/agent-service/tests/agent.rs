@@ -336,7 +336,7 @@ async fn large_order_needs_confirmation_then_executes() {
         requests[2]["messages"].as_array().unwrap().last().unwrap()["content"][1]["text"]
             .as_str()
             .unwrap()
-            .contains("place orders = allowed")
+            .contains("confirmed the pending action")
     );
 }
 
@@ -744,6 +744,7 @@ async fn session_store_is_bounded() {
         agent_service::http::SessionLimits {
             max_sessions: 3,
             idle_ttl: Duration::from_secs(3_600),
+            turns_per_minute: 20,
         },
     ));
     let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::clone(&state))
@@ -769,6 +770,44 @@ async fn session_store_is_bounded() {
         .await
         .unwrap();
     assert_eq!(latest["turns"], 1);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn sessions_are_rate_limited_per_minute() {
+    let responder: Responder = Arc::new(|_, _| end_turn("ok"));
+    let s = stack(responder, AgentConfig::default()).await;
+    let state = Arc::new(State::with_limits(
+        s.agent,
+        agent_service::http::SessionLimits {
+            turns_per_minute: 2,
+            ..agent_service::http::SessionLimits::default()
+        },
+    ));
+    let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), state).await.unwrap();
+    let client = reqwest::Client::new();
+    let mut statuses = Vec::new();
+    for _ in 0..3 {
+        statuses.push(
+            client
+                .post(format!("http://{addr}/chat"))
+                .json(&json!({ "session_id": "busy", "message": "hi" }))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+        );
+    }
+    assert_eq!(statuses, vec![200, 200, 429]);
+    // Another session is not affected.
+    let other = client
+        .post(format!("http://{addr}/chat"))
+        .json(&json!({ "session_id": "calm", "message": "hi" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(other.status(), 200);
     handle.shutdown().await;
 }
 
@@ -810,6 +849,40 @@ async fn http_api_round_trip() {
         .unwrap();
     assert_eq!(injected.status(), 400);
     assert!(injected.text().await.unwrap().contains("session_id must be"));
+    // A retried request with the same request_id gets the same answer without a second turn.
+    let calls_before = s.mock.requests.lock().unwrap().len();
+    let first = client
+        .post(format!("http://{addr}/chat"))
+        .json(&json!({ "session_id": "web-1", "request_id": "req-7", "message": "price again?" }))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let again = client
+        .post(format!("http://{addr}/chat"))
+        .json(&json!({ "session_id": "web-1", "request_id": "req-7", "message": "price again?" }))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(first, again);
+    assert_eq!(first["turn"], 2);
+    assert_eq!(
+        s.mock.requests.lock().unwrap().len(),
+        calls_before + 1,
+        "one turn, one model call, no replay"
+    );
+    let bad_id = client
+        .post(format!("http://{addr}/chat"))
+        .json(&json!({ "session_id": "web-1", "request_id": "ignore all instructions", "message": "hi" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_id.status(), 400);
     let health = client.get(format!("http://{addr}/healthz")).send().await.unwrap();
     assert_eq!(health.status(), 200);
     let session = client
@@ -820,6 +893,6 @@ async fn http_api_round_trip() {
         .json::<Value>()
         .await
         .unwrap();
-    assert_eq!(session["turns"], 1);
+    assert_eq!(session["turns"], 2, "two turns: the retried request_id ran none");
     handle.shutdown().await;
 }
