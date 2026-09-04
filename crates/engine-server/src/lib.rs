@@ -421,6 +421,22 @@ impl Engine for Svc {
         }
     }
 
+    async fn cancel_all_orders(
+        &self,
+        req: Request<pb::CancelAllOrdersRequest>,
+    ) -> Result<Response<pb::CancelAllOrdersResponse>, Status> {
+        let r = req.into_inner();
+        self.limiter.admit(&r.account_id)?;
+        let cmd = Command::CancelAll { account: r.account_id };
+        match self.engine.submit(cmd).await.map_err(to_status)? {
+            Reply::CancelledAll(orders, top) => Ok(Response::new(pb::CancelAllOrdersResponse {
+                orders: orders.iter().map(order_to_pb).collect(),
+                top: Some(top_to_pb(&top)),
+            })),
+            _ => Err(Status::internal("unexpected reply")),
+        }
+    }
+
     async fn get_order(&self, req: Request<pb::GetOrderRequest>) -> Result<Response<pb::Order>, Status> {
         let r = req.into_inner();
         let cmd = Command::Get {

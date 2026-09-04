@@ -29,6 +29,10 @@ pub enum Record {
         account: String,
         id: OrderId,
     },
+    CancelAll {
+        t: i64,
+        account: String,
+    },
     Deposit {
         t: i64,
         account: String,
@@ -282,6 +286,9 @@ impl Journal {
                 }
                 Record::Cancel { t, account, id } => {
                     let _ = book.cancel_at(&account, id, t);
+                }
+                Record::CancelAll { t, account } => {
+                    let _ = book.cancel_all_at(&account, t);
                 }
                 Record::Deposit { account, usdc, eth, .. } => {
                     let _ = book.deposit(&account, usdc, eth);

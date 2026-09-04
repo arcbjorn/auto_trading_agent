@@ -1472,6 +1472,31 @@ impl Book {
         self.cancel_at(account, id, self.last_now_ns)
     }
 
+    /// Cancels every live order of an account in one command, oldest first. Atomic in the sense
+    /// that matters here: the matcher owns the book, so nothing interleaves and no order placed
+    /// after the command was accepted can survive it.
+    pub fn cancel_all_at(&mut self, account: &str, now_ns: i64) -> Result<Vec<Order>, EngineError> {
+        let ids: Vec<OrderId> = self
+            .by_account
+            .get(account)
+            .map(|ids| {
+                ids.iter()
+                    .filter(|id| self.orders.get(id).is_some_and(|o| o.status.is_live()))
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut cancelled = Vec::with_capacity(ids.len());
+        for id in ids {
+            // Only a failure that cannot happen here (the order stopped being live between the
+            // two statements, which the single writer rules out) would skip one.
+            if let Ok(o) = self.cancel_at(account, id, now_ns) {
+                cancelled.push(o);
+            }
+        }
+        Ok(cancelled)
+    }
+
     /// [`Book::cancel`] with the wall clock of the command, which dates the closing for
     /// age-based archiving. Replay passes the recorded clock, so archiving replays identically.
     pub fn cancel_at(&mut self, account: &str, id: OrderId, now_ns: i64) -> Result<Order, EngineError> {

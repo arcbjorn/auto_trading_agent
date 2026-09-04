@@ -451,7 +451,9 @@ async fn tools_against_a_real_engine() {
     let all = call(&server, 26, "cancel_all_orders", json!({})).await;
     assert_eq!(all["isError"], false, "{all}");
     assert_eq!(all["structuredContent"]["cancelled"], 2);
-    assert_eq!(all["structuredContent"]["failed"].as_array().unwrap().len(), 0);
+    // One matcher command, so there is no per-order failure list to report.
+    assert!(all["structuredContent"]["failed"].is_null());
+    assert_eq!(all["structuredContent"]["orders"].as_array().unwrap().len(), 2);
     assert_eq!(
         call(&server, 27, "list_orders", json!({})).await["structuredContent"]["count"],
         0

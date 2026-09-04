@@ -22,6 +22,10 @@ pub enum Command {
         account: String,
         id: OrderId,
     },
+    /// Cancel every live order of an account in one command.
+    CancelAll {
+        account: String,
+    },
     Get {
         account: String,
         id: OrderId,
@@ -77,6 +81,7 @@ impl Top {
 pub enum Reply {
     Placed(Order, Vec<Trade>, Top),
     Cancelled(Order, Top),
+    CancelledAll(Vec<Order>, Top),
     Order(Order),
     Orders(Vec<Order>),
     Trades(Vec<Trade>),
@@ -134,6 +139,10 @@ fn apply(book: &mut Book, journal: &mut Option<Journal>, cmd: Command, now: i64)
                 account: account.clone(),
                 id: *id,
             }),
+            Command::CancelAll { account } => Some(Record::CancelAll {
+                t: now,
+                account: account.clone(),
+            }),
             Command::Deposit { account, usdc, eth } => Some(Record::Deposit {
                 t: now,
                 account: account.clone(),
@@ -164,6 +173,10 @@ fn apply(book: &mut Book, journal: &mut Option<Journal>, cmd: Command, now: i64)
         Command::Cancel { account, id } => {
             let o = book.cancel_at(&account, id, now)?;
             Ok(Reply::Cancelled(o, Top::of(book)))
+        }
+        Command::CancelAll { account } => {
+            let orders = book.cancel_all_at(&account, now)?;
+            Ok(Reply::CancelledAll(orders, Top::of(book)))
         }
         Command::Get { account, id } => match book.order(id) {
             Some(o) if *o.account == *account => Ok(Reply::Order(o.clone())),

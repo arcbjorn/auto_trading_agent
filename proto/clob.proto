@@ -22,6 +22,9 @@ service Engine {
   // an error, not the end of the stream. This is the path for a client placing many orders.
   rpc PlaceOrders(stream PlaceOrderRequest) returns (stream PlaceOrderResult);
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+  // Cancels every live order of an account in one command, applied by the matcher as a unit, so
+  // nothing rests in between and a partially cancelled book is never observed.
+  rpc CancelAllOrders(CancelAllOrdersRequest) returns (CancelAllOrdersResponse);
   rpc GetOrder(GetOrderRequest) returns (Order);
   rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
   rpc ListTrades(ListTradesRequest) returns (ListTradesResponse);
@@ -118,6 +121,15 @@ message CancelOrderRequest {
 
 message CancelOrderResponse {
   Order order = 1;
+  TopOfBook top = 2;
+}
+
+message CancelAllOrdersRequest {
+  string account_id = 1;
+}
+
+message CancelAllOrdersResponse {
+  repeated Order orders = 1; // the orders that were cancelled, oldest first
   TopOfBook top = 2;
 }
 

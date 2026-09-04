@@ -383,7 +383,8 @@ impl ToolSet {
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
                 "outputSchema": { "type": "object", "properties": {
                     "rejected": { "type": "boolean" }, "code": { "type": "string" }, "message": { "type": "string" }, "hint": { "type": "string" },
-                    "cancelled": { "type": "integer" }, "orders": { "type": "array", "items": order }, "failed": { "type": "array", "best_bid_usdc": { "type": ["string", "null"] }, "best_ask_usdc": { "type": ["string", "null"] } } } },
+                    "cancelled": { "type": "integer" }, "orders": { "type": "array", "items": order },
+                    "best_bid_usdc": { "type": ["string", "null"] }, "best_ask_usdc": { "type": ["string", "null"] } } },
                 "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false }
             }),
             json!({
@@ -810,40 +811,23 @@ impl ToolSet {
                 json!({ "rejected": true, "code": rej.code, "message": rej.message, "hint": rej.hint }),
             );
         }
-        let open = match self
-            .engine
-            .clone()
-            .list_orders(pb::ListOrdersRequest {
-                account_id: self.account.clone(),
-                status: pb::OrderStatus::Open as i32,
-                limit: 1_000,
-            })
-            .await
-        {
-            Ok(r) => r.into_inner().orders,
-            Err(s) => return grpc_error(s),
+        // One command: the matcher cancels every live order of the account as a unit, so no
+        // order placed meanwhile survives and the book is never seen half cancelled.
+        let req = pb::CancelAllOrdersRequest {
+            account_id: self.account.clone(),
         };
-        let mut cancelled = Vec::new();
-        let mut failed = Vec::new();
-        let mut top = None;
-        for o in &open {
-            let req = pb::CancelOrderRequest {
-                account_id: self.account.clone(),
-                order_id: o.order_id.clone(),
-            };
-            match self.engine.clone().cancel_order(req).await {
-                Ok(r) => {
-                    let r = r.into_inner();
-                    top = r.top;
-                    cancelled.push(order_json(&r.order.unwrap_or_default()));
-                }
-                // Filled or cancelled in the meantime: nothing to do, but say so.
-                Err(s) => failed.push(json!({ "order_id": o.order_id, "reason": s.message() })),
+        match self.engine.clone().cancel_all_orders(req).await {
+            Ok(r) => {
+                let r = r.into_inner();
+                let mut out = json!({
+                    "cancelled": r.orders.len(),
+                    "orders": r.orders.iter().map(order_json).collect::<Vec<_>>(),
+                });
+                add_top(&mut out, r.top.as_ref());
+                ToolOutput::ok(out)
             }
+            Err(s) => grpc_error(s),
         }
-        let mut out = json!({ "cancelled": cancelled.len(), "orders": cancelled, "failed": failed });
-        add_top(&mut out, top.as_ref());
-        ToolOutput::ok(out)
     }
 
     async fn list_orders(&self, args: &Value) -> ToolOutput {
