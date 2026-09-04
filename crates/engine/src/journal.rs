@@ -500,17 +500,17 @@ mod tests {
             };
             journal
                 .append(&Record::Place {
-                    t: i as i64,
+                    t: i64::try_from(i).unwrap_or(0),
                     req: req.clone(),
                 })
                 .unwrap();
-            let _ = live.place(req, i as i64);
+            let _ = live.place(req, i64::try_from(i).unwrap_or(0));
             if i % 3 == 2 {
                 let victim = 1 + (r >> 32) % (i + 1);
                 if let Some(o) = live.order(victim).cloned() {
                     journal
                         .append(&Record::Cancel {
-                            t: i as i64,
+                            t: i64::try_from(i).unwrap_or(0),
                             account: o.account.to_string(),
                             id: victim,
                         })
@@ -563,7 +563,11 @@ mod tests {
                     qty: 10 + i,
                     tif: Tif::Gtc,
                 };
-                j.append(&Record::Place { t: i as i64, req }).unwrap();
+                j.append(&Record::Place {
+                    t: i64::try_from(i).unwrap_or(0),
+                    req,
+                })
+                .unwrap();
             }
             j.commit().unwrap();
         }

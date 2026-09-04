@@ -252,8 +252,13 @@ fn record_fill(ledgers: &mut HashMap<Arc<str>, Ledger>, buyer: &Arc<str>, seller
     s.trades += 1;
     let from_inventory = q.min(s.inventory_lots);
     if from_inventory > 0 {
-        let cost_removed = s.inventory_cost * from_inventory as u128 / s.inventory_lots as u128;
-        s.realised_pnl += (px as u128 * from_inventory as u128) as i128 - cost_removed as i128;
+        let cost_removed = s.inventory_cost * u128::from(from_inventory) / u128::from(s.inventory_lots);
+        // Both sides are micro-USDC well inside i128: a whole retained history at the hard caps
+        // is a thousandth of u128::MAX (see `the_caps_keep_every_value_inside_the_wire_types`),
+        // so the widening is lossless and the subtraction is the only place P&L can go negative.
+        let proceeds = i128::try_from(u128::from(px) * u128::from(from_inventory)).unwrap_or(i128::MAX);
+        let cost = i128::try_from(cost_removed).unwrap_or(i128::MAX);
+        s.realised_pnl += proceeds - cost;
         s.inventory_cost -= cost_removed;
         s.inventory_lots -= from_inventory;
     }
@@ -1078,7 +1083,9 @@ impl Book {
         if id < first {
             return None;
         }
-        self.trades.get((id - first) as usize)
+        // The retained window is far smaller than usize on any target we build for, but say so
+        // rather than cast: a 32-bit target would otherwise index the wrong trade.
+        self.trades.get(usize::try_from(id - first).ok()?)
     }
 
     fn intern(&self, account: &str) -> Arc<str> {
@@ -2023,10 +2030,16 @@ mod tests {
         let mut pairs = Vec::new();
         for i in 0..30u64 {
             let (bid, _) = b
-                .place(req("m", &format!("b{i}"), Side::Buy, 300_000, 10, Tif::Gtc), i as i64)
+                .place(
+                    req("m", &format!("b{i}"), Side::Buy, 300_000, 10, Tif::Gtc),
+                    i64::try_from(i).unwrap_or(0),
+                )
                 .unwrap();
             let (ask, fills) = b
-                .place(req("t", &format!("s{i}"), Side::Sell, 300_000, 10, Tif::Gtc), i as i64)
+                .place(
+                    req("t", &format!("s{i}"), Side::Sell, 300_000, 10, Tif::Gtc),
+                    i64::try_from(i).unwrap_or(0),
+                )
                 .unwrap();
             assert_eq!(fills.len(), 1);
             pairs.push((bid.id, ask.id));

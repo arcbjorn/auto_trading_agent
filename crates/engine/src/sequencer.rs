@@ -121,7 +121,9 @@ pub struct EngineHandle {
 fn now_ns() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
+        // Nanoseconds since the epoch exceed i64 in the year 2262; saturate rather than wrap,
+        // which would make timestamps run backwards and archiving by age misbehave.
+        .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
         .unwrap_or(0)
 }
 

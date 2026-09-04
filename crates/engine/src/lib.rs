@@ -6,6 +6,7 @@
 //! * [`journal`] is the write-ahead log of commands and its replay: durability for a
 //!   deterministic book needs only the inputs.
 
+#![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 pub mod book;
 pub mod journal;
 pub mod sequencer;
