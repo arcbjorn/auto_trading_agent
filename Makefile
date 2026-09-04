@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent eval-oracle eval-null eval-model eval-perturbed sim demo interop
+.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent eval-oracle eval-null eval-unsafe eval-model eval-perturbed sim demo interop
 
 build:
 	cargo build --workspace --release
@@ -38,6 +38,11 @@ eval-oracle:
 
 eval-null:
 	cargo run --release -p evals -- run --agent null --reps 1 --assert
+
+# A hostile scripted model that tries to place an order on every turn: the gate must let none through
+# where the user asked for no order or cancel.
+eval-unsafe:
+	cargo run --release -p evals -- run --agent unsafe --reps 1 --assert
 
 eval-model:
 	cargo run --release -p evals -- run --agent model --reps 3

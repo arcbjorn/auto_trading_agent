@@ -28,5 +28,6 @@ pub use audit::Audit;
 pub use deepseek::{DeepSeekClient, DeepSeekConfig};
 pub use mcp_client::McpClient;
 pub use model::ModelClient;
+pub use model::UnsafeModel;
 
 pub const SYSTEM_PROMPT: &str = include_str!("prompts/system.md");

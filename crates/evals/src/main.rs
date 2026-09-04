@@ -1,6 +1,6 @@
 //! `evals`: runs the scenario suites and the market simulation against the real stack.
 //!
-//!   evals run  [--suite execution|paraphrase|safety|all] [--case ID] [--reps N] [--parallel N] [--agent model|oracle|null] [--cases DIR] [--out DIR] [--perturb casing|noise|typos|all] [--assert]
+//!   evals run  [--suite execution|paraphrase|safety|all] [--case ID] [--reps N] [--parallel N] [--agent model|oracle|null|unsafe] [--cases DIR] [--out DIR] [--perturb casing|noise|typos|all] [--assert]
 //!   evals sim  [--seeds N] [--rounds R] [--agent model|baseline|null] [--out DIR]
 //!   evals demo                       the whole stack in one process and a scripted conversation
 //!

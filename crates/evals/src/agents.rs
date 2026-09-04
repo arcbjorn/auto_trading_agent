@@ -5,7 +5,6 @@ use crate::cases::Case;
 use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, Session};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -30,10 +29,16 @@ pub enum Driver {
     /// own variables); a fresh client is built per run.
     Model {
         agent_cfg: AgentConfig,
-        audit: Option<PathBuf>,
+        /// One chained log for the whole run; every case appends through the same handle.
+        audit: Audit,
     },
     Oracle,
     Null,
+    /// The real agent driven by a scripted model that tries to place an order on every turn:
+    /// measures what the gate lets through when the model is hostile.
+    Unsafe {
+        agent_cfg: AgentConfig,
+    },
 }
 
 impl Driver {
@@ -47,12 +52,15 @@ impl Driver {
                 };
                 Driver::Model {
                     agent_cfg,
-                    audit: Some(out_dir.join("audit.jsonl")),
+                    audit: Audit::new(Some(out_dir.join("audit.jsonl")))?,
                 }
             }
             "oracle" => Driver::Oracle,
             "null" => Driver::Null,
-            other => anyhow::bail!("unknown agent {other}; use model, oracle or null"),
+            "unsafe" => Driver::Unsafe {
+                agent_cfg: AgentConfig::default(),
+            },
+            other => anyhow::bail!("unknown agent {other}; use model, oracle, null or unsafe"),
         })
     }
 
@@ -61,6 +69,7 @@ impl Driver {
             Driver::Model { .. } => "model",
             Driver::Oracle => "oracle",
             Driver::Null => "null",
+            Driver::Unsafe { .. } => "unsafe",
         }
     }
 
@@ -73,9 +82,41 @@ impl Driver {
     ) -> anyhow::Result<TurnOutcome> {
         match self {
             Driver::Model { agent_cfg, audit } => {
-                let model = ModelClient::from_env()?;
+                drive(ModelClient::from_env()?, agent_cfg, audit.clone(), case, mcp_url).await
+            }
+            Driver::Unsafe { agent_cfg } => {
+                drive(
+                    ModelClient::Unsafe(agent_service::UnsafeModel),
+                    agent_cfg,
+                    Audit::disabled(),
+                    case,
+                    mcp_url,
+                )
+                .await
+            }
+            Driver::Oracle => oracle(case, mcp_url, orders_after_setup).await,
+            Driver::Null => Ok(TurnOutcome {
+                reply: "I'm not able to help with that.".into(),
+                model: "null".into(),
+                ..TurnOutcome::default()
+            }),
+        }
+    }
+}
+
+/// Runs every turn of the case through the real agent with the given model.
+async fn drive(
+    model: ModelClient,
+    agent_cfg: &AgentConfig,
+    audit: Audit,
+    case: &Case,
+    mcp_url: &str,
+) -> anyhow::Result<TurnOutcome> {
+    {
+        {
+            {
                 let mcp = McpClient::connect(mcp_url).await?;
-                let agent = Agent::new(model, mcp, agent_cfg.clone(), Audit::new(audit.clone())).await?;
+                let agent = Agent::new(model, mcp, agent_cfg.clone(), audit).await?;
                 let mut session = Session::new(format!("eval-{}", case.id));
                 let mut total = TurnOutcome::default();
                 for text in &case.turns {
@@ -97,12 +138,6 @@ impl Driver {
                 }
                 Ok(total)
             }
-            Driver::Oracle => oracle(case, mcp_url, orders_after_setup).await,
-            Driver::Null => Ok(TurnOutcome {
-                reply: "I'm not able to help with that.".into(),
-                model: "null".into(),
-                ..TurnOutcome::default()
-            }),
         }
     }
 }

@@ -205,7 +205,7 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
                             confirm_threshold_lots: u64::MAX,
                             ..AgentConfig::default()
                         },
-                        Audit::new(Some(args.out_dir.join("sim-audit.jsonl"))),
+                        Audit::new(Some(args.out_dir.join("sim-audit.jsonl")))?,
                     )
                     .await?,
                 )

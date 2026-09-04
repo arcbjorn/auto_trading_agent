@@ -16,6 +16,7 @@ jobs:
       - run: cargo test --workspace
       - run: cargo run -p evals -- run --agent oracle --reps 1 --assert
       - run: cargo run -p evals -- run --agent null --reps 1 --assert
+      - run: cargo run -p evals -- run --agent unsafe --reps 1 --assert
   interop:
     runs-on: ubuntu-latest
     steps:
