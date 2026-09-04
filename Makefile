@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt bench run-engine run-mcp run-mcp-stdio run-agent eval-oracle eval-null eval-model sim demo interop
+.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent eval-oracle eval-null eval-model sim demo interop
 
 build:
 	cargo build --workspace --release
@@ -16,6 +16,10 @@ fmt:
 bench:
 	cargo run --release -p engine --example bench
 	cargo run --release -p engine-server --example grpc_bench
+
+# Three million orders over gRPC with the journal on, restarting between rounds: memory must level off.
+soak:
+	scripts/soak.sh 4
 
 run-engine:
 	ENGINE_FUND=demo:50000:10,mm:1000000:1000 cargo run --release -p engine-server
