@@ -330,7 +330,11 @@ async fn large_order_needs_confirmation_then_executes() {
         "nothing may be placed before confirmation"
     );
     let second = s.agent.chat_turn(&mut session, "yes, confirm").await.unwrap();
-    assert!(second.flags.is_empty(), "{:?}", second.flags);
+    assert_eq!(
+        second.flags,
+        ["confirmed:place_limit_order"],
+        "released by the user's confirmation"
+    );
     assert!(session.pending.is_none());
     let open = demo_orders(&mut s.engine, OrderStatus::Open).await;
     assert_eq!(open.len(), 1);
@@ -427,7 +431,7 @@ async fn unrecognised_cancel_is_confirmed_then_executed() {
         "held until confirmed"
     );
     let second = s.agent.chat_turn(&mut session, "sí").await.unwrap();
-    assert!(second.flags.is_empty(), "{:?}", second.flags);
+    assert_eq!(second.flags, ["confirmed:cancel_order"]);
     assert_eq!(
         second.permitted,
         vec!["cancel_order".to_string(), "cancel_all_orders".to_string()]
@@ -837,6 +841,44 @@ async fn a_confirmation_in_words_carries_the_previous_request() {
 }
 
 #[tokio::test]
+async fn a_session_whose_history_outgrew_the_budget_is_closed() {
+    // The mock reports a huge prompt on every call, as a history full of tool results would.
+    let responder: Responder = Arc::new(|_, _| {
+        let mut r = end_turn("ok");
+        r["usage"] = json!({ "input_tokens": 120_000, "cache_read_input_tokens": 50_000, "output_tokens": 5 });
+        r
+    });
+    let s = stack(responder, AgentConfig::default()).await;
+    let state = Arc::new(State::with_limits(
+        s.agent,
+        agent_service::http::SessionLimits {
+            max_context_tokens: 150_000,
+            ..agent_service::http::SessionLimits::default()
+        },
+    ));
+    let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::clone(&state))
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let mut statuses = Vec::new();
+    for i in 0..2 {
+        let r = client
+            .post(format!("http://{addr}/chat"))
+            .json(&json!({ "session_id": "big", "message": format!("hello {i}") }))
+            .send()
+            .await
+            .unwrap();
+        statuses.push(r.status().as_u16());
+    }
+    assert_eq!(
+        statuses,
+        [200, 409],
+        "the first turn runs; the history is then too large"
+    );
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn session_store_is_bounded() {
     let responder: Responder = Arc::new(|_, _| end_turn("ok"));
     let s = stack(responder, AgentConfig::default()).await;
@@ -847,6 +889,7 @@ async fn session_store_is_bounded() {
             idle_ttl: Duration::from_secs(3_600),
             turns_per_minute: 20,
             max_turns: 200,
+            max_context_tokens: 150_000,
         },
     ));
     let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::clone(&state))

@@ -30,6 +30,10 @@ pub struct SessionLimits {
     /// Turns one session may hold in total; beyond it `POST /chat` answers 409 and the client
     /// starts a new session, so no conversation grows without bound.
     pub max_turns: u32,
+    /// Prompt tokens the history may reach, measured from the model's own usage report; beyond
+    /// it `POST /chat` answers 409. Turns bound the count, this bounds the size: a few turns
+    /// with large tool results can fill a context window long before two hundred turns.
+    pub max_context_tokens: u64,
 }
 
 impl Default for SessionLimits {
@@ -39,6 +43,7 @@ impl Default for SessionLimits {
             idle_ttl: Duration::from_secs(3_600),
             turns_per_minute: 20,
             max_turns: 200,
+            max_context_tokens: 150_000,
         }
     }
 }
@@ -197,6 +202,12 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                         json!({ "error": "request_id was already used with a different message", "session_id": session_id }),
                     ));
                 }
+            }
+            if s.context_tokens >= state.limits.max_context_tokens {
+                return Ok(respond(
+                    StatusCode::CONFLICT,
+                    json!({ "error": format!("this session's history reached {} prompt tokens; start a new session", s.context_tokens), "session_id": session_id }),
+                ));
             }
             if s.turns >= state.limits.max_turns {
                 return Ok(respond(

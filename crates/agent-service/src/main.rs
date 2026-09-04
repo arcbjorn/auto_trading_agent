@@ -21,6 +21,7 @@
 //!   MAX_SESSIONS           sessions kept in memory (default 1000)
 //!   SESSION_IDLE_SECS      idle sessions are dropped first when the store is full (default 3600)
 //!   TURNS_PER_MINUTE       turns one session may start per minute (default 20)
+//!   MAX_CONTEXT_TOKENS      prompt tokens a session's history may reach (default 150000)
 //!   MAX_TURNS              turns one session may hold in total (default 200)
 use agent_service::http::{serve, SessionLimits, State};
 use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, NoteChannel};
@@ -72,6 +73,10 @@ async fn main() -> anyhow::Result<()> {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(200),
+        max_context_tokens: std::env::var("MAX_CONTEXT_TOKENS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(150_000),
     };
     tracing::info!(model = %model.describe(), %mcp_url, ?cfg, ?limits, "agent-service starting");
     let mcp = McpClient::connect(&mcp_url)

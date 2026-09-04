@@ -49,6 +49,9 @@ pub struct Session {
     pub responses: Vec<(String, u64, Value)>,
     /// Start times of recent turns, for the per-session rate limit.
     pub turn_times: std::collections::VecDeque<Instant>,
+    /// Prompt tokens of the last model call (uncached, cache reads and cache writes): the size
+    /// the whole history has reached, which the HTTP layer caps per session.
+    pub context_tokens: u64,
 }
 
 impl Session {
@@ -385,6 +388,7 @@ impl Agent {
             usage.output_tokens += msg.output_tokens();
             usage.cache_read_input_tokens += msg.cache_read_tokens();
             usage.cache_creation_input_tokens += msg.cache_creation_tokens();
+            session.context_tokens = msg.input_tokens() + msg.cache_read_tokens() + msg.cache_creation_tokens();
             model = msg.model.clone();
             stop_reason = msg.stop_reason.clone().unwrap_or_default();
             session
@@ -410,6 +414,7 @@ impl Agent {
                                 args["client_order_id"] = json!(format!("{}-{turn}-{id}", session.id));
                             }
                             let permitted = permissions.allows(&name);
+                            let had_token = args["confirmation_token"].as_str().is_some_and(|t| !t.is_empty());
                             match confirm.intercept(
                                 &mut session.pending,
                                 &name,
@@ -421,6 +426,9 @@ impl Agent {
                                 carried.is_some(),
                             ) {
                                 Intercept::Reply(v) => {
+                                    if v["rejected"] == true {
+                                        flags.push(format!("gate_rejected:{}", v["code"].as_str().unwrap_or("?")));
+                                    }
                                     if v["needs_confirmation"] == true {
                                         flags.push(if permitted {
                                             "confirmation_requested".into()
@@ -431,6 +439,10 @@ impl Agent {
                                     (v.to_string(), false, true)
                                 }
                                 Intercept::Proceed(clean) => {
+                                    if had_token {
+                                        // Released by the user's confirmation of the gate's own summary.
+                                        flags.push(format!("confirmed:{name}"));
+                                    }
                                     match self.audit_before(&session.id, turn, &name, &clean, &id) {
                                         Err(e) => {
                                             flags.push("audit_unavailable".into());
