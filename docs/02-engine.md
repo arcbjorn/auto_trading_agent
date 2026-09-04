@@ -49,6 +49,10 @@ struct Level { total: Qty, live: u32, queue: VecDeque<OrderId> }  // FIFO of ids
 
 Each level holds a FIFO of order ids, so an order lives in exactly one place. Cancel is O(1): mark the order, subtract its remaining quantity from the level total, drop the level when the total reaches zero; the matcher skips cancelled ids lazily when it reaches them.
 
+**Compaction survives a crash.** Compaction retires the journal by rename, publishes the snapshot by rename, then deletes the retired file, with the directory synced after each rename. A crash between any two steps recovers correctly: a retired journal is replayed only when it is newer than the snapshot, so a snapshot that already contains it never applies it twice. The earlier order (publish, then truncate) could double-apply deposits after a crash, which an external review identified. A journal commit that fails now stops the matcher rather than serving state the journal does not hold.
+
+**Cancelling everything is one command.** `CancelAllOrders` cancels every live order of an account inside the matcher, journaled as a single record, so the book is never observed half cancelled and one tool call replaces up to a thousand round trips.
+
 **Archiving by age too.** Closed orders and trades older than `ENGINE_RETAIN_HOURS` (24) are archived on the next command whatever the counts, so a quiet venue does not hold week-old history. The closing time is the command's own clock, which the journal records, so replay archives the same records. Live orders never expire.
 
 **A rate limit at the edge.** `ENGINE_ACCOUNT_RATE_PER_SEC` (unlimited by default) is a token bucket per account in front of the queue: a flooding client is answered `RESOURCE_EXHAUSTED` with the time to retry before its command is queued, so it cannot fill the queue for everyone else. It applies to the pipelined stream too, one result at a time.

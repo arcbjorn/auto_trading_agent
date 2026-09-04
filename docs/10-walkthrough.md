@@ -9,7 +9,7 @@ cargo build --workspace --release
 cargo test --workspace
 ```
 
-77 tests: unit and property tests in the engine ([book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2332-L2368) checks every trade against a naive reference matcher), the gRPC server under concurrency ([concurrency.rs::sixteen_tasks_place_orders_concurrently](../crates/engine-server/tests/concurrency.rs#L23-L110)), the MCP protocol against a real engine ([protocol.rs::tools_against_a_real_engine](../crates/mcp-server/tests/protocol.rs#L217-L586)), and the agent loop against a scripted model ([agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L291-L353)).
+77 tests: unit and property tests in the engine ([book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2387-L2423) checks every trade against a naive reference matcher), the gRPC server under concurrency ([concurrency.rs::sixteen_tasks_place_orders_concurrently](../crates/engine-server/tests/concurrency.rs#L23-L110)), the MCP protocol against a real engine ([protocol.rs::tools_against_a_real_engine](../crates/mcp-server/tests/protocol.rs#L217-L588)), and the agent loop against a scripted model ([agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L291-L353)).
 
 ## 2. The harness without a model
 
@@ -39,7 +39,7 @@ Buy order placed: 0.5 ETH at 3000.00 USDC, order id 5. No immediate fill; it's r
 Selling 0.3 ETH now requires confirming the price I chose ...
 ```
 
-The third turn shows the confirmation gate: no price was stated, so the service holds the order and returns an exact summary and a token ([gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L333-L498)). The last turn is a prompt injection, held the same way. A full transcript is in [results/demo-deepseek-v4-flash.md](results/demo-deepseek-v4-flash.md), and the process ends by printing the engine's final orders and balances.
+The third turn shows the confirmation gate: no price was stated, so the service holds the order and returns an exact summary and a token ([gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L453-L660)). The last turn is a prompt injection, held the same way. A full transcript is in [results/demo-deepseek-v4-flash.md](results/demo-deepseek-v4-flash.md), and the process ends by printing the engine's final orders and balances.
 
 ## 4. The three services
 
@@ -62,7 +62,7 @@ The response carries the reply, every tool call with its arguments and result, t
 
 | Request | What happens |
 |---|---|
-| `buy 0.5 ETH at 3000` | placed at once: the words grant the permission ([gate.rs::Permissions::for_turn](../crates/agent-service/src/gate.rs#L257-L269)); the result carries the best bid and ask afterwards |
+| `buy 0.5 ETH at 3000` | placed at once: the words grant the permission ([gate.rs::Permissions::for_turn](../crates/agent-service/src/gate.rs#L357-L369)); the result carries the best bid and ask afterwards |
 | `cancel that order` | one open order, so it is cancelled without a question |
 | `buy 30 ETH at 3000` | the policy's size cap answers with a structured rejection the model relays ([policy.rs::Policy::check_place](../crates/mcp-server/src/policy.rs#L143-L159)) |
 | `sell 2 ETH at 3005` on an account holding one | the wallet refuses and says what is available |
