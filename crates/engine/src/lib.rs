@@ -12,7 +12,7 @@ pub mod sequencer;
 
 pub use book::{
     Balances, Book, BookState, CancelReason, EngineError, Event, Ledger, LevelView, Order, OrderId, PlaceRequest,
-    Price, Qty, Seq, Side, Snapshot, Status, Tif, Trade, TradeId,
+    Price, Qty, Seq, Side, Snapshot, Status, Tif, Trade, TradeId, RECENT_EVENTS,
 };
 pub use journal::{Journal, Record};
 pub use sequencer::{spawn, spawn_with_journal, Command, EngineHandle, Reply, EVENT_BUFFER};

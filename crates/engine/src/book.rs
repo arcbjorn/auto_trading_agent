@@ -25,6 +25,10 @@ pub type OrderId = u64;
 pub type TradeId = u64;
 /// Position in the engine's total order of events.
 pub type Seq = u64;
+/// Events kept in memory for inspection (tests, debugging). The journal is the history; the
+/// broadcast takes its events from a separate buffer that the sequencer drains every batch.
+pub const RECENT_EVENTS: usize = 100_000;
+
 /// Longest account or client order id accepted. Ids are echoed back in listings, so a bound keeps
 /// them from becoming a channel for arbitrary text.
 pub const MAX_ID_LEN: usize = 128;
@@ -154,6 +158,16 @@ pub struct Ledger {
     /// Sum over sells of (price minus average cost) times quantity, for the inventory part.
     pub realised_pnl: i128,
     pub trades: u64,
+}
+
+/// Appends an event to the bounded inspection log and to the broadcast buffer. A free function so
+/// it can run while a price level is mutably borrowed.
+fn record_into(events: &mut VecDeque<Event>, pending: &mut Vec<Event>, e: Event) {
+    if events.len() == RECENT_EVENTS {
+        events.pop_front();
+    }
+    events.push_back(e.clone());
+    pending.push(e);
 }
 
 /// Books one fill into both ledgers. The seller's inventory is relieved at average cost.
@@ -317,9 +331,13 @@ pub struct Book {
     by_account: HashMap<Arc<str>, Vec<OrderId>>,
     /// account -> client_order_id -> order: the idempotency index.
     by_client_id: HashMap<Arc<str>, HashMap<Arc<str>, OrderId>>,
-    /// The reply given when an order was first placed, replayed for idempotent retries.
-    original_replies: HashMap<OrderId, (Order, Vec<Trade>)>,
-    events: Vec<Event>,
+    /// Fill ids of every order that filled at placement, so an idempotent retry can be answered
+    /// with the original reply without keeping a second copy of the order.
+    fill_ids: HashMap<OrderId, Vec<TradeId>>,
+    /// The most recent events, bounded; see [`RECENT_EVENTS`].
+    events: VecDeque<Event>,
+    /// Events since the sequencer last drained them, for the broadcast.
+    pending_events: Vec<Event>,
     /// Every trade in sequence order, plus the positions each account took part in.
     trades: Vec<Trade>,
     trades_by_account: HashMap<Arc<str>, Vec<usize>>,
@@ -407,8 +425,9 @@ fn settle(
 pub struct BookState {
     pub orders: Vec<Order>,
     pub trades: Vec<Trade>,
-    /// Original replies for idempotent retries: the order as first returned and its fill ids.
-    pub original_replies: Vec<(OrderId, Order, Vec<TradeId>)>,
+    /// Fill ids per order that filled at placement, for idempotent retries.
+    #[serde(default)]
+    pub fill_ids: Vec<(OrderId, Vec<TradeId>)>,
     pub balances: Vec<(String, Balances)>,
     #[serde(default)]
     pub ledgers: Vec<(String, Ledger)>,
@@ -429,12 +448,9 @@ impl Book {
     pub fn state(&self) -> BookState {
         let mut orders: Vec<Order> = self.orders.values().cloned().collect();
         orders.sort_by_key(|o| o.id);
-        let mut original_replies: Vec<(OrderId, Order, Vec<TradeId>)> = self
-            .original_replies
-            .iter()
-            .map(|(id, (o, fills))| (*id, o.clone(), fills.iter().map(|t| t.id).collect()))
-            .collect();
-        original_replies.sort_by_key(|(id, ..)| *id);
+        let mut fill_ids: Vec<(OrderId, Vec<TradeId>)> =
+            self.fill_ids.iter().map(|(id, fills)| (*id, fills.clone())).collect();
+        fill_ids.sort_by_key(|(id, _)| *id);
         let mut balances: Vec<(String, Balances)> = self.balances.iter().map(|(a, b)| (a.to_string(), *b)).collect();
         balances.sort_by(|a, b| a.0.cmp(&b.0));
         let mut ledgers: Vec<(String, Ledger)> = self.ledgers.iter().map(|(a, l)| (a.to_string(), *l)).collect();
@@ -442,7 +458,7 @@ impl Book {
         BookState {
             orders,
             trades: self.trades.clone(),
-            original_replies,
+            fill_ids,
             balances,
             ledgers,
             last_trade_price: self.last_trade_price,
@@ -508,13 +524,8 @@ impl Book {
                 .push(pos);
             book.trades.push(t);
         }
-        let by_trade_id: HashMap<TradeId, usize> = book.trades.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
-        for (id, order, fill_ids) in state.original_replies {
-            let fills = fill_ids
-                .iter()
-                .filter_map(|t| by_trade_id.get(t).map(|&i| book.trades[i].clone()))
-                .collect();
-            book.original_replies.insert(id, (order, fills));
+        for (id, fills) in state.fill_ids {
+            book.fill_ids.insert(id, fills);
         }
         book
     }
@@ -564,12 +575,16 @@ impl Book {
         ledger.deposits_usdc += usdc;
         ledger.deposits_eth += eth;
         let seq = self.bump_seq();
-        self.events.push(Event::Deposited {
-            account: key,
-            usdc,
-            eth,
-            seq,
-        });
+        record_into(
+            &mut self.events,
+            &mut self.pending_events,
+            Event::Deposited {
+                account: key,
+                usdc,
+                eth,
+                seq,
+            },
+        );
         Ok(result)
     }
 
@@ -605,12 +620,16 @@ impl Book {
         ledger.withdrawals_usdc += usdc;
         ledger.withdrawals_eth += eth;
         let seq = self.bump_seq();
-        self.events.push(Event::Withdrawn {
-            account: key,
-            usdc,
-            eth,
-            seq,
-        });
+        record_into(
+            &mut self.events,
+            &mut self.pending_events,
+            Event::Withdrawn {
+                account: key,
+                usdc,
+                eth,
+                seq,
+            },
+        );
         Ok(result)
     }
 
@@ -622,6 +641,43 @@ impl Book {
     /// The account's balances; zero for an account that was never funded.
     pub fn balances(&self, account: &str) -> Balances {
         self.balances.get(account).copied().unwrap_or_default()
+    }
+
+    /// Events recorded since the last call, oldest first: what the sequencer broadcasts.
+    pub fn take_new_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.pending_events)
+    }
+
+    /// The reply an order got when it was placed, rebuilt from its current record and its fills:
+    /// the same order fields, the remaining quantity after the placement fills, the status and
+    /// cancel reason as of then (a later user cancel is not part of the original reply).
+    fn original_reply(&self, id: OrderId) -> (Order, Vec<Trade>) {
+        let stored = &self.orders[&id];
+        let fills: Vec<Trade> = self
+            .fill_ids
+            .get(&id)
+            .map(|ids| ids.iter().map(|t| self.trades[(*t - 1) as usize].clone()).collect())
+            .unwrap_or_default();
+        let filled: Qty = fills.iter().map(|t| t.qty).sum();
+        let mut o = stored.clone();
+        if stored.status != Status::Rejected {
+            o.remaining = o.qty - filled;
+            let at_placement = matches!(
+                stored.cancel_reason,
+                Some(CancelReason::Ioc) | Some(CancelReason::Fok) | Some(CancelReason::SelfTradePrevention)
+            );
+            o.cancel_reason = if at_placement { stored.cancel_reason } else { None };
+            o.status = if o.remaining == 0 {
+                Status::Filled
+            } else if at_placement {
+                Status::Cancelled
+            } else if filled > 0 {
+                Status::PartiallyFilled
+            } else {
+                Status::Open
+            };
+        }
+        (o, fills)
     }
 
     fn bump_seq(&mut self) -> Seq {
@@ -679,9 +735,9 @@ impl Book {
             .get(req.account.as_str())
             .and_then(|m| m.get(req.client_order_id.as_str()))
         {
-            let (original, fills) = &self.original_replies[&id];
+            let (original, fills) = self.original_reply(id);
             return if original.side == req.side && original.price == req.price && original.qty == req.qty {
-                Ok((original.clone(), fills.clone()))
+                Ok((original, fills))
             } else {
                 Err(EngineError::AlreadyExists)
             };
@@ -738,17 +794,20 @@ impl Book {
 
         if tif == Tif::Fok && self.available(o.side, o.price, &o.account, o.qty) < o.qty {
             o.status = Status::Rejected;
-            self.events.push(Event::Rejected {
-                id: o.id,
-                account: Arc::clone(&o.account),
-                reason: "FOK: insufficient quantity available at this price".into(),
-                seq: o.seq,
-            });
+            record_into(
+                &mut self.events,
+                &mut self.pending_events,
+                Event::Rejected {
+                    id: o.id,
+                    account: Arc::clone(&o.account),
+                    reason: "FOK: insufficient quantity available at this price".into(),
+                    seq: o.seq,
+                },
+            );
             self.orders.insert(o.id, o.clone());
-            self.original_replies.insert(o.id, (o.clone(), Vec::new()));
             return Ok((o, Vec::new()));
         }
-        self.events.push(Event::Accepted(o.clone()));
+        record_into(&mut self.events, &mut self.pending_events, Event::Accepted(o.clone()));
         if self.enforce_balances {
             reserve(&mut self.balances, &o.account, o.side, o.price, o.qty);
         }
@@ -824,7 +883,7 @@ impl Book {
                 executed_at_unix_ns: now_ns,
             };
             self.last_trade_price = Some(px);
-            self.events.push(Event::Traded(trade.clone()));
+            record_into(&mut self.events, &mut self.pending_events, Event::Traded(trade.clone()));
             let pos = self.trades.len();
             self.trades_by_account.entry(maker_account).or_default().push(pos);
             self.trades_by_account
@@ -874,15 +933,21 @@ impl Book {
                 release(&mut self.balances, &o.account, o.side, o.price, o.remaining);
             }
             let seq = self.bump_seq();
-            self.events.push(Event::Cancelled {
-                id: o.id,
-                account: Arc::clone(&o.account),
-                reason,
-                seq,
-            });
+            record_into(
+                &mut self.events,
+                &mut self.pending_events,
+                Event::Cancelled {
+                    id: o.id,
+                    account: Arc::clone(&o.account),
+                    reason,
+                    seq,
+                },
+            );
         }
         self.orders.insert(o.id, o.clone());
-        self.original_replies.insert(o.id, (o.clone(), fills.clone()));
+        if !fills.is_empty() {
+            self.fill_ids.insert(o.id, fills.iter().map(|t| t.id).collect());
+        }
         Ok((o, fills))
     }
 
@@ -915,12 +980,16 @@ impl Book {
             }
         }
         let seq = self.bump_seq();
-        self.events.push(Event::Cancelled {
-            id,
-            account: owner,
-            reason: CancelReason::User,
-            seq,
-        });
+        record_into(
+            &mut self.events,
+            &mut self.pending_events,
+            Event::Cancelled {
+                id,
+                account: owner,
+                reason: CancelReason::User,
+                seq,
+            },
+        );
         Ok(self.orders[&id].clone())
     }
 
@@ -993,8 +1062,9 @@ impl Book {
         self.asks.keys().next().copied()
     }
 
-    pub fn events(&self) -> &[Event] {
-        &self.events
+    /// The most recent events (bounded by [`RECENT_EVENTS`]), oldest first.
+    pub fn events(&self) -> Vec<Event> {
+        self.events.iter().cloned().collect()
     }
 
     pub fn seq(&self) -> Seq {
@@ -1205,6 +1275,38 @@ mod tests {
         let rebuilt = Book::from_state(b.state());
         assert_eq!(rebuilt.statement("t"), b.statement("t"));
         assert_eq!(rebuilt.statement("m"), m);
+    }
+
+    #[test]
+    fn original_replies_survive_later_changes_and_the_event_log_is_bounded() {
+        let mut b = Book::new();
+        b.place(gtc("m", "a1", Side::Sell, 300_000, 100), 0).unwrap();
+        let (o, f) = b.place(gtc("t", "k", Side::Buy, 300_000, 300), 0).unwrap();
+        assert_eq!((o.status, o.remaining, f.len()), (Status::PartiallyFilled, 200, 1));
+        // The order changes afterwards (a user cancel); the replay still describes the placement.
+        b.cancel("t", o.id).unwrap();
+        let (again, fills) = b.place(gtc("t", "k", Side::Buy, 300_000, 300), 0).unwrap();
+        assert_eq!((again, fills), (o, f));
+        // An IOC remainder is a placement-time cancel and stays in the replay.
+        let (ioc, _) = b.place(req("t", "i", Side::Buy, 300_000, 10, Tif::Ioc), 0).unwrap();
+        assert_eq!(
+            (ioc.status, ioc.cancel_reason),
+            (Status::Cancelled, Some(CancelReason::Ioc))
+        );
+        assert_eq!(
+            b.place(req("t", "i", Side::Buy, 300_000, 10, Tif::Ioc), 0).unwrap().0,
+            ioc
+        );
+        // The broadcast buffer drains; the inspection log stays bounded.
+        assert!(b.take_new_events().len() >= 5);
+        assert!(b.take_new_events().is_empty());
+        for i in 0..(RECENT_EVENTS + 10) {
+            b.deposit("x", 1, 0).unwrap();
+            if i % 50_000 == 0 {
+                b.take_new_events();
+            }
+        }
+        assert_eq!(b.events().len(), RECENT_EVENTS);
     }
 
     #[test]

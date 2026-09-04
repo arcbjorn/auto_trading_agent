@@ -183,7 +183,7 @@ pub fn spawn_with_journal(mut book: Book, capacity: usize, depth: usize, mut jou
     let (events, _) = broadcast::channel::<Arc<Event>>(EVENT_BUFFER);
     let feed = events.clone();
     // Events already in the book (a replayed journal) are history, not news.
-    let mut announced = book.events().len();
+    book.take_new_events();
     std::thread::Builder::new()
         .name("matcher".into())
         .spawn(move || {
@@ -209,10 +209,9 @@ pub fn spawn_with_journal(mut book: Book, capacity: usize, depth: usize, mut jou
                 }
                 published.store(Arc::new(book.snapshot(depth)));
                 // Subscribers see every event of the batch, in sequence order, after the snapshot.
-                for e in &book.events()[announced..] {
-                    let _ = feed.send(Arc::new(e.clone()));
+                for e in book.take_new_events() {
+                    let _ = feed.send(Arc::new(e));
                 }
-                announced = book.events().len();
                 for (reply, result) in pending.drain(..) {
                     let _ = reply.send(result);
                 }
