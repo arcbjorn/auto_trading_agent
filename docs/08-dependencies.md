@@ -1,5 +1,14 @@
 # 08 · Dependencies
 
+## Toolchain
+
+Rust edition 2024 on a pinned stable toolchain; `rust-version` states the minimum the code needs
+rather than the version it was built with. Edition 2024 is what makes `std::env::set_var` unsafe,
+since it races with any thread reading the environment, which is why the protobuf build script
+configures `protoc` directly instead of setting a variable. The workspace forbids `unsafe_code`,
+denies `todo!` and `dbg!`, and the four crates holding market state deny unchecked numeric casts
+(see ADR-25).
+
 ## Policy
 
 Every runtime dependency must have years of production use at scale, judged by adoption and
