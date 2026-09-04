@@ -26,6 +26,15 @@ async fn sixteen_tasks_place_orders_concurrently() {
         .unwrap();
     let url = format!("http://{addr}");
     let per_task = 500u64;
+    let mut funder = EngineClient::connect(url.clone()).await.unwrap();
+    for t in 0..16u64 {
+        let account = if t % 2 == 0 {
+            format!("buyer-{t}")
+        } else {
+            format!("seller-{t}")
+        };
+        fund(&mut funder, &account).await;
+    }
     let mut tasks = Vec::new();
     for t in 0..16u64 {
         let url = url.clone();
@@ -37,7 +46,6 @@ async fn sixteen_tasks_place_orders_concurrently() {
             } else {
                 (Side::Sell, format!("seller-{t}"))
             };
-            fund(&mut c, &account).await;
             let mut seqs = Vec::new();
             for i in 0..per_task {
                 let r = c
@@ -265,7 +273,7 @@ async fn restart_replays_the_journal() {
     assert_eq!(balances_before.eth_available_lots, 200, "a bought 0.02 ETH");
     handle.shutdown().await;
 
-    let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), cfg).await.unwrap();
+    let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), cfg.clone()).await.unwrap();
     let mut c = EngineClient::connect(format!("http://{addr}")).await.unwrap();
     let after = c
         .list_orders(clob_proto::v1::ListOrdersRequest {
@@ -295,6 +303,49 @@ async fn restart_replays_the_journal() {
         .unwrap()
         .into_inner();
     assert_eq!(balances_after, balances_before, "deposits and settlements replay too");
+    handle.shutdown().await;
+
+    // A third start with a tiny compaction threshold: the journal is folded into a snapshot, the
+    // journal file empties, and everything is still there; a fourth start recovers from the snapshot.
+    let compacting = EngineConfig {
+        journal_compact_bytes: 1,
+        ..cfg.clone()
+    };
+    let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), compacting.clone()).await.unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().len(),
+        0,
+        "journal emptied after compaction"
+    );
+    assert!(engine::Journal::snapshot_path(&path).exists());
+    let mut c = EngineClient::connect(format!("http://{addr}")).await.unwrap();
+    c.place_order(order("k6", Side::Buy, 295_000, 100)).await.unwrap(); // goes to the new tail
+    handle.shutdown().await;
+    let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), compacting).await.unwrap();
+    let mut c = EngineClient::connect(format!("http://{addr}")).await.unwrap();
+    let final_orders = c
+        .list_orders(clob_proto::v1::ListOrdersRequest {
+            account_id: "a".into(),
+            status: 0,
+            limit: 100,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        final_orders.orders.len(),
+        before.orders.len() + 1,
+        "the snapshot holds the first three orders and the tail holds k6"
+    );
+    assert_eq!(
+        c.get_balances(GetBalancesRequest { account_id: "a".into() })
+            .await
+            .unwrap()
+            .into_inner()
+            .eth_available_lots,
+        200
+    );
+    let _ = std::fs::remove_file(engine::Journal::snapshot_path(&path));
     // Idempotency survives too: the same client id replays the original order rather than a new one.
     let again = c
         .place_order(order("k1", Side::Buy, 299_000, 500))

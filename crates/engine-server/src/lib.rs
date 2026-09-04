@@ -27,6 +27,9 @@ pub struct EngineConfig {
     /// `fsync` the journal once per batch before replying (durable across a crash, at a latency
     /// cost); otherwise each batch is flushed to the OS only.
     pub journal_fsync: bool,
+    /// On start, when the journal is larger than this, write a snapshot of the recovered book and
+    /// empty the journal, so recovery is snapshot plus tail. `0` never compacts.
+    pub journal_compact_bytes: u64,
     /// Every order must be backed by the account's balance (deposits through `Deposit`).
     pub enforce_balances: bool,
     /// Accounts credited when the engine starts on an empty book: (account, micro-USDC, lots).
@@ -42,6 +45,7 @@ impl Default for EngineConfig {
             snapshot_depth: MAX_DEPTH as usize,
             journal_path: None,
             journal_fsync: false,
+            journal_compact_bytes: 64 << 20,
             enforce_balances: true,
             fund_at_start: Vec::new(),
         }
@@ -374,19 +378,27 @@ impl ServerHandle {
 pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(SocketAddr, ServerHandle)> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
-    let mut book = if cfg.enforce_balances {
-        Book::with_balances()
-    } else {
-        Book::new()
-    };
-    let mut journal = match &cfg.journal_path {
+    let (mut book, mut journal) = match &cfg.journal_path {
         Some(path) => {
-            let replayed = Journal::replay(path, &mut book)
-                .map_err(|e| anyhow::anyhow!("cannot replay journal {}: {e}", path.display()))?;
-            tracing::info!(journal = %path.display(), replayed, seq = book.seq(), "journal replayed");
-            Some(Journal::open(path, cfg.journal_fsync)?)
+            let (book, replayed) = Journal::recover(path, cfg.enforce_balances)
+                .map_err(|e| anyhow::anyhow!("cannot recover journal {}: {e}", path.display()))?;
+            tracing::info!(journal = %path.display(), replayed, seq = book.seq(), "journal recovered");
+            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            if cfg.journal_compact_bytes > 0 && size > cfg.journal_compact_bytes {
+                Journal::compact(path, &book)
+                    .map_err(|e| anyhow::anyhow!("cannot compact journal {}: {e}", path.display()))?;
+                tracing::info!(journal = %path.display(), bytes = size, "journal compacted into its snapshot");
+            }
+            (book, Some(Journal::open(path, cfg.journal_fsync)?))
         }
-        None => None,
+        None => (
+            if cfg.enforce_balances {
+                Book::with_balances()
+            } else {
+                Book::new()
+            },
+            None,
+        ),
     };
     if book.seq() == 0 && !cfg.fund_at_start.is_empty() {
         let t = std::time::SystemTime::now()

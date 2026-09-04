@@ -5,6 +5,7 @@
 //!   ENGINE_QUEUE  bounded command queue length (default 10000)
 //!   ENGINE_JOURNAL       path of the write-ahead journal (default none: in memory only)
 //!   ENGINE_JOURNAL_FSYNC 1 to fsync every batch before replying (default 0: flush to the OS)
+//!   ENGINE_JOURNAL_COMPACT_MB  compact the journal into a snapshot on start when larger (default 64; 0 never)
 //!   ENGINE_BALANCES      0 to run without balance checks (default 1: every order must be funded)
 //!   ENGINE_FUND          accounts credited on an empty book, whole units: "demo:50000:10,mm:1000000:1000"
 //!                        (account:USDC:ETH); journaled, and skipped when a journal was replayed
@@ -55,6 +56,11 @@ async fn main() -> anyhow::Result<()> {
             Ok("0") | Ok("false") | Ok("no")
         ),
         fund_at_start: parse_funding(&std::env::var("ENGINE_FUND").unwrap_or_default())?,
+        journal_compact_bytes: std::env::var("ENGINE_JOURNAL_COMPACT_MB")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|mb| mb << 20)
+            .unwrap_or(64 << 20),
         ..EngineConfig::default()
     };
     let (addr, handle) = serve(bind.parse()?, cfg).await?;

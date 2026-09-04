@@ -42,7 +42,7 @@ pub enum Tif {
     Fok,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
     Open,
     PartiallyFilled,
@@ -67,7 +67,7 @@ pub enum CancelReason {
 }
 
 /// Orders are cloned on every reply and event, so the two strings are shared, not copied.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Order {
     pub id: OrderId,
     pub account: Arc<str>,
@@ -82,7 +82,7 @@ pub struct Order {
     pub created_at_unix_ns: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Trade {
     pub id: TradeId,
     pub maker: OrderId,
@@ -317,10 +317,114 @@ fn settle(
     }
 }
 
+/// Everything a book needs to continue exactly where it was: the durable form of the state.
+/// Indices and price levels are derived from the orders on load, and the in-memory event log
+/// starts empty (the journal, not the event log, is the history).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BookState {
+    pub orders: Vec<Order>,
+    pub trades: Vec<Trade>,
+    /// Original replies for idempotent retries: the order as first returned and its fill ids.
+    pub original_replies: Vec<(OrderId, Order, Vec<TradeId>)>,
+    pub balances: Vec<(String, Balances)>,
+    pub last_trade_price: Option<Price>,
+    pub next_order: OrderId,
+    pub next_trade: TradeId,
+    pub next_seq: Seq,
+    pub enforce_balances: bool,
+}
+
 impl Book {
     /// A book that does not check funds: every account may place any order.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The durable state of the book, in id order so the output is deterministic.
+    pub fn state(&self) -> BookState {
+        let mut orders: Vec<Order> = self.orders.values().cloned().collect();
+        orders.sort_by_key(|o| o.id);
+        let mut original_replies: Vec<(OrderId, Order, Vec<TradeId>)> = self
+            .original_replies
+            .iter()
+            .map(|(id, (o, fills))| (*id, o.clone(), fills.iter().map(|t| t.id).collect()))
+            .collect();
+        original_replies.sort_by_key(|(id, ..)| *id);
+        let mut balances: Vec<(String, Balances)> = self.balances.iter().map(|(a, b)| (a.to_string(), *b)).collect();
+        balances.sort_by(|a, b| a.0.cmp(&b.0));
+        BookState {
+            orders,
+            trades: self.trades.clone(),
+            original_replies,
+            balances,
+            last_trade_price: self.last_trade_price,
+            next_order: self.next_order,
+            next_trade: self.next_trade,
+            next_seq: self.next_seq,
+            enforce_balances: self.enforce_balances,
+        }
+    }
+
+    /// Rebuilds a book from [`Book::state`]: the same orders, trades, balances and counters, with
+    /// the price levels and indices derived again. Time priority within a level is id order,
+    /// which is arrival order.
+    pub fn from_state(state: BookState) -> Self {
+        let mut book = Book {
+            enforce_balances: state.enforce_balances,
+            last_trade_price: state.last_trade_price,
+            next_order: state.next_order,
+            next_trade: state.next_trade,
+            next_seq: state.next_seq,
+            ..Book::default()
+        };
+        for (account, b) in state.balances {
+            book.balances.insert(Arc::from(account.as_str()), b);
+        }
+        let mut live: Vec<(Side, Price, OrderId, Qty)> = Vec::new();
+        for mut o in state.orders {
+            o.account = book.intern(&o.account);
+            book.by_account.entry(Arc::clone(&o.account)).or_default().push(o.id);
+            book.by_client_id
+                .entry(Arc::clone(&o.account))
+                .or_default()
+                .insert(Arc::clone(&o.client_order_id), o.id);
+            if o.status.is_live() {
+                live.push((o.side, o.price, o.id, o.remaining));
+            }
+            book.orders.insert(o.id, o);
+        }
+        live.sort_by_key(|(_, _, id, _)| *id);
+        for (side, price, id, remaining) in live {
+            let level = match side {
+                Side::Buy => book.bids.entry(price).or_default(),
+                Side::Sell => book.asks.entry(price).or_default(),
+            };
+            level.total += remaining;
+            level.live += 1;
+            level.queue.push_back(id);
+        }
+        for (pos, mut t) in state.trades.into_iter().enumerate() {
+            t.maker_account = book.intern(&t.maker_account);
+            t.taker_account = book.intern(&t.taker_account);
+            book.trades_by_account
+                .entry(Arc::clone(&t.maker_account))
+                .or_default()
+                .push(pos);
+            book.trades_by_account
+                .entry(Arc::clone(&t.taker_account))
+                .or_default()
+                .push(pos);
+            book.trades.push(t);
+        }
+        let by_trade_id: HashMap<TradeId, usize> = book.trades.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
+        for (id, order, fill_ids) in state.original_replies {
+            let fills = fill_ids
+                .iter()
+                .filter_map(|t| by_trade_id.get(t).map(|&i| book.trades[i].clone()))
+                .collect();
+            book.original_replies.insert(id, (order, fills));
+        }
+        book
     }
 
     /// A book where every order must be backed: a buy reserves price times quantity in USDC, a
@@ -849,6 +953,42 @@ mod tests {
         b.place(req("t", "f", Side::Buy, 300_500, 3_000, Tif::Fok), 0).unwrap();
         assert_eq!(b.balances("t").usdc_reserved, 0);
         assert!(matches!(b.events().first(), Some(Event::Deposited { .. })));
+    }
+
+    #[test]
+    fn state_round_trips_and_the_rebuilt_book_behaves_identically() {
+        let mut a = Book::with_balances();
+        a.deposit("m", 0, 100_000).unwrap();
+        a.deposit("t", 10_000_000_000, 0).unwrap();
+        a.place(gtc("m", "a1", Side::Sell, 300_100, 5_000), 1).unwrap();
+        a.place(gtc("m", "a2", Side::Sell, 300_100, 3_000), 2).unwrap(); // same level, behind a1
+        a.place(gtc("m", "a3", Side::Sell, 300_300, 1_000), 3).unwrap();
+        let (t1, _) = a.place(gtc("t", "t1", Side::Buy, 300_100, 6_000), 4).unwrap(); // fills a1, part of a2
+        a.place(gtc("t", "t2", Side::Buy, 299_000, 2_000), 5).unwrap();
+        let (c, _) = a.place(gtc("t", "t3", Side::Buy, 298_000, 100), 6).unwrap();
+        a.cancel("t", c.id).unwrap();
+        let state = a.state();
+        let json = serde_json::to_string(&state).unwrap();
+        let mut b = Book::from_state(serde_json::from_str(&json).unwrap());
+        assert_eq!(b.snapshot(100), a.snapshot(100));
+        assert_eq!(b.seq(), a.seq());
+        assert_eq!(b.balances("m"), a.balances("m"));
+        assert_eq!(b.balances("t"), a.balances("t"));
+        assert_eq!(b.orders_for("t", |_| true, 100), a.orders_for("t", |_| true, 100));
+        assert_eq!(b.trades(Some("m"), 100), a.trades(Some("m"), 100));
+        assert_eq!(b.open_quantity(), a.open_quantity());
+        // Idempotent retries replay the original reply after a rebuild too.
+        let replay = b.place(gtc("t", "t1", Side::Buy, 300_100, 6_000), 99).unwrap();
+        assert_eq!(replay.0.id, t1.id);
+        assert_eq!(replay.1.len(), 2);
+        // From here on both books produce identical events: time priority within a level survived.
+        let next = gtc("t", "t4", Side::Buy, 300_300, 4_000);
+        let (oa, fa) = a.place(next.clone(), 7).unwrap();
+        let (ob, fb) = b.place(next, 7).unwrap();
+        assert_eq!((&oa, &fa), (&ob, &fb));
+        assert_eq!(fb.iter().map(|f| f.maker).collect::<Vec<_>>(), vec![2, 3]); // a2's remainder first
+        assert_eq!(b.snapshot(100), a.snapshot(100));
+        assert_eq!(b.balances("t"), a.balances("t"));
     }
 
     #[test]
