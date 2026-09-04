@@ -418,6 +418,19 @@ impl Agent {
         }
 
         flags.extend(gate::verify(user_text, &executed, confirmation_turn));
+        {
+            let mut sources: Vec<String> = vec![self.system.clone(), user_text.to_string()];
+            sources.extend(session.messages.iter().map(Value::to_string));
+            for r in &records {
+                sources.push(r.args.to_string());
+                sources.push(r.result.clone());
+            }
+            flags.extend(
+                gate::unsupported_numbers(&reply, &sources)
+                    .into_iter()
+                    .map(|n| format!("unsupported_number:{n}")),
+            );
+        }
         if self.cfg.compensate && flags.iter().any(|f| f == "intent_mismatch:place_limit_order") {
             for oid in &placed_ids {
                 match self.mcp.call_tool("cancel_order", &json!({ "order_id": oid })).await {

@@ -387,9 +387,74 @@ pub fn verify(user_text: &str, executed: &[Executed], confirmed_pending: bool) -
     flags
 }
 
+/// Numbers quoted in the reply that appear in none of the turn's inputs (the user's words, the
+/// system prompt, the conversation so far, this turn's tool arguments and results) and are not
+/// simple arithmetic on two of them. A figure the model produced itself is the most common way a
+/// trading reply misleads: a fill price that never happened, a balance that was never returned.
+/// Small whole numbers are ignored (counts such as "2 open orders"), as are values that are a
+/// sum, difference, product, ratio or percentage of two input numbers (a total, a change, a
+/// half). At most five are reported, in reply order.
+pub fn unsupported_numbers(reply: &str, sources: &[String]) -> Vec<String> {
+    let parse = |t: &str| t.parse::<f64>().ok().filter(|v| v.is_finite());
+    let known: Vec<f64> = sources
+        .iter()
+        .flat_map(|s| numbers(s))
+        .filter_map(|n| parse(&n))
+        .collect();
+    let close = |a: f64, b: f64| (a - b).abs() <= 0.005_f64.max(b.abs() * 1e-6);
+    let supported = |x: f64| {
+        if x < 10.0 && x.fract() == 0.0 {
+            return true;
+        }
+        if known.iter().any(|&k| close(x, k)) {
+            return true;
+        }
+        known.iter().any(|&a| {
+            known.iter().any(|&b| {
+                close(x, a + b)
+                    || close(x, (a - b).abs())
+                    || close(x, a * b)
+                    || (b != 0.0 && (close(x, a / b) || close(x, a / b * 100.0)))
+            })
+        })
+    };
+    let mut out: Vec<String> = Vec::new();
+    for n in numbers(reply) {
+        let Some(x) = parse(&n) else { continue };
+        if !supported(x) && !out.contains(&n) {
+            out.push(n);
+            if out.len() == 5 {
+                break;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reply_numbers_must_come_from_the_inputs_or_arithmetic_on_them() {
+        let sources = vec![
+            "Buy 0.5 ETH at 3000".to_string(),
+            r#"{"order_id":"17","price_usdc":"3000.00","quantity_eth":"0.5000","status":"open","usdc_available":"48500.00","usdc_reserved":"1500.00"}"#.to_string(),
+        ];
+        // Quoted, derived (0.5 x 3000, 48500 + 1500), and a count: all grounded.
+        assert_eq!(
+            unsupported_numbers(
+                "Placed order 17: buy 0.5 ETH at 3,000.00 USDC (1,500 USDC reserved); you have 2 open orders and 50,000 USDC in total.",
+                &sources
+            ),
+            Vec::<String>::new()
+        );
+        // A fill price and a balance nobody returned.
+        assert_eq!(
+            unsupported_numbers("Filled at 2998.50; your balance is now 47,250 USDC.", &sources),
+            vec!["2998.50".to_string(), "47250".to_string()]
+        );
+    }
 
     #[test]
     fn intent_detection_uses_whole_words_and_order_shapes() {
