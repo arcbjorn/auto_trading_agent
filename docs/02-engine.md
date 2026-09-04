@@ -49,6 +49,8 @@ struct Level { total: Qty, live: u32, queue: VecDeque<OrderId> }  // FIFO of ids
 
 Each level holds a FIFO of order ids, so an order lives in exactly one place. Cancel is O(1): mark the order, subtract its remaining quantity from the level total, drop the level when the total reaches zero; the matcher skips cancelled ids lazily when it reaches them.
 
+**Health and reflection.** The server registers the standard gRPC health service and reflection over its descriptor set, so `grpc-health-probe` and `grpcurl` work without the proto file.
+
 **Hard caps.** No order may be priced above 1,000,000.00 USDC or be larger than 10,000 ETH (`MAX_PRICE`, `MAX_QTY`), whatever the wallet mode and whatever the layers above enforce. A rejected request leaves no trace: no id, no sequence number.
 
 **A structural audit.** `Book::check_invariants` walks the whole book and returns the first violation: every kept level matches its queue in quantity and live count, every live order rests exactly once on its own side and price, the book is not crossed, statuses agree with quantities, the account index is exact, reservations back the live orders when balances are enforced, retained trade ids are contiguous, and every retention bound holds. The property tests run it after every operation, the retention and recovery tests run it on their results.

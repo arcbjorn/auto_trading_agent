@@ -36,7 +36,7 @@ curl -s localhost:8080/chat -H 'content-type: application/json' \
   -d '{"session_id":"me","message":"buy 0.5 ETH at 3000"}'
 ```
 
-The book starts empty and unfunded. `make run-engine` funds the demo account (50,000 USDC, 10 ETH) and a market maker through `ENGINE_FUND`; without it, deposit over gRPC (`grpcurl -plaintext -proto proto/clob.proto -d '{"account_id":"demo","usdc_micro":50000000000,"eth_lots":100000}' localhost:50051 clob.v1.Engine/Deposit`; the server does not enable reflection). Seed liquidity by placing orders under a funded market-maker account, or run the evaluation harness, which funds and seeds for every case. Withdrawals go the same way (`clob.v1.Engine/Withdraw` with the same fields) and only ever take what is available.
+The book starts empty and unfunded. `make run-engine` funds the demo account (50,000 USDC, 10 ETH) and a market maker through `ENGINE_FUND`; without it, deposit over gRPC (`grpcurl -plaintext -proto proto/clob.proto -d '{"account_id":"demo","usdc_micro":50000000000,"eth_lots":100000}' localhost:50051 clob.v1.Engine/Deposit`; the server enables gRPC reflection, so `grpcurl -plaintext localhost:50051 list` works without the proto, and the standard health service answers `grpc.health.v1.Health/Check`). Seed liquidity by placing orders under a funded market-maker account, or run the evaluation harness, which funds and seeds for every case. Withdrawals go the same way (`clob.v1.Engine/Withdraw` with the same fields) and only ever take what is available.
 
 ## Demo conversation
 
@@ -56,6 +56,7 @@ The book starts empty and unfunded. `make run-engine` funds the demo account (50
 | mcp-server | `ENGINE_ADDR` | `http://127.0.0.1:50051` |
 | | `ACCOUNT_ID` | `demo` |
 | | `MCP_BIND` (with `--http`) | `127.0.0.1:8000` |
+| | `ENGINE_TIMEOUT_MS` | `2000`, deadline for each call to the engine |
 | | `POLICY_MAX_ORDER_ETH`, `POLICY_MAX_ORDER_USDC`, `POLICY_COLLAR_BPS`, `POLICY_MAX_OPEN_ORDERS`, `POLICY_ACTIONS_PER_MINUTE`, `POLICY_SESSION_CAP_USDC` | 10, 50000, 1000, 20, 10, 200000 |
 | | `TRADING_HALTED` | unset |
 | agent-service | see [04 Agent service](04-agent-service.md): `MODEL_PROVIDER`, `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `NOTE_CHANNEL`, `PROMPT_CACHE`, `CONTEXT_EDITING`, `MAX_SESSIONS`, `SESSION_IDLE_SECS`, `TURNS_PER_MINUTE` among others | |

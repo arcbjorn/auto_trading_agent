@@ -70,6 +70,14 @@ Durability for a deterministic book needs only its inputs: the journal holds eve
 
 An agent that can sell what it does not hold is not trading infrastructure. Balances live in the book, next to the orders they back, so reservation, settlement and release happen inside the same deterministic step as matching and are journaled with it; a separate ledger service would need two-phase coordination for something the single writer does for free. Amounts are integers in the engine's own units, so a notional is a multiplication with no rounding. `Deposit` is a gRPC method the operator, the harness and the simulation call; it is not an MCP tool, so no prompt can fund an account. Alternatives: a policy-level notional cap only (what the MCP server already has, and it cannot know what was filled), or balances in the MCP server (one more source of truth, and desktop hosts would bypass it).
 
+## ADR-19 An agent loop, not a routing classifier
+
+The model runs a real tool loop: it reads tool results and decides the next call, and the gate decides at call time what may execute. The alternative, seen in a sibling implementation of this exercise, is to ask the model for one typed route per turn (read this, propose that) and let Rust perform the read or prepare a proposal that the user then confirms through a separate endpoint, every time. That design is easier to prove safe, because the model never holds a write capability, but it cannot do anything that needs a read before the action ("sell half my ETH", "cancel the higher bid"), every read reply is a template, and every order costs two round trips. We kept the loop and put the safety in the gate, the verifier, the audit and the evaluation: the hostile runner shows that what reaches the engine is decided by code even when the model is adversarial.
+
+## ADR-20 The audit log is a hash chain and writes fail closed
+
+Each audit line carries the hash of the previous line, the service verifies the chain at startup, and an action tool call is refused if its pre-action record cannot be written. A plain append-only file is enough for debugging but proves nothing after the fact and can miss the one action that mattered, the one during which the process died. The cost is one `fsync` per action and per turn, negligible next to a model call. One log belongs to one process; two processes appending to one file would interleave two chains, which the harness learnt by running cases in parallel with one file each. Idea adopted from a sibling implementation.
+
 ## ADR-18 No Docker in this slice
 
 Every component is a cargo binary with environment-variable configuration; the runbook has the three commands. A compose file would add an untested surface without changing the design.

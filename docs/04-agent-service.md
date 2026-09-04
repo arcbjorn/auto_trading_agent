@@ -62,7 +62,7 @@ loop (at most 8 iterations):
         max_tokens-> return the text, flag "truncated"
         otherwise -> return the text
 verifier -> flags (unjustified action, parameters not in the request, reply figures not grounded in any input), compensating cancel when warranted
-audit line
+audit: a pre_action line before every action tool call (the call is refused if it cannot be written), a turn line at the end; every line hash-chained to the one before
 ```
 
 All tool results of one assistant turn go back in a single user message, as the API requires for parallel tool use. A tool the model calls outside the turn's permission is not refused; it is turned into a confirmation request (`needs_confirmation`, flagged `confirmation_requested:no_intent`) and held until the user says so in a turn of their own, so a misbehaving model call can never reach the engine on its own, and a request the keyword gate does not recognise ("compra medio ETH a 3000", "get me half an eth at 3000") still works after one question. The same token flow covers cancels: the token is bound to the tool and its arguments, and a pending cancel permits cancels, not placements, on the confirming turn.
@@ -102,7 +102,7 @@ A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) m
 | `MAX_TOKENS` | `16000` | |
 | `MCP_URL` | `http://127.0.0.1:8000/mcp` | |
 | `AGENT_BIND` | `127.0.0.1:8080` | |
-| `AUDIT_LOG` | `audit.jsonl` | empty string disables |
+| `AUDIT_LOG` | `audit.jsonl` | hash-chained JSON lines, verified at startup; empty string disables (an explicit choice, never a fallback); one log per process |
 | `CONFIRM_THRESHOLD_ETH` | `1` | orders at or above this size need a confirmation turn |
 | `CONFIRM_UNPRICED` | `1` | an order whose price or side the user never stated (the model chose it, as for "sell now" or "0.5 ETH @ 3000 please") needs a confirmation turn whatever its size |
 | `TURNS_PER_MINUTE` | `20` | turns one session may start per rolling minute; beyond it `POST /chat` answers 429 |

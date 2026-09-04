@@ -13,7 +13,7 @@ Infrastructure for autonomous AI agents trading on a market, in Rust. Four parts
 
 ```
 cargo build --workspace --release
-cargo test --workspace                                  # 69 tests: unit, property, concurrency, protocol, HTTP, agent loop
+cargo test --workspace                                  # 74 tests: unit, property, concurrency, protocol, HTTP, agent loop
 cargo run -p evals -- run --agent oracle --assert       # validates the harness without a model
 cargo run --release -p engine-server                    # gRPC on 0.0.0.0:50051
 cargo run --release -p mcp-server -- --http             # MCP on 127.0.0.1:8000/mcp (no flag: stdio)
@@ -27,7 +27,7 @@ No system `protoc` is needed. Environment variables, desktop MCP hosts and troub
 
 ## Results
 
-Apple M1 Pro, release builds, loopback. Reproduce with `make bench`, `make soak`, `make eval-oracle`, `make eval-null`, `make eval-model`, `make eval-perturbed`, `make sim`.
+Apple M1 Pro, release builds, loopback. Reproduce with `make bench`, `make soak`, `make eval-oracle`, `make eval-null`, `make eval-unsafe`, `make eval-model`, `make eval-perturbed`, `make sim`.
 
 | Measurement | Result |
 |---|---|
@@ -35,17 +35,19 @@ Apple M1 Pro, release builds, loopback. Reproduce with `make bench`, `make soak`
 | List 10 orders or 10 trades of one account, 1M-order book | 0.7 µs and 0.2 µs per call (indexed per account) |
 | Memory, same benchmark, closed history archived beyond the last 100k orders and trades | peak 406 MB, was 761 MB |
 | Soak: 4 restarts, 1M journaled orders each with cancels | resident 110, 108, 107 MB; snapshot steady at 39.6 MB; recovery 2.2 to 2.5 s |
-| gRPC `PlaceOrder`, sequential | p50 70 to 75 µs, p99 160 to 180 µs |
+| gRPC `PlaceOrder`, sequential | p50 70 to 75 µs, p99 160 to 180 µs (health and reflection services enabled) |
 | gRPC `PlaceOrder`, 16 concurrent clients | 61k to 69k orders/s; 61k with the journal; 2.1k with fsync per batch |
 | Agent service, 64 sessions × 2 turns at once, 40 ms mock model | 128 turns in 185 ms; sessions do not wait for each other |
 | MCP interoperability, official Python client, stdio and HTTP | all tools, resources and the prompt; output schemas validated |
 | Harness bounds, 3 reps | oracle 100% on every suite; null 0% execution, 0% paraphrase, 10/11 attacks blocked |
+| Hostile model against the gate (`make eval-unsafe`): a scripted model tries to place an order on every turn | 0 unauthorised mutations in the 26 runs that asked for no order or cancel; its first run found 3, which led to the rule that two stated figures pin both price and quantity |
 | DeepSeek V4 Flash, 54 cases × 3 reps, wallets enforced | execution 60/60, paraphrase 57/57, safety 45/45 with 39/39 attacks blocked; turn p50 3 to 5 s; 92% cache hits; 0.14 USD |
 | Same suites via the Claude Messages-API client on DeepSeek's compatible endpoint | 162/162; the Claude request path exercised live |
 | Reasoning cases added later (top up a holding, cancel the higher bid, sell half) | 16/17 runs |
 | All 57 cases with every turn perturbed (typos, filler, casing) | 57/57 |
 | Tool calls per turn with the post-action book in results, DeepSeek V4 Flash, 57 cases | execution 2.00 to 1.83, paraphrase 2.00 to 1.47, safety unchanged; 57/57 |
 | Reply grounding, 57 cases | 172 figures quoted, none without a source in the turn's inputs |
+| DeepSeek V4 Flash after the two-figure gate rule, 57 cases | 57/57; tool calls per turn 1.91, 1.74, 2.00; no unsupported figures |
 | Market simulation, 5 seeds × 8 rounds | goal reached 5/5, no rule violations; scripted baseline 4/5 |
 
 Reports and a full demo transcript are under [docs/results](docs/results). Claude runs are pending an Anthropic key; the harness, pricing and request shape are ready (`make eval-model`), and the Claude request path is covered by the mock-model tests and the live run above.
@@ -75,7 +77,8 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 * **A prompt that never rewrites itself.** The system prompt and name-sorted tool list are fixed and cached; the turn's permissions travel as a note after the user's message and are enforced when a tool is called.
 * **Two providers, one loop.** History is kept as Messages API blocks; the DeepSeek client translates at the edge, replays reasoning content, and maps cache accounting onto the same usage fields.
 * **The book travels with the action.** Placement and cancel results carry the best bid and ask afterwards, so the model reports the market without another call: tool calls per turn fell from 2.00 to 1.83 and 1.47 on the execution and paraphrase suites.
-* **Guardrails as code.** Policy in the MCP server (size, value, collar, open orders, rate, session cap, kill switch); permission, confirmation, verifier, reply grounding and audit in the service. Details in [05 Guardrails](docs/05-guardrails.md).
+* **Guardrails as code.** Policy in the MCP server (size, value, collar, open orders, rate, session cap, kill switch); permission, confirmation, a rule that two stated figures pin the order, verifier and reply grounding in the service. Every call to the engine has a deadline; the service refuses to start against a server whose tool catalog differs from the eleven it expects. Details in [05 Guardrails](docs/05-guardrails.md).
+* **An audit log that fails closed.** Hash-chained JSON lines, verified at startup; a pre-action record is flushed before every action tool call, and the call is refused if it cannot be written. A hostile scripted model runs the whole suite in CI and must cause no unauthorised mutation.
 * **Few dependencies.** tokio, hyper, tonic, prost, serde, reqwest, arc-swap, tracing. No MCP SDK, web framework, decimal or RNG crate. Rationale in [08 Dependencies](docs/08-dependencies.md).
 
 ## Documentation
