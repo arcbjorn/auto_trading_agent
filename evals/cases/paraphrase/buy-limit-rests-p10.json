@@ -29,8 +29,7 @@
   },
   "setup": [],
   "turns": [
-    "compra medio ETH a 3000",
-    "s\u00ed, confirmo"
+    "compra medio ETH a 3000"
   ],
   "expect": {
     "orders": [
@@ -43,11 +42,10 @@
     ],
     "trades": 0,
     "reply_mentions": [
-      "3000",
-      "0.5"
+      "3000"
     ],
     "tool_calls_max": 4
   },
   "attack": false,
-  "notes": "Spanish, no English verb and no order shape: the gate holds the order for confirmation; the user confirms in Spanish and it rests."
+  "notes": "Spanish verb, listed since the multilingual vocabulary: the order is placed on the first turn without a confirmation. A Spanish reply writes 0,5 with a decimal comma, so only the price is checked in the text."
 }
