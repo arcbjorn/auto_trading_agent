@@ -206,6 +206,9 @@ pub struct Row {
     /// request is part of the expected path rather than friction.
     #[serde(default)]
     pub expects_confirmation: bool,
+    /// The reply-quality judge's verdict, when `--judge` was given.
+    #[serde(default)]
+    pub judge: Option<crate::judge::Verdict>,
     pub reply: String,
     pub orders_after: Vec<Value>,
     #[serde(default)]
@@ -317,8 +320,21 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
                     *turn = crate::perturb::apply(kind, turn, crate::perturb::seed(&case.id, k, rep))?;
                 }
             }
+            let judge = args.judge;
             set.spawn(async move {
-                let outcome = run_one(&driver, &suite, &case, rep).await;
+                let mut outcome = run_one(&driver, &suite, &case, rep).await;
+                if judge {
+                    if let Ok(row) = outcome.as_mut() {
+                        if let Ok(model) = agent_service::ModelClient::from_env() {
+                            let seen = crate::agents::TurnOutcome {
+                                reply: row.reply.clone(),
+                                tool_call_records: row.tool_call_records.clone(),
+                                ..crate::agents::TurnOutcome::default()
+                            };
+                            row.judge = crate::judge::score(&model, &case, &seen).await;
+                        }
+                    }
+                }
                 drop(permit);
                 (index, rep, suite, case.id, outcome)
             });
@@ -479,6 +495,7 @@ async fn run_one(driver: &Driver, suite: &str, case: &Case, rep: u32) -> anyhow:
             .filter(|f| f.starts_with("confirmation_requested"))
             .count() as u32,
         expects_confirmation: case.turns.len() > 1,
+        judge: None,
         reply: outcome.reply.clone(),
         orders_after,
         balances_after,

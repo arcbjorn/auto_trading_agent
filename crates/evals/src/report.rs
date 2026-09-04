@@ -192,6 +192,11 @@ pub fn render(rows: &[Row], errors: usize, agent: &str) -> String {
             ));
         }
     }
+    let judged: Vec<(String, String, u32, Option<crate::judge::Verdict>)> = rows
+        .iter()
+        .map(|r| (r.suite.clone(), r.case.clone(), r.rep, r.judge.clone()))
+        .collect();
+    out.push_str(&crate::judge::render(&judged));
     let flagged: Vec<&Row> = rows.iter().filter(|r| !r.flags.is_empty()).collect();
     if !flagged.is_empty() {
         out.push_str("\n## Verifier flags\n\n| suite | case | rep | flags |\n|---|---|---|---|\n");

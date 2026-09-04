@@ -1,6 +1,6 @@
 //! `evals`: runs the scenario suites and the market simulation against the real stack.
 //!
-//!   evals run  [--suite execution|paraphrase|safety|all] [--case ID] [--reps N] [--parallel N] [--agent model|oracle|null|unsafe[:place|cancel_all|swap|ask_first|replay_token]] [--cases DIR] [--out DIR] [--perturb casing|noise|typos|all] [--assert]
+//!   evals run  [--suite execution|paraphrase|safety|all] [--case ID] [--reps N] [--parallel N] [--agent model|oracle|null|unsafe[:place|cancel_all|swap|ask_first|replay_token]] [--cases DIR] [--out DIR] [--perturb casing|noise|typos|all] [--judge] [--assert]
 //!   evals sim  [--seeds N] [--rounds R] [--agent model|baseline|null] [--out DIR]
 //!   evals demo                       the whole stack in one process and a scripted conversation
 //!
@@ -12,6 +12,7 @@ mod agents;
 mod cases;
 mod demo;
 mod harness;
+mod judge;
 mod perturb;
 mod report;
 mod sim;
@@ -35,6 +36,8 @@ pub struct Args {
     pub parallel: usize,
     /// Perturb every turn before sending it (see `perturb.rs`).
     pub perturb: Option<String>,
+    /// Score every reply with a second model call (see `judge.rs`).
+    pub judge: bool,
 }
 
 fn parse_args() -> Args {
@@ -51,6 +54,7 @@ fn parse_args() -> Args {
         case_filter: None,
         parallel: 1,
         perturb: None,
+        judge: false,
     };
     let mut it = std::env::args().skip(1);
     if let Some(cmd) = it.next() {
@@ -59,6 +63,10 @@ fn parse_args() -> Args {
     while let Some(flag) = it.next() {
         if flag == "--assert" {
             args.assert_invariants = true;
+            continue;
+        }
+        if flag == "--judge" {
+            args.judge = true;
             continue;
         }
         let value = it.next().unwrap_or_default();

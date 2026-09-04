@@ -2,7 +2,7 @@
 -include .env
 export
 
-.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent docmap eval-oracle eval-null eval-unsafe eval-model eval-perturbed sim demo interop
+.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent docmap eval-oracle eval-null eval-unsafe eval-model eval-perturbed eval-judged sim demo interop
 
 build:
 	cargo build --workspace --release
@@ -59,6 +59,10 @@ eval-model:
 
 eval-perturbed:
 	cargo run --release -p evals -- run --agent model --perturb all --reps 3
+
+# The same suites, each reply also scored by a second model call for clarity, faithfulness and use.
+eval-judged:
+	cargo run --release -p evals -- run --agent model --reps 1 --judge
 
 demo:
 	cargo run --release -p evals -- demo
