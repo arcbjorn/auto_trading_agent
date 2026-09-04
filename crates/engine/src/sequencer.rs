@@ -162,7 +162,7 @@ fn apply(book: &mut Book, journal: &mut Option<Journal>, cmd: Command, now: i64)
             Ok(Reply::Placed(o, f, Top::of(book)))
         }
         Command::Cancel { account, id } => {
-            let o = book.cancel(&account, id)?;
+            let o = book.cancel_at(&account, id, now)?;
             Ok(Reply::Cancelled(o, Top::of(book)))
         }
         Command::Get { account, id } => match book.order(id) {

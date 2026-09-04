@@ -34,6 +34,11 @@ pub struct EngineConfig {
     pub enforce_balances: bool,
     /// Per-account limits on what may rest at once, enforced inside the matcher.
     pub exposure_limits: engine::ExposureLimits,
+    /// Mutations one account may send per second before the server answers RESOURCE_EXHAUSTED
+    /// without touching the matcher; a burst of one second is allowed. 0 = unlimited.
+    pub account_rate_per_sec: u32,
+    /// How much closed history the book keeps; see [`engine::Retention`].
+    pub retention: engine::Retention,
     /// Accounts credited when the engine starts on an empty book: (account, micro-USDC, lots).
     /// Journaled like any deposit, and skipped when a journal was replayed, so a restart never
     /// funds twice. A convenience for demos; production funding goes through `Deposit`.
@@ -51,6 +56,47 @@ impl Default for EngineConfig {
             enforce_balances: true,
             fund_at_start: Vec::new(),
             exposure_limits: engine::ExposureLimits::default(),
+            account_rate_per_sec: 0,
+            retention: engine::Retention::default(),
+        }
+    }
+}
+
+/// Token buckets per account: `rate` tokens a second, `rate` at most, one per mutation. Sits in
+/// front of the queue so one flooding client cannot fill it for everyone else.
+pub struct RateLimiter {
+    rate: u32,
+    buckets: std::sync::Mutex<std::collections::HashMap<String, (f64, std::time::Instant)>>,
+}
+
+impl RateLimiter {
+    pub fn new(rate: u32) -> Self {
+        Self {
+            rate,
+            buckets: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Takes one token for `account`, or says how long until the next one.
+    pub fn admit(&self, account: &str) -> Result<(), Status> {
+        if self.rate == 0 {
+            return Ok(());
+        }
+        let rate = self.rate as f64;
+        let now = std::time::Instant::now();
+        let mut buckets = self.buckets.lock().expect("rate limiter lock");
+        let (tokens, last) = buckets.entry(account.to_string()).or_insert((rate, now));
+        *tokens = (*tokens + now.duration_since(*last).as_secs_f64() * rate).min(rate);
+        *last = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            Ok(())
+        } else {
+            let wait_ms = ((1.0 - *tokens) / rate * 1000.0).ceil() as u64;
+            Err(Status::resource_exhausted(format!(
+                "account {account} exceeded {} mutations per second; retry in {wait_ms} ms",
+                self.rate
+            )))
         }
     }
 }
@@ -58,11 +104,20 @@ impl Default for EngineConfig {
 pub struct Svc {
     engine: EngineHandle,
     enforced: bool,
+    limiter: std::sync::Arc<RateLimiter>,
 }
 
 impl Svc {
     pub fn new(engine: EngineHandle, enforced: bool) -> Self {
-        Self { engine, enforced }
+        Self::with_rate(engine, enforced, 0)
+    }
+
+    pub fn with_rate(engine: EngineHandle, enforced: bool, account_rate_per_sec: u32) -> Self {
+        Self {
+            engine,
+            enforced,
+            limiter: std::sync::Arc::new(RateLimiter::new(account_rate_per_sec)),
+        }
     }
 }
 
@@ -286,7 +341,9 @@ impl Engine for Svc {
         &self,
         req: Request<pb::PlaceOrderRequest>,
     ) -> Result<Response<pb::PlaceOrderResponse>, Status> {
-        let cmd = place_command(req.into_inner())?;
+        let r = req.into_inner();
+        self.limiter.admit(&r.account_id)?;
+        let cmd = place_command(r)?;
         placed_to_pb(self.engine.submit(cmd).await.map_err(to_status)?).map(Response::new)
     }
 
@@ -301,13 +358,14 @@ impl Engine for Svc {
     ) -> Result<Response<Self::PlaceOrdersStream>, Status> {
         let mut inbound = req.into_inner();
         let engine = self.engine.clone();
+        let limiter = std::sync::Arc::clone(&self.limiter);
         // Pending replies in request order; bounded so a slow reader slows the writer.
         let (pending_tx, mut pending_rx) =
             tokio::sync::mpsc::channel::<Result<oneshot::Receiver<Result<Reply, EngineError>>, Status>>(1024);
         let (out_tx, out_rx) = tokio::sync::mpsc::channel(1024);
         tokio::spawn(async move {
             while let Ok(Some(r)) = inbound.message().await {
-                let queued = match place_command(r) {
+                let queued = match limiter.admit(&r.account_id).and_then(|()| place_command(r)) {
                     Ok(cmd) => engine.enqueue(cmd).await.map_err(to_status),
                     Err(status) => Err(status),
                 };
@@ -349,6 +407,7 @@ impl Engine for Svc {
         req: Request<pb::CancelOrderRequest>,
     ) -> Result<Response<pb::CancelOrderResponse>, Status> {
         let r = req.into_inner();
+        self.limiter.admit(&r.account_id)?;
         let cmd = Command::Cancel {
             account: r.account_id,
             id: parse_id(&r.order_id)?,
@@ -609,6 +668,7 @@ pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(Socke
         Some(path) => {
             let (book, replayed) = Journal::recover(path, cfg.enforce_balances, cfg.exposure_limits)
                 .map_err(|e| anyhow::anyhow!("cannot recover journal {}: {e}", path.display()))?;
+            let book = book.with_retention(cfg.retention);
             tracing::info!(journal = %path.display(), replayed, seq = book.seq(), "journal recovered");
             let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             if cfg.journal_compact_bytes > 0 && size > cfg.journal_compact_bytes {
@@ -624,7 +684,8 @@ pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(Socke
             } else {
                 Book::new()
             })
-            .with_exposure_limits(cfg.exposure_limits),
+            .with_exposure_limits(cfg.exposure_limits)
+            .with_retention(cfg.retention),
             None,
         ),
     };
@@ -663,7 +724,11 @@ pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(Socke
         Server::builder()
             .add_service(health_service)
             .add_service(reflection)
-            .add_service(EngineServer::new(Svc::new(engine, cfg.enforce_balances)))
+            .add_service(EngineServer::new(Svc::with_rate(
+                engine,
+                cfg.enforce_balances,
+                cfg.account_rate_per_sec,
+            )))
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 let _ = rx.await;
             }),

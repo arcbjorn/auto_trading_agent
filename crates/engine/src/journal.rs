@@ -9,10 +9,12 @@
 //! The matcher flushes the writer once per batch, so under load one write system call covers many
 //! commands; `fsync` per batch is optional (crash durability at a latency cost, see the README).
 
-use crate::book::{Book, BookState, ExposureLimits, OrderId, PlaceRequest, Qty};
+use crate::book::{
+    Book, BookBuilder, BookState, ExposureLimits, OrderId, PlaceRequest, Qty, SnapshotHeader, SnapshotLine,
+};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,12 +95,8 @@ impl Journal {
         let snapshot = Self::snapshot_path(journal);
         let mut book = match File::open(&snapshot) {
             Ok(f) => {
-                let state: BookState = serde_json::from_reader(BufReader::new(f)).map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("snapshot {}: {e}", snapshot.display()),
-                    )
-                })?;
+                let (header, book) = Self::read_snapshot(&snapshot, f)?;
+                let state = header;
                 if state.enforce_balances != enforce_balances {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -121,7 +119,7 @@ impl Journal {
                         ),
                     ));
                 }
-                Book::from_state(state)
+                book
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let book = if enforce_balances {
@@ -147,7 +145,7 @@ impl Journal {
         let tmp = std::path::PathBuf::from(tmp);
         {
             let mut w = BufWriter::new(File::create(&tmp)?);
-            serde_json::to_writer(&mut w, &book.state())?;
+            book.write_snapshot(&mut w)?;
             w.flush()?;
             w.get_ref().sync_all()?;
         }
@@ -155,6 +153,49 @@ impl Journal {
         let truncated = File::create(journal)?;
         truncated.sync_all()?;
         Ok(())
+    }
+
+    /// Reads a snapshot one line at a time into a book. A file whose first line is not a
+    /// header is a snapshot in the earlier single-object form and is read whole.
+    fn read_snapshot(path: &Path, f: File) -> std::io::Result<(SnapshotHeader, Book)> {
+        let invalid = |e: String| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("snapshot {}: {e}", path.display()),
+            )
+        };
+        let mut reader = BufReader::new(f);
+        let mut first = String::new();
+        reader.read_line(&mut first)?;
+        match serde_json::from_str::<SnapshotLine>(&first) {
+            Ok(SnapshotLine::Header(header)) => {
+                let mut b = BookBuilder::new(header.clone());
+                for (n, line) in reader.lines().enumerate() {
+                    let line = line?;
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let l: SnapshotLine =
+                        serde_json::from_str(&line).map_err(|e| invalid(format!("line {}: {e}", n + 2)))?;
+                    b.line(l);
+                }
+                Ok((header, b.finish()))
+            }
+            _ => {
+                let mut text = first;
+                reader.read_to_string(&mut text)?;
+                let state: BookState = serde_json::from_str(&text).map_err(|e| invalid(e.to_string()))?;
+                let header = SnapshotHeader {
+                    last_trade_price: state.last_trade_price,
+                    next_order: state.next_order,
+                    next_trade: state.next_trade,
+                    next_seq: state.next_seq,
+                    enforce_balances: state.enforce_balances,
+                    exposure_limits: state.exposure_limits,
+                };
+                Ok((header, Book::from_state(state)))
+            }
+        }
     }
 
     /// Applies every record in `path` to `book`, in order, and returns how many were replayed.
@@ -182,8 +223,8 @@ impl Journal {
                 Record::Place { t, req } => {
                     let _ = book.place(req, t);
                 }
-                Record::Cancel { account, id, .. } => {
-                    let _ = book.cancel(&account, id);
+                Record::Cancel { t, account, id } => {
+                    let _ = book.cancel_at(&account, id, t);
                 }
                 Record::Deposit { account, usdc, eth, .. } => {
                     let _ = book.deposit(&account, usdc, eth);
@@ -318,6 +359,16 @@ mod tests {
         assert_eq!(replayed, 50);
         Journal::compact(&compact_path, &compacted).unwrap();
         assert_eq!(std::fs::metadata(&compact_path).unwrap().len(), 0, "journal emptied");
+        let first_line = std::fs::read_to_string(Journal::snapshot_path(&compact_path))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(
+            first_line.contains("\"kind\":\"header\""),
+            "streamed snapshot: {first_line}"
+        );
         let mut tail = Journal::open(&compact_path, false).unwrap();
         let more = PlaceRequest {
             account: "b0".into(),

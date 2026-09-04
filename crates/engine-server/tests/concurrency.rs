@@ -114,6 +114,41 @@ async fn sixteen_tasks_place_orders_concurrently() {
 /// (nothing crosses, so nothing fills) and the book must end empty: the lazily dropped cancelled
 /// ids and the per-level totals stay consistent under interleaving.
 #[tokio::test]
+async fn a_flooding_account_is_throttled_at_the_edge() {
+    let cfg = EngineConfig {
+        account_rate_per_sec: 5,
+        ..EngineConfig::default()
+    };
+    let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), cfg).await.unwrap();
+    let url = format!("http://{addr}");
+    let mut c = EngineClient::connect(url).await.unwrap();
+    fund(&mut c, "flood").await;
+    fund(&mut c, "calm").await;
+    let place = |account: &str, i: u64| PlaceOrderRequest {
+        account_id: account.into(),
+        client_order_id: format!("{account}-{i}"),
+        side: Side::Buy as i32,
+        price_ticks: 290_000,
+        quantity_lots: 10,
+        tif: TimeInForce::Gtc as i32,
+    };
+    let mut refused = 0;
+    for i in 0..20 {
+        if let Err(s) = c.place_order(place("flood", i)).await {
+            assert_eq!(s.code(), tonic::Code::ResourceExhausted, "{s}");
+            assert!(s.message().contains("retry in"), "{s}");
+            refused += 1;
+        }
+    }
+    assert!(refused >= 10, "a burst of 20 at 5 per second: {refused} refused");
+    // Another account is untouched, and the flooder gets tokens back with time.
+    c.place_order(place("calm", 0)).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    c.place_order(place("flood", 99)).await.unwrap();
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_pipelined_stream_answers_every_request_in_order() {
     let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), EngineConfig::default())
         .await

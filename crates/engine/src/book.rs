@@ -46,13 +46,20 @@ pub const RETAINED_TRADES: usize = 100_000;
 pub struct Retention {
     pub closed_orders: usize,
     pub trades: usize,
+    /// Closed orders and trades older than this are archived even when the counts are under
+    /// their bounds, so a quiet venue does not hold week-old history. 0 disables the bound.
+    pub max_age_ns: i64,
 }
+
+/// Default age bound: one day.
+pub const RETAINED_FOR_NS: i64 = 24 * 60 * 60 * 1_000_000_000;
 
 impl Default for Retention {
     fn default() -> Self {
         Self {
             closed_orders: RETAINED_CLOSED_ORDERS,
             trades: RETAINED_TRADES,
+            max_age_ns: RETAINED_FOR_NS,
         }
     }
 }
@@ -390,9 +397,12 @@ pub struct Book {
     /// Quantity filled and fill ids of every order that filled at placement, so an idempotent
     /// retry can be answered with the original reply without keeping a second copy of the order.
     fill_ids: HashMap<OrderId, (Qty, Vec<TradeId>)>,
-    /// Closed orders in closing order; the front is archived first. See [`Retention`].
-    closed: VecDeque<OrderId>,
+    /// Closed orders with the time they closed, in closing order; the front is archived first.
+    /// See [`Retention`].
+    closed: VecDeque<(OrderId, i64)>,
     retention: Retention,
+    /// The clock of the last command, so age-based archiving needs no clock of its own.
+    last_now_ns: i64,
     /// The most recent events, bounded; see [`RECENT_EVENTS`].
     events: VecDeque<Event>,
     /// Events since the sequencer last drained them, for the broadcast.
@@ -502,6 +512,136 @@ fn settle(
     }
 }
 
+/// One line of a streamed snapshot: a header, then every record on its own line, so a
+/// snapshot is written and read without ever holding the whole state in memory twice.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "v", rename_all = "snake_case")]
+pub enum SnapshotLine {
+    Header(SnapshotHeader),
+    Order(Order),
+    Trade(Trade),
+    Fill(OrderId, Qty, Vec<TradeId>),
+    Balance(String, Balances),
+    Ledger(String, Ledger),
+    Closed(OrderId, i64),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SnapshotHeader {
+    pub last_trade_price: Option<Price>,
+    pub next_order: OrderId,
+    pub next_trade: TradeId,
+    pub next_seq: Seq,
+    pub enforce_balances: bool,
+    #[serde(default)]
+    pub exposure_limits: ExposureLimits,
+}
+
+/// Builds a book one record at a time, the way a streamed snapshot arrives. [`Book::from_state`]
+/// uses it too, so both paths rebuild indices, levels and exposure the same way.
+pub struct BookBuilder {
+    book: Book,
+    live: Vec<(Side, Price, OrderId, Qty)>,
+}
+
+impl BookBuilder {
+    pub fn new(h: SnapshotHeader) -> Self {
+        Self {
+            book: Book {
+                enforce_balances: h.enforce_balances,
+                exposure_limits: h.exposure_limits,
+                last_trade_price: h.last_trade_price,
+                next_order: h.next_order,
+                next_trade: h.next_trade,
+                next_seq: h.next_seq,
+                ..Book::default()
+            },
+            live: Vec::new(),
+        }
+    }
+
+    pub fn line(&mut self, line: SnapshotLine) {
+        match line {
+            SnapshotLine::Header(_) => {}
+            SnapshotLine::Order(o) => self.order(o),
+            SnapshotLine::Trade(t) => self.trade(t),
+            SnapshotLine::Fill(id, filled, fills) => {
+                self.book.fill_ids.insert(id, (filled, fills));
+            }
+            SnapshotLine::Balance(account, b) => {
+                self.book.balances.insert(Arc::from(account.as_str()), b);
+            }
+            SnapshotLine::Ledger(account, l) => {
+                let key = self.book.intern(&account);
+                self.book.ledgers.insert(key, l);
+            }
+            SnapshotLine::Closed(id, at) => self.book.closed.push_back((id, at)),
+        }
+    }
+
+    fn order(&mut self, mut o: Order) {
+        let book = &mut self.book;
+        o.account = book.intern(&o.account);
+        book.by_account.entry(Arc::clone(&o.account)).or_default().insert(o.id);
+        book.by_client_id
+            .entry(Arc::clone(&o.account))
+            .or_default()
+            .insert(Arc::clone(&o.client_order_id), o.id);
+        if o.status.is_live() {
+            self.live.push((o.side, o.price, o.id, o.remaining));
+        }
+        book.orders.insert(o.id, o);
+    }
+
+    fn trade(&mut self, mut t: Trade) {
+        let book = &mut self.book;
+        t.maker_account = book.intern(&t.maker_account);
+        t.taker_account = book.intern(&t.taker_account);
+        book.trades_by_account
+            .entry(Arc::clone(&t.maker_account))
+            .or_default()
+            .push_back(t.id);
+        book.trades_by_account
+            .entry(Arc::clone(&t.taker_account))
+            .or_default()
+            .push_back(t.id);
+        book.trades.push_back(t);
+    }
+
+    /// Derives the price levels (time priority within a level is id order, which is arrival
+    /// order), the exposure counters and, for a snapshot without closing times, the closing order.
+    pub fn finish(mut self) -> Book {
+        let mut book = self.book;
+        self.live.sort_by_key(|(_, _, id, _)| *id);
+        for (side, price, id, remaining) in self.live {
+            let level = match side {
+                Side::Buy => book.bids.entry(price).or_default(),
+                Side::Sell => book.asks.entry(price).or_default(),
+            };
+            level.total += remaining;
+            level.live += 1;
+            level.queue.push_back(id);
+        }
+        for o in book.orders.values().filter(|o| o.status.is_live()) {
+            let e = book.exposure.entry(Arc::clone(&o.account)).or_default();
+            e.open += 1;
+            e.notional += o.price as u128 * o.remaining as u128;
+        }
+        if book.closed.is_empty() {
+            let mut closed: Vec<(OrderId, i64)> = book
+                .orders
+                .values()
+                .filter(|o| !o.status.is_live())
+                .map(|o| (o.id, o.created_at_unix_ns))
+                .collect();
+            closed.sort_unstable();
+            book.closed = closed.into();
+        }
+        book.last_now_ns = book.closed.back().map(|c| c.1).unwrap_or(0);
+        book
+    }
+}
+
 /// Everything a book needs to continue exactly where it was: the durable form of the state.
 /// Indices and price levels are derived from the orders on load, and the in-memory event log
 /// starts empty (the journal, not the event log, is the history).
@@ -512,9 +652,10 @@ pub struct BookState {
     /// Quantity filled and fill ids per order that filled at placement, for idempotent retries.
     #[serde(default)]
     pub fill_ids: Vec<(OrderId, Qty, Vec<TradeId>)>,
-    /// Closed orders in closing order, so archiving continues identically after a restart.
+    /// Closed orders with their closing time, in closing order, so archiving continues
+    /// identically after a restart.
     #[serde(default)]
-    pub closed: Vec<OrderId>,
+    pub closed: Vec<(OrderId, i64)>,
     pub balances: Vec<(String, Balances)>,
     #[serde(default)]
     pub ledgers: Vec<(String, Ledger)>,
@@ -568,80 +709,83 @@ impl Book {
     /// the price levels and indices derived again. Time priority within a level is id order,
     /// which is arrival order.
     pub fn from_state(state: BookState) -> Self {
-        let mut book = Book {
-            enforce_balances: state.enforce_balances,
-            exposure_limits: state.exposure_limits,
+        let mut b = BookBuilder::new(SnapshotHeader {
             last_trade_price: state.last_trade_price,
             next_order: state.next_order,
             next_trade: state.next_trade,
             next_seq: state.next_seq,
-            ..Book::default()
-        };
-        for (account, b) in state.balances {
-            book.balances.insert(Arc::from(account.as_str()), b);
+            enforce_balances: state.enforce_balances,
+            exposure_limits: state.exposure_limits,
+        });
+        for (account, bal) in state.balances {
+            b.line(SnapshotLine::Balance(account, bal));
         }
         for (account, l) in state.ledgers {
-            let key = book.intern(&account);
-            book.ledgers.insert(key, l);
+            b.line(SnapshotLine::Ledger(account, l));
         }
-        let mut live: Vec<(Side, Price, OrderId, Qty)> = Vec::new();
-        for mut o in state.orders {
-            o.account = book.intern(&o.account);
-            book.by_account.entry(Arc::clone(&o.account)).or_default().insert(o.id);
-            book.by_client_id
-                .entry(Arc::clone(&o.account))
-                .or_default()
-                .insert(Arc::clone(&o.client_order_id), o.id);
-            if o.status.is_live() {
-                live.push((o.side, o.price, o.id, o.remaining));
-            }
-            book.orders.insert(o.id, o);
+        for o in state.orders {
+            b.line(SnapshotLine::Order(o));
         }
-        for o in book.orders.values().filter(|o| o.status.is_live()) {
-            let e = book.exposure.entry(Arc::clone(&o.account)).or_default();
-            e.open += 1;
-            e.notional += o.price as u128 * o.remaining as u128;
-        }
-        live.sort_by_key(|(_, _, id, _)| *id);
-        for (side, price, id, remaining) in live {
-            let level = match side {
-                Side::Buy => book.bids.entry(price).or_default(),
-                Side::Sell => book.asks.entry(price).or_default(),
-            };
-            level.total += remaining;
-            level.live += 1;
-            level.queue.push_back(id);
-        }
-        for mut t in state.trades {
-            t.maker_account = book.intern(&t.maker_account);
-            t.taker_account = book.intern(&t.taker_account);
-            book.trades_by_account
-                .entry(Arc::clone(&t.maker_account))
-                .or_default()
-                .push_back(t.id);
-            book.trades_by_account
-                .entry(Arc::clone(&t.taker_account))
-                .or_default()
-                .push_back(t.id);
-            book.trades.push_back(t);
+        for t in state.trades {
+            b.line(SnapshotLine::Trade(t));
         }
         for (id, filled, fills) in state.fill_ids {
-            book.fill_ids.insert(id, (filled, fills));
+            b.line(SnapshotLine::Fill(id, filled, fills));
         }
-        if state.closed.is_empty() {
-            // A state written before closing order was recorded: id order is the best guess.
-            let mut closed: Vec<OrderId> = book
-                .orders
-                .values()
-                .filter(|o| !o.status.is_live())
-                .map(|o| o.id)
-                .collect();
-            closed.sort_unstable();
-            book.closed = closed.into();
-        } else {
-            book.closed = state.closed.into();
+        for (id, at) in state.closed {
+            b.line(SnapshotLine::Closed(id, at));
         }
-        book
+        b.finish()
+    }
+
+    /// The header of a streamed snapshot: counters and modes, without the records.
+    pub fn snapshot_header(&self) -> SnapshotHeader {
+        SnapshotHeader {
+            last_trade_price: self.last_trade_price,
+            next_order: self.next_order,
+            next_trade: self.next_trade,
+            next_seq: self.next_seq,
+            enforce_balances: self.enforce_balances,
+            exposure_limits: self.exposure_limits,
+        }
+    }
+
+    /// Writes the state as JSON lines, one record per line in id order, straight from the
+    /// book's own maps: nothing is collected first, so writing costs no second copy.
+    pub fn write_snapshot(&self, w: &mut impl std::io::Write) -> std::io::Result<()> {
+        let mut line = |l: &SnapshotLine| -> std::io::Result<()> {
+            serde_json::to_writer(&mut *w, l)?;
+            w.write_all(b"\n")
+        };
+        line(&SnapshotLine::Header(self.snapshot_header()))?;
+        let mut accounts: Vec<&Arc<str>> = self.balances.keys().collect();
+        accounts.sort();
+        for a in accounts {
+            line(&SnapshotLine::Balance(a.to_string(), self.balances[a]))?;
+        }
+        let mut accounts: Vec<&Arc<str>> = self.ledgers.keys().collect();
+        accounts.sort();
+        for a in accounts {
+            line(&SnapshotLine::Ledger(a.to_string(), self.ledgers[a]))?;
+        }
+        let mut ids: Vec<OrderId> = self.orders.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            line(&SnapshotLine::Order(self.orders[&id].clone()))?;
+        }
+        for t in &self.trades {
+            line(&SnapshotLine::Trade(t.clone()))?;
+        }
+        let mut ids: Vec<OrderId> = self.fill_ids.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let (filled, fills) = &self.fill_ids[&id];
+            line(&SnapshotLine::Fill(id, *filled, fills.clone()))?;
+        }
+        for &(id, at) in &self.closed {
+            line(&SnapshotLine::Closed(id, at))?;
+        }
+        Ok(())
     }
 
     /// A book where every order must be backed: a buy reserves price times quantity in USDC, a
@@ -698,11 +842,21 @@ impl Book {
 
     /// Archives the oldest closed orders and drops the oldest trades beyond the retention.
     fn enforce_retention(&mut self) {
-        while self.closed.len() > self.retention.closed_orders {
-            let id = self.closed.pop_front().expect("closed is not empty");
-            self.archive(id);
+        let age = self.retention.max_age_ns;
+        let now = self.last_now_ns;
+        let too_old = |at: i64| age > 0 && at.saturating_add(age) < now;
+        while let Some(&(id, at)) = self.closed.front() {
+            if self.closed.len() > self.retention.closed_orders || too_old(at) {
+                self.closed.pop_front();
+                self.archive(id);
+            } else {
+                break;
+            }
         }
-        while self.trades.len() > self.retention.trades {
+        while let Some(front) = self.trades.front() {
+            if !(self.trades.len() > self.retention.trades || too_old(front.executed_at_unix_ns)) {
+                break;
+            }
             let t = self.trades.pop_front().expect("trades is not empty");
             for account in [&t.maker_account, &t.taker_account] {
                 if let Some(ids) = self.trades_by_account.get_mut(account) {
@@ -1095,6 +1249,7 @@ impl Book {
                 }
             }
         }
+        self.last_now_ns = now_ns;
         // Reuse the account's interned name so every order of an account shares one allocation.
         let account: Arc<str> = self.intern(&req.account);
         let client_order_id: Arc<str> = Arc::from(req.client_order_id.as_str());
@@ -1133,7 +1288,7 @@ impl Book {
                 },
             );
             self.orders.insert(o.id, o.clone());
-            self.closed.push_back(o.id);
+            self.closed.push_back((o.id, now_ns));
             self.enforce_retention();
             return Ok((o, Vec::new()));
         }
@@ -1191,7 +1346,7 @@ impl Book {
             if maker.remaining == 0 {
                 level.queue.pop_front();
                 level.live -= 1;
-                self.closed.push_back(maker_id);
+                self.closed.push_back((maker_id, now_ns));
             }
             let maker_closed = maker.remaining == 0;
             let level_empty = level.total == 0;
@@ -1292,7 +1447,7 @@ impl Book {
                 .insert(o.id, (o.qty - o.remaining, fills.iter().map(|t| t.id).collect()));
         }
         if !o.status.is_live() {
-            self.closed.push_back(o.id);
+            self.closed.push_back((o.id, now_ns));
         }
         self.enforce_retention();
         Ok((o, fills))
@@ -1301,6 +1456,13 @@ impl Book {
     /// Cancels a live order owned by `account`. O(1): the level total is adjusted now and the
     /// matcher drops the order lazily when it reaches it.
     pub fn cancel(&mut self, account: &str, id: OrderId) -> Result<Order, EngineError> {
+        self.cancel_at(account, id, self.last_now_ns)
+    }
+
+    /// [`Book::cancel`] with the wall clock of the command, which dates the closing for
+    /// age-based archiving. Replay passes the recorded clock, so archiving replays identically.
+    pub fn cancel_at(&mut self, account: &str, id: OrderId, now_ns: i64) -> Result<Order, EngineError> {
+        self.last_now_ns = now_ns;
         let o = self.orders.get_mut(&id).ok_or(EngineError::NotFound(id))?;
         if &*o.account != account {
             return Err(EngineError::Forbidden(id));
@@ -1339,7 +1501,7 @@ impl Book {
             },
         );
         let cancelled = self.orders[&id].clone();
-        self.closed.push_back(id);
+        self.closed.push_back((id, now_ns));
         self.enforce_retention();
         Ok(cancelled)
     }
@@ -1697,10 +1859,49 @@ mod tests {
     }
 
     #[test]
+    fn closed_history_also_expires_by_age() {
+        let keep = Retention {
+            closed_orders: 1_000,
+            trades: 1_000,
+            max_age_ns: 1_000,
+        };
+        let mut b = Book::new().with_retention(keep);
+        // At t=0: a resting bid that stays live, and a crossing pair that closes with a trade.
+        let (live, _) = b.place(req("m", "live", Side::Buy, 290_000, 5, Tif::Gtc), 0).unwrap();
+        let (bid, _) = b.place(req("m", "b", Side::Buy, 300_000, 10, Tif::Gtc), 0).unwrap();
+        let (ask, fills) = b.place(req("t", "s", Side::Sell, 300_000, 10, Tif::Gtc), 0).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!((b.retained_orders(), b.retained_trades()), (3, 1));
+        // A command 5 µs later finds the closed pair and its trade older than the bound.
+        b.place(req("m", "later", Side::Buy, 289_000, 5, Tif::Gtc), 5_000)
+            .unwrap();
+        assert!(
+            b.order(bid.id).is_none() && b.order(ask.id).is_none(),
+            "closed orders expired"
+        );
+        assert_eq!(b.retained_trades(), 0, "the trade expired");
+        assert_eq!(
+            b.order(live.id).map(|o| o.status),
+            Some(Status::Open),
+            "live orders never expire"
+        );
+        assert_eq!(b.retained_orders(), 2);
+        b.check_invariants().unwrap();
+        // A cancel dates the closing with its own clock.
+        b.cancel_at("m", live.id, 6_000).unwrap();
+        assert!(b.order(live.id).is_some());
+        b.place(req("m", "much-later", Side::Buy, 288_000, 5, Tif::Gtc), 20_000)
+            .unwrap();
+        assert!(b.order(live.id).is_none());
+        b.check_invariants().unwrap();
+    }
+
+    #[test]
     fn closed_history_is_bounded_and_live_orders_are_kept() {
         let keep = Retention {
             closed_orders: 20,
             trades: 5,
+            max_age_ns: 0,
         };
         let mut b = Book::new().with_retention(keep);
         // Two bids at 298000 from m; c1 is cancelled but stays in the level's queue behind c2.

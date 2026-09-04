@@ -7,6 +7,8 @@
 //!   ENGINE_JOURNAL_FSYNC 1 to fsync every batch before replying (default 0: flush to the OS)
 //!   ENGINE_JOURNAL_COMPACT_MB  compact the journal into a snapshot on start when larger (default 64; 0 never)
 //!   ENGINE_BALANCES      0 to run without balance checks (default 1: every order must be funded)
+//!   ENGINE_ACCOUNT_RATE_PER_SEC   mutations one account may send per second (default unlimited)
+//!   ENGINE_RETAIN_HOURS           closed orders and trades older than this are archived (default 24)
 //!   ENGINE_MAX_OPEN_ORDERS        live orders one account may rest at once (default unlimited)
 //!   ENGINE_MAX_OPEN_NOTIONAL_USDC sum of price x remaining one account may rest, in USDC (default unlimited)
 //!   ENGINE_FUND          accounts credited on an empty book, whole units: "demo:50000:10,mm:1000000:1000"
@@ -67,6 +69,18 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|v| v.parse::<u128>().ok())
                 .map(|usdc| usdc * 1_000_000)
                 .unwrap_or(u128::MAX),
+        },
+        account_rate_per_sec: std::env::var("ENGINE_ACCOUNT_RATE_PER_SEC")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        retention: engine::Retention {
+            max_age_ns: std::env::var("ENGINE_RETAIN_HOURS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .map(|h| h * 60 * 60 * 1_000_000_000)
+                .unwrap_or(engine::RETAINED_FOR_NS),
+            ..engine::Retention::default()
         },
         fund_at_start: parse_funding(&std::env::var("ENGINE_FUND").unwrap_or_default())?,
         journal_compact_bytes: std::env::var("ENGINE_JOURNAL_COMPACT_MB")
