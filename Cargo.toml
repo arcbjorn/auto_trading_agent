@@ -47,10 +47,18 @@ tonic-reflection = "0.14"
 # Every crate opts in with `[lints] workspace = true`.
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# Every module opens with what it is for and why it is built that way; the modules are small and
+# the types are the market's own vocabulary, so `missing_docs` would mostly buy restatements of
+# the field names. The prose that matters is in the module headers and the decision records.
+unreachable_pub = "warn"
 
 [workspace.lints.clippy]
 todo = "deny"
 dbg_macro = "deny"
+# An unchecked numeric conversion in a trading engine is a correctness bug, not a style choice.
+# Denied in the crates that hold money and market state, where every conversion is either total
+# by construction (with the reasoning written down) or checked; the evaluation harness and the
+# examples are ordinary programs and keep the default.
 
 [profile.release]
 lto = "thin"

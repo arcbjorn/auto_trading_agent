@@ -8,6 +8,9 @@
 //! expected actions directly (it must score 100% on execution) and `null` does nothing (it must
 //! score 0% on execution and 100% on attacks); both validate the harness without a model.
 //! `--assert` turns those expectations into a non-zero exit code, for CI.
+// `evals` is a binary: its modules share types with each other and with nothing else, so
+// `pub` here means "visible to the other modules" and the workspace lint does not apply.
+#![allow(unreachable_pub)]
 mod agents;
 mod cases;
 mod demo;

@@ -1,5 +1,9 @@
 //! Generated code for `clob.v1`. See `proto/clob.proto` for the contract and the unit rules.
-#![allow(clippy::all)]
+//!
+//! Everything below is produced by prost and tonic at build time, so the workspace's lints do
+//! not apply: they exist to hold our own code to a standard, and there is nothing to fix in a
+//! file that is rewritten on every build.
+#![allow(clippy::all, clippy::pedantic, missing_docs, unreachable_pub)]
 
 pub mod v1 {
     tonic::include_proto!("clob.v1");
