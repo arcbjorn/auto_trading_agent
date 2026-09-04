@@ -326,7 +326,10 @@ impl ToolSet {
                     "average_fill_price_usdc": { "type": ["string", "null"] }, "fills": { "type": "array" }, "fills_truncated": { "type": "boolean" }, "seq": { "type": "integer" },
                     "cancel_reason": { "type": "string" }, "note": { "type": "string" },
                     "best_bid_usdc": { "type": ["string", "null"] }, "best_ask_usdc": { "type": ["string", "null"] } } },
-                "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+                // Destructive: a placement commits funds and can fill at once, which no later call
+                // undoes. Idempotent only when the caller supplies client_order_id; without one a
+                // new key is generated per call, so a repeat is a second order.
+                "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false }
             }),
             json!({
                 "name": "cancel_order",

@@ -11,7 +11,11 @@ package clob.v1;
 service Engine {
   // Place a limit order. Fills that happen immediately are returned in the response.
   // `client_order_id` is an idempotency key: repeating a request with the same key and the
-  // same parameters returns the original reply and never creates a second order.
+  // same parameters (side, price, quantity and time in force) returns the original reply and
+  // never creates a second order. The key is kept while its order is retained; an order archived
+  // by age or count takes its key with it, after which the same key is a new order. Retention is
+  // configured per deployment (ENGINE_RETAIN_HOURS, RETAINED_CLOSED_ORDERS) and is far longer
+  // than any sane retry window.
   rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
   // The same, pipelined: a client streams requests and receives one result per request, in
   // request order, without waiting for each round trip. A rejected request is a result carrying

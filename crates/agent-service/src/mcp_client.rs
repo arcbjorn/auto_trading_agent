@@ -33,7 +33,15 @@ impl McpClient {
     /// Runs the initialize handshake and returns a ready client.
     pub async fn connect(url: &str) -> Result<Self, McpError> {
         let client = Self {
-            http: reqwest::Client::new(),
+            // A stalled MCP server must surface as a tool error, not a hung turn.
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(
+                    std::env::var("MCP_TIMEOUT_SECS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(30),
+                ))
+                .build()?,
             url: url.to_string(),
             protocol_version: "2025-11-25".into(),
             next_id: AtomicU64::new(1),

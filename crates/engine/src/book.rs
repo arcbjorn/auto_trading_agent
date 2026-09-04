@@ -74,8 +74,9 @@ pub enum Side {
     Sell,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tif {
+    #[default]
     Gtc,
     Ioc,
     Fok,
@@ -149,6 +150,10 @@ pub struct Order {
     pub seq: Seq,
     /// Wall clock at acceptance, for reporting only. Never used for ordering.
     pub created_at_unix_ns: i64,
+    /// The time in force the order was placed with. Part of the idempotency fingerprint: the
+    /// same key with a different time in force is a different order, not a retry.
+    #[serde(default)]
+    pub tif: Tif,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1039,14 +1044,14 @@ impl Book {
         }
         let key = self.intern(account);
         let b = self.balances.entry(Arc::clone(&key)).or_default();
-        b.usdc_available = b
-            .usdc_available
-            .checked_add(usdc)
-            .ok_or_else(|| EngineError::Invalid("deposit overflows the balance".into()))?;
-        b.eth_available = b
-            .eth_available
-            .checked_add(eth)
-            .ok_or_else(|| EngineError::Invalid("deposit overflows the balance".into()))?;
+        // Both legs are checked before either is written, so a refused deposit credits nothing.
+        let overflow = || EngineError::Invalid("deposit overflows the balance".into());
+        let (usdc_next, eth_next) = (
+            b.usdc_available.checked_add(usdc).ok_or_else(overflow)?,
+            b.eth_available.checked_add(eth).ok_or_else(overflow)?,
+        );
+        b.usdc_available = usdc_next;
+        b.eth_available = eth_next;
         let result = *b;
         let ledger = self.ledgers.entry(Arc::clone(&key)).or_default();
         ledger.deposits_usdc += usdc;
@@ -1141,7 +1146,10 @@ impl Book {
             o.remaining = o.qty - filled;
             let at_placement = matches!(
                 stored.cancel_reason,
-                Some(CancelReason::Ioc) | Some(CancelReason::Fok) | Some(CancelReason::SelfTradePrevention)
+                Some(CancelReason::Ioc)
+                    | Some(CancelReason::Fok)
+                    | Some(CancelReason::SelfTradePrevention)
+                    | Some(CancelReason::ExposureLimit)
             );
             o.cancel_reason = if at_placement { stored.cancel_reason } else { None };
             o.status = if o.remaining == 0 {
@@ -1218,7 +1226,11 @@ impl Book {
             .and_then(|m| m.get(req.client_order_id.as_str()))
         {
             let (original, fills) = self.original_reply(id);
-            return if original.side == req.side && original.price == req.price && original.qty == req.qty {
+            return if original.side == req.side
+                && original.price == req.price
+                && original.qty == req.qty
+                && original.tif == req.tif
+            {
                 Ok((original, fills))
             } else {
                 Err(EngineError::AlreadyExists)
@@ -1268,6 +1280,7 @@ impl Book {
             cancel_reason: None,
             seq,
             created_at_unix_ns: now_ns,
+            tif,
         };
         self.by_client_id
             .entry(Arc::clone(&account))
@@ -2059,6 +2072,23 @@ mod tests {
         let (_, fills) = b.place(gtc("t", "c", Side::Buy, 300_000, 100), 0).unwrap();
         assert_eq!(fills.iter().map(|f| f.maker).collect::<Vec<_>>(), vec![fresh.id]);
         assert!(b.snapshot(1).asks.is_empty());
+    }
+
+    #[test]
+    fn a_retry_with_another_time_in_force_is_not_a_retry() {
+        let mut b = Book::new();
+        b.place(gtc("s", "seed", Side::Sell, 300_000, 100), 0).unwrap();
+        // The same key with GTC then IOC describes two different orders, so the second is a
+        // conflict rather than a replay of the first.
+        b.place(req("a", "k", Side::Buy, 299_000, 50, Tif::Gtc), 0).unwrap();
+        assert!(matches!(
+            b.place(req("a", "k", Side::Buy, 299_000, 50, Tif::Ioc), 0),
+            Err(EngineError::AlreadyExists)
+        ));
+        // The identical request still replays.
+        let (again, _) = b.place(req("a", "k", Side::Buy, 299_000, 50, Tif::Gtc), 0).unwrap();
+        assert_eq!(again.status, Status::Open);
+        assert_eq!(b.open_orders_for("a").len(), 1);
     }
 
     #[test]
