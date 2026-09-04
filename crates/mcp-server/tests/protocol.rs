@@ -122,6 +122,46 @@ async fn lifecycle_and_discovery() {
         server.handle_message(req(7, "prompts/list", json!({}))).await.unwrap()["result"]["prompts"][0]["name"],
         "trading_assistant"
     );
+    // Subscriptions: known URIs only; notifications are one per subscribed resource.
+    assert_eq!(
+        server
+            .handle_message(req(
+                40,
+                "resources/subscribe",
+                json!({ "uri": "market://ETH-USDC/summary" })
+            ))
+            .await
+            .unwrap()["result"],
+        json!({})
+    );
+    assert_eq!(
+        server
+            .handle_message(req(41, "resources/subscribe", json!({ "uri": "orders://me/open" })))
+            .await
+            .unwrap()["result"],
+        json!({})
+    );
+    assert_eq!(
+        server
+            .handle_message(req(42, "resources/subscribe", json!({ "uri": "market://nothing" })))
+            .await
+            .unwrap()["error"]["code"],
+        -32002
+    );
+    assert_eq!(
+        server.subscriptions(),
+        vec!["market://ETH-USDC/summary".to_string(), "orders://me/open".to_string()]
+    );
+    let updates = server.updated_notifications();
+    assert_eq!(updates.len(), 2);
+    assert_eq!(updates[0]["method"], "notifications/resources/updated");
+    assert_eq!(updates[0]["params"]["uri"], "market://ETH-USDC/summary");
+    assert!(updates[0].get("id").is_none(), "a notification has no id");
+    server
+        .handle_message(req(43, "resources/unsubscribe", json!({ "uri": "orders://me/open" })))
+        .await
+        .unwrap();
+    assert_eq!(server.subscriptions(), vec!["market://ETH-USDC/summary".to_string()]);
     let p = server
         .handle_message(req(8, "prompts/get", json!({ "name": "trading_assistant" })))
         .await
@@ -626,6 +666,21 @@ async fn streamable_http_transport() {
         .unwrap();
     assert_eq!(t["result"]["structuredContent"]["symbol"], "ETH-USDC");
     assert_eq!(client.get(&url).send().await.unwrap().status(), 405);
+    let refused = client
+        .post(&url)
+        .json(&req(
+            9,
+            "resources/subscribe",
+            json!({ "uri": "market://ETH-USDC/summary" }),
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(refused["error"]["code"], -32602);
+    assert!(refused["error"]["message"].as_str().unwrap().contains("stdio"));
     assert_eq!(
         client
             .post(&url)

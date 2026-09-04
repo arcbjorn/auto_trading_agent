@@ -5,6 +5,8 @@
 //! * `GET /mcp` answers `405`: this server never opens a server-to-client stream, which the
 //!   specification allows.
 //! * No session id is issued, so clients never need to send one.
+//! * `resources/subscribe` is refused with an explanation: there is no stream to deliver
+//!   notifications on. The stdio transport delivers them.
 //! * The `Origin` header, when present, must be a loopback origin (DNS-rebinding protection for a
 //!   server meant to run locally), and an `MCP-Protocol-Version` header, when present, must name
 //!   a supported version.
@@ -80,6 +82,26 @@ async fn handle(req: Request<Incoming>, server: Arc<McpServer>) -> Result<Respon
         Ok(b) => b.to_bytes(),
         Err(_) => return Ok(text(StatusCode::PAYLOAD_TOO_LARGE, "body too large or unreadable")),
     };
+    // Stateless HTTP has no server-to-client stream, so a subscription could never be honoured:
+    // say so instead of accepting it silently.
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) {
+        if v["method"] == "resources/subscribe" {
+            let id = v.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            let err = crate::jsonrpc::failure(
+                id,
+                crate::jsonrpc::RpcError::invalid_params(
+                    "subscriptions need a server-to-client stream; this stateless HTTP transport has none, use stdio",
+                ),
+            );
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec(&err).expect("serialisable reply"),
+                )))
+                .expect("json response"));
+        }
+    }
     match server.handle_bytes(&body).await {
         Some(reply) => Ok(Response::builder()
             .status(StatusCode::OK)

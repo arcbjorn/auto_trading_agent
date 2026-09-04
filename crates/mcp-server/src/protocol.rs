@@ -2,8 +2,9 @@
 //! [`McpServer::handle_message`] and write back whatever it returns.
 //!
 //! Implemented: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`,
-//! `resources/templates/list`, `resources/read`, `prompts/list`, `prompts/get`, and
-//! `logging/setLevel` (accepted, no-op). Client notifications are consumed silently.
+//! `resources/templates/list`, `resources/read`, `resources/subscribe`, `resources/unsubscribe`,
+//! `prompts/list`, `prompts/get`, and `logging/setLevel` (accepted, no-op). Client notifications
+//! are consumed silently. Resource-updated notifications go out over stdio only.
 
 use crate::jsonrpc::{self, param, param_str, Request, RpcError, PARSE_ERROR, RESOURCE_NOT_FOUND};
 use crate::tools::ToolSet;
@@ -27,11 +28,52 @@ pub const PROMPT_NAME: &str = "trading_assistant";
 
 pub struct McpServer {
     tools: ToolSet,
+    /// Resource URIs a client subscribed to. Notifications need a server-to-client stream, which
+    /// only the stdio transport has; the HTTP transport refuses subscriptions up front.
+    subscriptions: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl McpServer {
     pub fn new(tools: ToolSet) -> Self {
-        Self { tools }
+        Self {
+            tools,
+            subscriptions: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+        }
+    }
+
+    /// The URIs a client asked to be told about, in a stable order.
+    pub fn subscriptions(&self) -> Vec<String> {
+        self.subscriptions
+            .lock()
+            .expect("subscriptions")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// `notifications/resources/updated` for every subscribed resource. The transport sends these
+    /// after engine events, coalesced so a burst of fills is one notification per resource.
+    pub fn updated_notifications(&self) -> Vec<Value> {
+        self.subscriptions()
+            .into_iter()
+            .map(|uri| json!({ "jsonrpc": "2.0", "method": "notifications/resources/updated", "params": { "uri": uri } }))
+            .collect()
+    }
+
+    fn subscribe(&self, params: &Value, on: bool) -> Result<Value, RpcError> {
+        let uri = param_str(params, "uri")?;
+        let known =
+            self.tools.resource_list().iter().any(|r| r["uri"] == uri) || uri.starts_with("market://ETH-USDC/book/");
+        if !known {
+            return Err(RpcError::new(RESOURCE_NOT_FOUND, "Resource not found").with_data(json!({ "uri": uri })));
+        }
+        let mut subs = self.subscriptions.lock().expect("subscriptions");
+        if on {
+            subs.insert(uri.to_string());
+        } else {
+            subs.remove(uri);
+        }
+        Ok(json!({}))
     }
 
     pub fn tools(&self) -> &ToolSet {
@@ -108,6 +150,8 @@ impl McpServer {
             "resources/list" => Ok(json!({ "resources": self.tools.resource_list() })),
             "resources/templates/list" => Ok(json!({ "resourceTemplates": self.tools.resource_templates() })),
             "resources/read" => self.resources_read(&params).await,
+            "resources/subscribe" => self.subscribe(&params, true),
+            "resources/unsubscribe" => self.subscribe(&params, false),
             "prompts/list" => Ok(json!({ "prompts": [prompt_definition()] })),
             "prompts/get" => self.prompts_get(&params),
             "logging/setLevel" => Ok(json!({})),
@@ -130,7 +174,7 @@ impl McpServer {
             "protocolVersion": version,
             "capabilities": {
                 "tools": { "listChanged": false },
-                "resources": { "subscribe": false, "listChanged": false },
+                "resources": { "subscribe": true, "listChanged": false },
                 "prompts": { "listChanged": false }
             },
             "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },

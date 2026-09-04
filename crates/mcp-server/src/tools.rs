@@ -239,6 +239,11 @@ impl ToolSet {
         &self.account
     }
 
+    /// A gRPC client for the transport's event pump.
+    pub fn engine_client(&self) -> EngineClient<Channel> {
+        self.engine.clone()
+    }
+
     /// Tool definitions as the model sees them. Descriptions say when to call, not only what.
     pub fn definitions(&self) -> Vec<Value> {
         let read_only =
