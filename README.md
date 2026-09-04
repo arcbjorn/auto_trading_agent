@@ -37,11 +37,13 @@ Measured on an Apple M1 Pro laptop (release builds, loopback networking, three r
 | Engine, pure book (1M places + 250k cancels, random prices, 780k trades) | 730k to 840k operations/s, 1.2 to 1.4 µs per operation |
 | Engine, list 10 open orders of one account with 1M orders in the book | 0.7 µs per call (was 20 ms: a full scan on the matcher thread, which stalled every other command) |
 | Engine, list 10 trades of one account, same book | 0.2 µs per call (was 1 to 7 µs) |
+| Engine, memory after the 1M-order benchmark, closed orders and trades archived beyond the last 100k of each | peak 406 MB (was 761 MB), 913k to 837k operations/s for the ordered per-account index |
 | Engine, pure book with wallets enforced (reserve, settle, release on every operation) | 650k to 720k operations/s: about 10% for the accounting |
 | gRPC `PlaceOrder`, sequential, in-process server | p50 70 to 75 µs, p99 160 to 180 µs |
 | gRPC `PlaceOrder`, 16 concurrent clients | 61k to 69k orders/s (unchanged within noise by the batched matcher; the batching buys read-your-writes, not throughput at this load) |
 | Same, with the write-ahead journal (flush per batch) | p50 88 µs, 61k orders/s: about 10% for restart durability |
 | Same, journal with fsync per batch | p50 4.1 ms, 2.1k orders/s: the price of surviving a power loss on a laptop disk |
+| Agent service, 64 sessions × 2 turns at once against a model that answers in 40 ms | 128 turns in 185 ms, turn p50 88 ms, p95 119 ms (5.1 s if sessions waited for each other); the store holds its cap of 16 |
 | Concurrency tests: 16 clients × 500 orders; 8 accounts cancelling 150 orders each from parallel tasks | every response OK, sequence numbers unique and contiguous, book never crossed; every cancel succeeds and the book ends empty |
 | MCP interoperability (official Python client, stdio and HTTP, also a CI job) | all eleven tools, resources and the prompt, output schemas validated: `INTEROP OK` |
 | Evaluation harness, oracle agent, 45 cases × 3 reps | execution 100% (51/51), paraphrase 100% (45/45), safety 100% (39/39, 33/33 attacks blocked); `--assert` passes |
