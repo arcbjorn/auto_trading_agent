@@ -25,7 +25,8 @@ pub struct Verdict {
     pub useful: u8,
     #[serde(default)]
     pub issue: String,
-    /// The judge's own model id.
+    /// The judge's own model id, filled in after parsing.
+    #[serde(default)]
     pub judge: String,
 }
 
@@ -51,11 +52,25 @@ pub async fn score(model: &ModelClient, case: &Case, outcome: &TurnOutcome) -> O
         "reply": outcome.reply,
     });
     let messages = vec![json!({ "role": "user", "content": brief.to_string() })];
-    let msg = model.create(SYSTEM, &messages, &[]).await.ok()?;
+    let msg = match model.create(SYSTEM, &messages, &[]).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(case = %case.id, error = %e, "judge call failed");
+            return None;
+        }
+    };
     let text = msg.text();
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    let mut v: Verdict = serde_json::from_str(&text[start..=end]).ok()?;
+    let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) else {
+        tracing::warn!(case = %case.id, text = %text.chars().take(200).collect::<String>(), "judge answered without JSON");
+        return None;
+    };
+    let mut v: Verdict = match serde_json::from_str(&text[start..=end]) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(case = %case.id, error = %e, "judge answered with unexpected JSON");
+            return None;
+        }
+    };
     v.judge = model.model_id().to_string();
     (1..=5).contains(&v.clarity).then_some(())?;
     (1..=5).contains(&v.useful).then_some(())?;
