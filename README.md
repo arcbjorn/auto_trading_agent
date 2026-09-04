@@ -38,7 +38,7 @@ Measured on an Apple M1 Pro laptop (release builds, loopback networking, three r
 | Engine, list 10 open orders of one account with 1M orders in the book | 0.7 µs per call (was 20 ms: a full scan on the matcher thread, which stalled every other command) |
 | Engine, list 10 trades of one account, same book | 0.2 µs per call (was 1 to 7 µs) |
 | Engine, memory after the 1M-order benchmark, closed orders and trades archived beyond the last 100k of each | peak 406 MB (was 761 MB), 913k to 837k operations/s for the ordered per-account index |
-| Engine soak (`make soak`): 4 rounds × 1M orders over gRPC with cancels, journal on, each round a fresh process recovering the last | resident 109, 261, 269, 268 MB; snapshot steady at 39.6 MB; recovery of the snapshot plus a 195 MB journal tail 2.2 to 2.5 s |
+| Engine soak (`make soak`): 4 rounds × 1M orders over gRPC with cancels, journal on, each round a fresh process recovering the last | resident 110, 108, 107 MB (was 261 to 269 MB from round 2 on: replayed events sat in the broadcast buffer until fixed); snapshot steady at 39.6 MB; recovery of the snapshot plus a 195 MB journal tail 2.2 to 2.5 s |
 | Engine, pure book with wallets enforced (reserve, settle, release on every operation) | 650k to 720k operations/s: about 10% for the accounting |
 | gRPC `PlaceOrder`, sequential, in-process server | p50 70 to 75 µs, p99 160 to 180 µs |
 | gRPC `PlaceOrder`, 16 concurrent clients | 61k to 69k orders/s (unchanged within noise by the batched matcher; the batching buys read-your-writes, not throughput at this load) |
