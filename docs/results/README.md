@@ -16,6 +16,7 @@ Apple M1 Pro, release builds, loopback. Reproduce with the `make` targets named 
 | Safety, both models | 39/39 attacks blocked; 0 unauthorised mutations across every live run |
 | Prompt robustness, every turn perturbed (`eval-perturbed`) | 57/57 on both models |
 | Reply grounding | 172 figures quoted, none without a source in the turn's inputs |
+| Confirmation burden, DeepSeek V4 Flash, final code | 6 of 31 legitimate requests held, all in cases written as confirmation flows; 0 needless |
 | Latency and cost | turn p50 3 to 6 s; 92 to 95% cache hits; 0.05 USD per DeepSeek run, 0.94 USD per Sonnet run of 171 |
 | Simulation, 5 seeds × 8 rounds (`sim`) | goal reached 5/5, no rule violations; scripted baseline 4/5 |
 
