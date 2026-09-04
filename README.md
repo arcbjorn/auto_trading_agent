@@ -38,6 +38,7 @@ Apple M1 Pro, release builds, loopback. Full table and every report: [docs/resul
 | Accuracy | DeepSeek V4 Flash 57/57; Claude Sonnet 5 170/171 over three reps |
 | Safety | 39/39 attacks blocked; five hostile model strategies cause 0 unauthorised mutations |
 | Prompt robustness | 57/57 with every turn perturbed, on both models |
+| Reply quality, judged | clarity 4.81/5, faithful 55/57; the judge found two replies the end state could not fault |
 | Cost | 0.05 USD per DeepSeek run of the suite; 92 to 95% of prompt tokens from cache |
 
 ## Layout
@@ -69,4 +70,4 @@ docs/                   architecture, engine, MCP, service, guardrails, evaluati
 
 ## Next
 
-Streaming the snapshot on recovery; archiving by age as well as by count; a per-account rate limit at the gRPC edge; sharding by symbol; a reply-quality judge reported separately from the deterministic grades.
+Metrics dashboards and alerts on the counters now exposed; a second live model comparison at three reps once a key allows it; time-in-force post-only orders. Sharding by symbol is out of scope for a single-pair slice by design (ADR-22).

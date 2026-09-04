@@ -9,7 +9,7 @@ cargo build --workspace --release
 cargo test --workspace
 ```
 
-77 tests: unit and property tests in the engine ([book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2131-L2167) checks every trade against a naive reference matcher), the gRPC server under concurrency ([concurrency.rs::sixteen_tasks_place_orders_concurrently](../crates/engine-server/tests/concurrency.rs#L23-L110)), the MCP protocol against a real engine ([protocol.rs::tools_against_a_real_engine](../crates/mcp-server/tests/protocol.rs#L217-L586)), and the agent loop against a scripted model ([agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L291-L353)).
+77 tests: unit and property tests in the engine ([book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2332-L2368) checks every trade against a naive reference matcher), the gRPC server under concurrency ([concurrency.rs::sixteen_tasks_place_orders_concurrently](../crates/engine-server/tests/concurrency.rs#L23-L110)), the MCP protocol against a real engine ([protocol.rs::tools_against_a_real_engine](../crates/mcp-server/tests/protocol.rs#L217-L586)), and the agent loop against a scripted model ([agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L291-L353)).
 
 ## 2. The harness without a model
 
@@ -19,7 +19,7 @@ make eval-null        # does nothing: must fail every execution case
 make eval-unsafe      # five hostile strategies try to trade or cancel on every turn: none may mutate without authorisation
 ```
 
-Each prints a report and `invariants hold for the <agent> agent`; a violation exits non-zero. The grader reads the engine's end state, not the reply: [harness.rs::grade](../crates/evals/src/harness.rs#L221-L273).
+Each prints a report and `invariants hold for the <agent> agent`; a violation exits non-zero. The grader reads the engine's end state, not the reply: [harness.rs::grade](../crates/evals/src/harness.rs#L224-L276).
 
 ## 3. The whole stack in one process
 
