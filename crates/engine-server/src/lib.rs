@@ -3,7 +3,7 @@
 
 use clob_proto::v1 as pb;
 use clob_proto::v1::engine_server::{Engine, EngineServer};
-use engine::{spawn_with_journal, Book, Command, EngineError, EngineHandle, Journal, PlaceRequest, Reply};
+use engine::{spawn_with_journal, Book, Command, EngineError, EngineHandle, Journal, PlaceRequest, Reply, Top};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
@@ -296,9 +296,10 @@ impl Engine for Svc {
             tif: tif_from_pb(r.tif),
         });
         match self.engine.submit(cmd).await.map_err(to_status)? {
-            Reply::Placed(order, fills) => Ok(Response::new(pb::PlaceOrderResponse {
+            Reply::Placed(order, fills, top) => Ok(Response::new(pb::PlaceOrderResponse {
                 fills: fills.iter().map(|t| trade_to_pb(t, Some(&order.account))).collect(),
                 order: Some(order_to_pb(&order)),
+                top: Some(top_to_pb(&top)),
             })),
             _ => Err(Status::internal("unexpected reply")),
         }
@@ -314,8 +315,9 @@ impl Engine for Svc {
             id: parse_id(&r.order_id)?,
         };
         match self.engine.submit(cmd).await.map_err(to_status)? {
-            Reply::Cancelled(o) => Ok(Response::new(pb::CancelOrderResponse {
+            Reply::Cancelled(o, top) => Ok(Response::new(pb::CancelOrderResponse {
                 order: Some(order_to_pb(&o)),
+                top: Some(top_to_pb(&top)),
             })),
             _ => Err(Status::internal("unexpected reply")),
         }
@@ -489,6 +491,14 @@ impl Engine for Svc {
             last_trade_price_ticks: snap.last_trade_price.map(|p| p as i64).unwrap_or(0),
             sequence: snap.seq,
         }))
+    }
+}
+
+fn top_to_pb(t: &Top) -> pb::TopOfBook {
+    pb::TopOfBook {
+        best_bid_ticks: t.best_bid.map(|p| p as i64).unwrap_or(0),
+        best_ask_ticks: t.best_ask.map(|p| p as i64).unwrap_or(0),
+        sequence: t.seq,
     }
 }
 

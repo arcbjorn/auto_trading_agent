@@ -55,9 +55,28 @@ pub enum Command {
     },
 }
 
+/// The best prices right after a command was applied, returned with the reply so a caller need
+/// not read the book again to report the market after its own action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Top {
+    pub best_bid: Option<Price>,
+    pub best_ask: Option<Price>,
+    pub seq: Seq,
+}
+
+impl Top {
+    pub fn of(book: &Book) -> Self {
+        Self {
+            best_bid: book.best_bid(),
+            best_ask: book.best_ask(),
+            seq: book.seq(),
+        }
+    }
+}
+
 pub enum Reply {
-    Placed(Order, Vec<Trade>),
-    Cancelled(Order),
+    Placed(Order, Vec<Trade>, Top),
+    Cancelled(Order, Top),
     Order(Order),
     Orders(Vec<Order>),
     Trades(Vec<Trade>),
@@ -123,8 +142,14 @@ fn apply(book: &mut Book, journal: &mut Option<Journal>, cmd: Command, now: i64)
         }
     }
     match cmd {
-        Command::Place(req) => book.place(req, now).map(|(o, f)| Reply::Placed(o, f)),
-        Command::Cancel { account, id } => book.cancel(&account, id).map(Reply::Cancelled),
+        Command::Place(req) => {
+            let (o, f) = book.place(req, now)?;
+            Ok(Reply::Placed(o, f, Top::of(book)))
+        }
+        Command::Cancel { account, id } => {
+            let o = book.cancel(&account, id)?;
+            Ok(Reply::Cancelled(o, Top::of(book)))
+        }
         Command::Get { account, id } => match book.order(id) {
             Some(o) if *o.account == *account => Ok(Reply::Order(o.clone())),
             Some(_) => Err(EngineError::Forbidden(id)),

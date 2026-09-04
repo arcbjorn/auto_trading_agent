@@ -66,9 +66,18 @@ message PlaceOrderRequest {
   TimeInForce tif = 6;
 }
 
+// The best prices right after a command was applied, so a caller that only needs to report
+// the market after its own action need not read again. 0 = that side is empty.
+message TopOfBook {
+  int64 best_bid_ticks = 1;
+  int64 best_ask_ticks = 2;
+  uint64 sequence = 3;
+}
+
 message PlaceOrderResponse {
   Order order = 1;
   repeated Trade fills = 2;
+  TopOfBook top = 3;
 }
 
 message CancelOrderRequest {
@@ -78,6 +87,7 @@ message CancelOrderRequest {
 
 message CancelOrderResponse {
   Order order = 1;
+  TopOfBook top = 2;
 }
 
 message GetOrderRequest {
