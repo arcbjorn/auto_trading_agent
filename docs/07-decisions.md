@@ -78,6 +78,10 @@ The model runs a real tool loop: it reads tool results and decides the next call
 
 Each audit line carries the hash of the previous line, the service verifies the chain at startup, and an action tool call is refused if its pre-action record cannot be written. A plain append-only file is enough for debugging but proves nothing after the fact and can miss the one action that mattered, the one during which the process died. The cost is one `fsync` per action and per turn, negligible next to a model call. One log belongs to one process; two processes appending to one file would interleave two chains, which the harness learnt by running cases in parallel with one file each. Idea adopted from a sibling implementation.
 
+## ADR-21 A confirmation in words carries the previous request
+
+Claude Sonnet 5 often asks the user to confirm a large order in its own words before calling the tool. Nothing is then pending in the gate, and the user's "yes" arrived as a turn with no trade words, was held, and the model asked again. Two fixes were possible: trust the model's proposal text as the confirmed order, or let the confirmation stand for the previous user message. The first would let a model propose something other than what the user asked and have a "yes" authorise it. The second keeps the user's own figures as the reference: the previous message grants the permission and pins price and quantity, and only an order matching them proceeds. A derived quantity with two stated figures still goes through the token flow, which costs an ask-first model one extra turn on one case; the prompt now tells the model to call the tool first so the service produces the exact summary.
+
 ## ADR-18 No Docker in this slice
 
 Every component is a cargo binary with environment-variable configuration; the runbook has the three commands. A compose file would add an untested surface without changing the design.

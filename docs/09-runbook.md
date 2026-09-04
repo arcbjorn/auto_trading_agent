@@ -53,6 +53,7 @@ The book starts empty and unfunded. `make run-engine` funds the demo account (50
 | | `ENGINE_JOURNAL_COMPACT_MB` | `64`; on start, a journal larger than this is folded into `<journal>.snapshot` and emptied; `0` never |
 | | `ENGINE_BALANCES` | `1`; `0` runs without wallet checks |
 | | `ENGINE_FUND` | unset; `demo:50000:10,mm:1000000:1000` credits accounts (whole USDC and ETH) on an empty book |
+| any | `.env` in the repository root | git-ignored; `make` loads it, or `set -a; source .env; set +a` |
 | mcp-server | `ENGINE_ADDR` | `http://127.0.0.1:50051` |
 | | `ACCOUNT_ID` | `demo` |
 | | `MCP_BIND` (with `--http`) | `127.0.0.1:8000` |

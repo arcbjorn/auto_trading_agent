@@ -66,6 +66,19 @@ cargo run -p evals -- report                              # re-render reports fr
 
 Outputs land in `evals/out/`: `results-<agent>.jsonl`, `errors-<agent>.jsonl`, `report-<agent>.md`, `sim-<agent>.md`, and `audit.jsonl` for model runs.
 
+### A second model
+
+Every live number was DeepSeek V4 Flash until a Claude Sonnet 5 key arrived, and the first Sonnet run answered the question a single model cannot: the suite discriminates. Sonnet scored 91% on execution and 96% on paraphrase at first, with four cases failing repeatedly, and every failure taught something:
+
+* Sonnet asks for confirmation of a large order in its own words before calling the tool. Nothing was then pending in the gate, the user's "yes" was held as a turn without intent, and the model asked again. DeepSeek always called the tool first and never showed this. The gate now lets a bare confirmation stand for the previous request (ADR-21); with it those cases pass three of three.
+* "Cancel that order" with one open order: Sonnet asked "Shall I cancel it?". A prompt rule now says one open order is unambiguous.
+* One reply omitted the quantity the case expects mentioned. A legitimate miss, left as is.
+* The perturbation suite altered "annule" because the gate's vocabulary was English-only. French, Spanish, German, Italian and Portuguese verbs are now listed, which also removes a needless confirmation turn for those requests.
+
+Results (`docs/results/report-model-claude-sonnet-5*.md`): the three suites at three reps, 170 of 171 with the one miss a model re-asking after a "yes"; 0 unauthorised mutations in 78 runs; tool calls per turn 1.62, 1.26, 1.36; turn p50 4.7 to 5.7 s; 95% of prompt tokens from cache; 0.94 USD. That run predates the last change of the round (the multilingual vocabulary and the notional guard); the perturbed suite ran after it and passed 57 of 57 for 0.32 USD, and a final three-rep rerun was cut short by the key's credit limit after 28 runs, all passing. DeepSeek V4 Flash on the final code: 57 of 57, 0.05 USD.
+
+The comparison itself: on this suite Sonnet 5 and DeepSeek V4 Flash reach the same accuracy once the gate handles both confirmation styles, Sonnet makes fewer tool calls per turn (1.3 to 1.6 against 1.3 to 1.9), both take 4 to 6 seconds a turn at p50, and Sonnet costs about twenty times more per run at list prices.
+
 ### Perturbed prompts
 
 `--perturb casing|noise|typos|all` rewrites every turn before it is sent, seeded by case, turn and rep, so a run is reproducible and reps differ: `casing` makes the text all upper case, all lower case or alternating; `noise` adds filler before and after ("hey, ", "ok so ", " thanks", "!!"), doubles a space and drops the full stop; `typos` swaps two adjacent letters in about a third of the ordinary words (five letters or more, letters only); `all` applies the three in turn. Numbers are never touched, and neither are the words the service's gate looks for (trade and cancel verbs, sides, the asset, confirmations), so the measurement is the model's reading of everything else rather than the gate's vocabulary; `turns_sent` in the results shows exactly what went to the model. The hand-written paraphrase suite covers rewordings a person would choose; this covers the ones they would not notice they had typed.

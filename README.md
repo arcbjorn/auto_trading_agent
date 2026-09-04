@@ -13,7 +13,8 @@ Infrastructure for autonomous AI agents trading on a market, in Rust. Four parts
 
 ```
 cargo build --workspace --release
-cargo test --workspace                                  # 74 tests: unit, property, concurrency, protocol, HTTP, agent loop
+cargo test --workspace                                  # 77 tests: unit, property, concurrency, protocol, HTTP, agent loop
+cp .env.example .env                                    # then put ANTHROPIC_API_KEY or DEEPSEEK_API_KEY in it; make loads it
 cargo run -p evals -- run --agent oracle --assert       # validates the harness without a model
 cargo run --release -p engine-server                    # gRPC on 0.0.0.0:50051
 cargo run --release -p mcp-server -- --http             # MCP on 127.0.0.1:8000/mcp (no flag: stdio)
@@ -47,10 +48,12 @@ Apple M1 Pro, release builds, loopback. Reproduce with `make bench`, `make soak`
 | All 57 cases with every turn perturbed (typos, filler, casing) | 57/57 |
 | Tool calls per turn with the post-action book in results, DeepSeek V4 Flash, 57 cases | execution 2.00 to 1.83, paraphrase 2.00 to 1.47, safety unchanged; 57/57 |
 | Reply grounding, 57 cases | 172 figures quoted, none without a source in the turn's inputs |
-| DeepSeek V4 Flash after the two-figure gate rule, 57 cases | 57/57; tool calls per turn 1.91, 1.74, 2.00; no unsupported figures |
+| DeepSeek V4 Flash, final gate, 57 cases | 57/57; tool calls per turn 1.70, 1.32, 1.93; no unsupported figures; 0.05 USD |
+| Claude Sonnet 5, 57 cases × 3 reps | execution 98.6% (68/69), paraphrase 100% (57/57), safety 100% (45/45, 39/39 attacks blocked); 0 unauthorised mutations; tool calls per turn 1.62, 1.26, 1.36; turn p50 4.7 to 5.7 s; 95% cache hits; 0.94 USD. The first Sonnet run scored 91% on execution and exposed a gate gap (a confirmation given in words) that is now fixed |
+| Claude Sonnet 5, all 57 cases perturbed | 57/57; 0.32 USD |
 | Market simulation, 5 seeds × 8 rounds | goal reached 5/5, no rule violations; scripted baseline 4/5 |
 
-Reports and a full demo transcript are under [docs/results](docs/results). Claude runs are pending an Anthropic key; the harness, pricing and request shape are ready (`make eval-model`), and the Claude request path is covered by the mock-model tests and the live run above.
+Reports and a full demo transcript are under [docs/results](docs/results). Both providers have been run live; see [06 Evaluation](docs/06-evaluation.md) for what the second model taught.
 
 ## Layout
 
@@ -77,7 +80,7 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 * **A prompt that never rewrites itself.** The system prompt and name-sorted tool list are fixed and cached; the turn's permissions travel as a note after the user's message and are enforced when a tool is called.
 * **Two providers, one loop.** History is kept as Messages API blocks; the DeepSeek client translates at the edge, replays reasoning content, and maps cache accounting onto the same usage fields.
 * **The book travels with the action.** Placement and cancel results carry the best bid and ask afterwards, so the model reports the market without another call: tool calls per turn fell from 2.00 to 1.83 and 1.47 on the execution and paraphrase suites.
-* **Guardrails as code.** Policy in the MCP server (size, value, collar, open orders, rate, session cap, kill switch); permission, confirmation, a rule that two stated figures pin the order, verifier and reply grounding in the service. Every call to the engine has a deadline; the service refuses to start against a server whose tool catalog differs from the eleven it expects. Details in [05 Guardrails](docs/05-guardrails.md).
+* **Guardrails as code.** Policy in the MCP server (size, value, collar, open orders, rate, session cap, kill switch); permission from the user's own words in six languages, confirmation, a rule that two stated figures pin the order, a confirmation in words that carries the previous request, verifier and reply grounding in the service. Every call to the engine has a deadline; the service refuses to start against a server whose tool catalog differs from the eleven it expects. Details in [05 Guardrails](docs/05-guardrails.md).
 * **An audit log that fails closed.** Hash-chained JSON lines, verified at startup; a pre-action record is flushed before every action tool call, and the call is refused if it cannot be written. A hostile scripted model runs the whole suite in CI and must cause no unauthorised mutation.
 * **Few dependencies.** tokio, hyper, tonic, prost, serde, reqwest, arc-swap, tracing. No MCP SDK, web framework, decimal or RNG crate. Rationale in [08 Dependencies](docs/08-dependencies.md).
 
@@ -87,4 +90,4 @@ docs/                         architecture, engine, MCP, agent service, guardrai
 
 ## Next
 
-Run the Claude suites once a key is available. Then: a per-account rate limit at the gRPC edge, streaming the snapshot on recovery, archiving by age as well as by count, sharding by symbol.
+A confirmation-burden metric (how often a legitimate order needed a confirmation turn, per model); more hostile strategies for the unsafe runner (cancel everything, replay a token, ask first then swap); exposure limits inside the matcher; a client-streaming placement RPC for throughput; a token budget per session; metrics endpoints; a per-account rate limit at the gRPC edge; streaming the snapshot on recovery; archiving by age as well as by count; sharding by symbol.
