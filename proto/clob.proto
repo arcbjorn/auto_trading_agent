@@ -13,6 +13,10 @@ service Engine {
   // `client_order_id` is an idempotency key: repeating a request with the same key and the
   // same parameters returns the original reply and never creates a second order.
   rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+  // The same, pipelined: a client streams requests and receives one result per request, in
+  // request order, without waiting for each round trip. A rejected request is a result carrying
+  // an error, not the end of the stream. This is the path for a client placing many orders.
+  rpc PlaceOrders(stream PlaceOrderRequest) returns (stream PlaceOrderResult);
   rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
   rpc GetOrder(GetOrderRequest) returns (Order);
   rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse);
@@ -78,6 +82,12 @@ message PlaceOrderResponse {
   Order order = 1;
   repeated Trade fills = 2;
   TopOfBook top = 3;
+}
+
+message PlaceOrderResult {
+  PlaceOrderResponse placed = 1; // set when the request succeeded
+  string error_code = 2;         // gRPC status code name when it did not, e.g. INVALID_ARGUMENT
+  string error_message = 3;
 }
 
 message CancelOrderRequest {

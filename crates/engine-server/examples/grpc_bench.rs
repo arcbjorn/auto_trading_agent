@@ -90,6 +90,59 @@ async fn main() -> anyhow::Result<()> {
         "{clients} concurrent clients x {per} orders: {:.0} orders/s",
         (clients * per) as f64 / el
     );
+    // Pipelined placement: one stream, then four, each sending without waiting for replies.
+    for streams in [1u64, 4] {
+        let per = 50_000u64;
+        let t0 = Instant::now();
+        let mut tasks = Vec::new();
+        for t in 0..streams {
+            let url = url.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut c = EngineClient::connect(url).await.unwrap();
+                let (tx, rx) = tokio::sync::mpsc::channel(1024);
+                let producer = tokio::spawn(async move {
+                    for i in 0..per {
+                        let req = PlaceOrderRequest {
+                            account_id: if t % 2 == 0 { format!("b{t}") } else { format!("s{t}") },
+                            client_order_id: format!("st{t}-{i}"),
+                            side: if t % 2 == 0 { Side::Buy } else { Side::Sell } as i32,
+                            price_ticks: 300_000 + ((t + i) % 50) as i64,
+                            quantity_lots: 100,
+                            tif: TimeInForce::Gtc as i32,
+                        };
+                        if tx.send(req).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                let mut replies = c
+                    .place_orders(tokio_stream::wrappers::ReceiverStream::new(rx))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                let mut n = 0u64;
+                let mut errors = 0u64;
+                while let Ok(Some(r)) = replies.message().await {
+                    n += 1;
+                    if r.placed.is_none() {
+                        errors += 1;
+                    }
+                }
+                producer.await.unwrap();
+                assert_eq!(n, per, "one result per request, in order");
+                errors
+            }));
+        }
+        let mut errors = 0;
+        for t in tasks {
+            errors += t.await?;
+        }
+        let el = t0.elapsed().as_secs_f64();
+        println!(
+            "{streams} pipelined stream(s) x {per} orders: {:.0} orders/s ({errors} refused)",
+            (streams * per) as f64 / el
+        );
+    }
     handle.shutdown().await;
     Ok(())
 }

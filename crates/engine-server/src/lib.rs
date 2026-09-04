@@ -286,28 +286,62 @@ impl Engine for Svc {
         &self,
         req: Request<pb::PlaceOrderRequest>,
     ) -> Result<Response<pb::PlaceOrderResponse>, Status> {
-        let r = req.into_inner();
-        if r.price_ticks <= 0 || r.quantity_lots <= 0 {
-            return Err(Status::invalid_argument(
-                "price_ticks and quantity_lots must be positive",
-            ));
-        }
-        let cmd = Command::Place(PlaceRequest {
-            account: r.account_id,
-            client_order_id: r.client_order_id,
-            side: side_from_pb(r.side)?,
-            price: r.price_ticks as u64,
-            qty: r.quantity_lots as u64,
-            tif: tif_from_pb(r.tif),
+        let cmd = place_command(req.into_inner())?;
+        placed_to_pb(self.engine.submit(cmd).await.map_err(to_status)?).map(Response::new)
+    }
+
+    type PlaceOrdersStream = ReceiverStream<Result<pb::PlaceOrderResult, Status>>;
+
+    /// Pipelined placement: requests are queued as they arrive, replies are sent in request
+    /// order as the matcher produces them. Neither task waits for the other, so one stream can
+    /// keep the matcher busy where unary calls spend most of their time on the wire.
+    async fn place_orders(
+        &self,
+        req: Request<tonic::Streaming<pb::PlaceOrderRequest>>,
+    ) -> Result<Response<Self::PlaceOrdersStream>, Status> {
+        let mut inbound = req.into_inner();
+        let engine = self.engine.clone();
+        // Pending replies in request order; bounded so a slow reader slows the writer.
+        let (pending_tx, mut pending_rx) =
+            tokio::sync::mpsc::channel::<Result<oneshot::Receiver<Result<Reply, EngineError>>, Status>>(1024);
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel(1024);
+        tokio::spawn(async move {
+            while let Ok(Some(r)) = inbound.message().await {
+                let queued = match place_command(r) {
+                    Ok(cmd) => engine.enqueue(cmd).await.map_err(to_status),
+                    Err(status) => Err(status),
+                };
+                if pending_tx.send(queued).await.is_err() {
+                    break;
+                }
+            }
         });
-        match self.engine.submit(cmd).await.map_err(to_status)? {
-            Reply::Placed(order, fills, top) => Ok(Response::new(pb::PlaceOrderResponse {
-                fills: fills.iter().map(|t| trade_to_pb(t, Some(&order.account))).collect(),
-                order: Some(order_to_pb(&order)),
-                top: Some(top_to_pb(&top)),
-            })),
-            _ => Err(Status::internal("unexpected reply")),
-        }
+        tokio::spawn(async move {
+            while let Some(queued) = pending_rx.recv().await {
+                let outcome = match queued {
+                    Ok(rx) => match rx.await {
+                        Ok(reply) => reply.map_err(to_status).and_then(placed_to_pb),
+                        Err(_) => Err(to_status(EngineError::Shutdown)),
+                    },
+                    Err(status) => Err(status),
+                };
+                let result = match outcome {
+                    Ok(placed) => pb::PlaceOrderResult {
+                        placed: Some(placed),
+                        ..Default::default()
+                    },
+                    Err(status) => pb::PlaceOrderResult {
+                        placed: None,
+                        error_code: format!("{:?}", status.code()).to_uppercase(),
+                        error_message: status.message().to_string(),
+                    },
+                };
+                if out_tx.send(Ok(result)).await.is_err() {
+                    break; // the client hung up
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(out_rx)))
     }
 
     async fn cancel_order(
@@ -496,6 +530,34 @@ impl Engine for Svc {
             last_trade_price_ticks: snap.last_trade_price.map(|p| p as i64).unwrap_or(0),
             sequence: snap.seq,
         }))
+    }
+}
+
+/// The wire request as a matcher command, or the status that refuses it.
+fn place_command(r: pb::PlaceOrderRequest) -> Result<Command, Status> {
+    if r.price_ticks <= 0 || r.quantity_lots <= 0 {
+        return Err(Status::invalid_argument(
+            "price_ticks and quantity_lots must be positive",
+        ));
+    }
+    Ok(Command::Place(PlaceRequest {
+        account: r.account_id,
+        client_order_id: r.client_order_id,
+        side: side_from_pb(r.side)?,
+        price: r.price_ticks as u64,
+        qty: r.quantity_lots as u64,
+        tif: tif_from_pb(r.tif),
+    }))
+}
+
+fn placed_to_pb(reply: Reply) -> Result<pb::PlaceOrderResponse, Status> {
+    match reply {
+        Reply::Placed(order, fills, top) => Ok(pb::PlaceOrderResponse {
+            fills: fills.iter().map(|t| trade_to_pb(t, Some(&order.account))).collect(),
+            order: Some(order_to_pb(&order)),
+            top: Some(top_to_pb(&top)),
+        }),
+        _ => Err(Status::internal("unexpected reply")),
     }
 }
 

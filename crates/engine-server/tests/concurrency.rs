@@ -113,6 +113,66 @@ async fn sixteen_tasks_place_orders_concurrently() {
 /// orders from parallel tasks while the others are still placing. Every cancel must succeed
 /// (nothing crosses, so nothing fills) and the book must end empty: the lazily dropped cancelled
 /// ids and the per-level totals stay consistent under interleaving.
+#[tokio::test]
+async fn a_pipelined_stream_answers_every_request_in_order() {
+    let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), EngineConfig::default())
+        .await
+        .unwrap();
+    let url = format!("http://{addr}");
+    let mut funder = EngineClient::connect(url.clone()).await.unwrap();
+    fund(&mut funder, "streamer").await;
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let producer = tokio::spawn(async move {
+        for i in 0..300u64 {
+            // Every fiftieth request is invalid, every seventieth is from an unfunded account:
+            // each must come back as a result with an error, not end the stream.
+            let (account, qty) = match i {
+                i if i % 50 == 49 => ("streamer", 0),
+                i if i % 70 == 69 => ("nobody", 100),
+                _ => ("streamer", 100),
+            };
+            tx.send(PlaceOrderRequest {
+                account_id: account.into(),
+                client_order_id: format!("s-{i}"),
+                side: Side::Buy as i32,
+                price_ticks: 299_000 - (i % 20) as i64,
+                quantity_lots: qty,
+                tif: TimeInForce::Gtc as i32,
+            })
+            .await
+            .unwrap();
+        }
+    });
+    let mut client = EngineClient::connect(url).await.unwrap();
+    let mut results = client
+        .place_orders(tokio_stream::wrappers::ReceiverStream::new(rx))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut seen = Vec::new();
+    while let Some(r) = results.message().await.unwrap() {
+        seen.push(r);
+    }
+    producer.await.unwrap();
+    assert_eq!(seen.len(), 300, "one result per request");
+    for (i, r) in seen.iter().enumerate() {
+        match i as u64 {
+            i if i % 50 == 49 => assert_eq!(r.error_code, "INVALIDARGUMENT", "request {i}: {}", r.error_message),
+            i if i % 70 == 69 => assert_eq!(r.error_code, "FAILEDPRECONDITION", "request {i}: {}", r.error_message),
+            _ => {
+                let placed = r.placed.as_ref().expect("placed");
+                assert_eq!(
+                    placed.order.as_ref().unwrap().client_order_id,
+                    format!("s-{i}"),
+                    "results arrive in request order"
+                );
+            }
+        }
+    }
+    drop(results);
+    handle.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancels_race_placements_and_leave_the_book_empty() {
     let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), EngineConfig::default())

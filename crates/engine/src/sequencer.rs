@@ -257,6 +257,19 @@ impl EngineHandle {
         rx.await.map_err(|_| EngineError::Shutdown)?
     }
 
+    /// Queues a command and returns the reply channel without waiting for it, so a caller can
+    /// pipeline many commands and collect the replies in order. Waits for queue room instead of
+    /// failing with `Busy`: this is the path for a stream of orders, where backpressure is the
+    /// right answer and a dropped order is not.
+    pub async fn enqueue(&self, cmd: Command) -> Result<oneshot::Receiver<Result<Reply, EngineError>>, EngineError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Envelope { cmd, reply: tx })
+            .await
+            .map_err(|_| EngineError::Shutdown)?;
+        Ok(rx)
+    }
+
     /// Number of commands that can still be queued before `submit` answers `Busy`.
     pub fn free_capacity(&self) -> usize {
         self.tx.capacity()
