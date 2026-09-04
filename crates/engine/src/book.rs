@@ -1742,6 +1742,152 @@ mod tests {
         }
     }
 
+    /// A deliberately naive matcher: resting orders in a vector, best price then lowest id chosen
+    /// by a scan on every fill. Slow and obviously right, so the book can be checked against it.
+    #[derive(Default)]
+    struct Reference {
+        resting: Vec<(OrderId, String, Side, Price, Qty)>,
+        trades: Vec<(OrderId, OrderId, Price, Qty)>,
+        next_id: OrderId,
+    }
+
+    impl Reference {
+        fn best_opposite(&self, side: Side, limit: Price) -> Option<usize> {
+            let mut best: Option<usize> = None;
+            for (i, (id, _, s, px, _)) in self.resting.iter().enumerate() {
+                if *s == side {
+                    continue;
+                }
+                let crosses = match side {
+                    Side::Buy => *px <= limit,
+                    Side::Sell => *px >= limit,
+                };
+                if !crosses {
+                    continue;
+                }
+                best = match best {
+                    None => Some(i),
+                    Some(j) => {
+                        let (jid, _, _, jpx, _) = &self.resting[j];
+                        let better = match side {
+                            Side::Buy => px < jpx || (px == jpx && id < jid),
+                            Side::Sell => px > jpx || (px == jpx && id < jid),
+                        };
+                        Some(if better { i } else { j })
+                    }
+                };
+            }
+            best
+        }
+
+        /// Quantity that could fill before the walk reaches one of the account's own orders.
+        fn available(&self, account: &str, side: Side, limit: Price) -> Qty {
+            let mut candidates: Vec<&(OrderId, String, Side, Price, Qty)> = self
+                .resting
+                .iter()
+                .filter(|(_, _, s, px, _)| {
+                    *s != side
+                        && match side {
+                            Side::Buy => *px <= limit,
+                            Side::Sell => *px >= limit,
+                        }
+                })
+                .collect();
+            candidates.sort_by(|a, b| match side {
+                Side::Buy => a.3.cmp(&b.3).then(a.0.cmp(&b.0)),
+                Side::Sell => b.3.cmp(&a.3).then(a.0.cmp(&b.0)),
+            });
+            let mut got = 0;
+            for (_, acct, _, _, q) in candidates {
+                if acct == account {
+                    break;
+                }
+                got += q;
+            }
+            got
+        }
+
+        /// Returns (order id, remaining, rejected).
+        fn place(&mut self, account: &str, side: Side, price: Price, qty: Qty, tif: Tif) -> (OrderId, Qty, bool) {
+            self.next_id += 1;
+            let id = self.next_id;
+            if tif == Tif::Fok && self.available(account, side, price) < qty {
+                return (id, qty, true);
+            }
+            let mut remaining = qty;
+            while remaining > 0 {
+                let Some(i) = self.best_opposite(side, price) else {
+                    break;
+                };
+                if self.resting[i].1 == account {
+                    break; // self-trade prevention: the newest order stops here
+                }
+                let q = remaining.min(self.resting[i].4);
+                self.trades.push((self.resting[i].0, id, self.resting[i].3, q));
+                remaining -= q;
+                self.resting[i].4 -= q;
+                if self.resting[i].4 == 0 {
+                    self.resting.remove(i);
+                }
+            }
+            if remaining > 0 && tif == Tif::Gtc && self.available(account, side, price) == 0 {
+                // Rests only when nothing more could fill: the loop stopped at an own order or
+                // ran out of crossing orders. A stop at an own order cancels instead.
+                let own_ahead = self.best_opposite(side, price).is_some();
+                if !own_ahead {
+                    self.resting.push((id, account.to_string(), side, price, remaining));
+                }
+            }
+            (id, remaining, false)
+        }
+
+        fn cancel(&mut self, id: OrderId) {
+            self.resting.retain(|o| o.0 != id);
+        }
+    }
+
+    proptest::proptest! {
+        /// The book agrees with the naive reference on every trade (maker, taker, price,
+        /// quantity, in order) and on the resting orders after every operation.
+        #[test]
+        fn matches_the_naive_reference(
+            ops in proptest::collection::vec((0u8..2, 1u64..40, 1u64..500, 0u8..3), 1..300)
+        ) {
+            let mut b = Book::new();
+            let mut r = Reference::default();
+            for (i, (side, price, qty, tif)) in ops.iter().enumerate() {
+                let side = if *side == 0 { Side::Buy } else { Side::Sell };
+                let tif = match tif { 0 => Tif::Gtc, 1 => Tif::Ioc, _ => Tif::Fok };
+                let account = format!("{}{}", if side == Side::Buy { "b" } else { "s" }, i % 3);
+                let px = 299_000 + price * 10;
+                let (o, _) = b.place(req(&account, &i.to_string(), side, px, *qty, tif), 0).unwrap();
+                let (rid, remaining, rejected) = r.place(&account, side, px, *qty, tif);
+                proptest::prop_assert_eq!(o.id, rid);
+                proptest::prop_assert_eq!(o.status == Status::Rejected, rejected, "FOK decision differs at op {}", i);
+                proptest::prop_assert_eq!(o.remaining, remaining, "remaining differs at op {}", i);
+                if i % 7 == 3 {
+                    let victim = (i as u64 / 2).max(1);
+                    if let Some(v) = b.order(victim).cloned() {
+                        let _ = b.cancel(&v.account, victim);
+                        r.cancel(victim);
+                    }
+                }
+                let book_trades: Vec<(OrderId, OrderId, Price, Qty)> =
+                    b.trades(None, usize::MAX).iter().rev().map(|t| (t.maker, t.taker, t.price, t.qty)).collect();
+                proptest::prop_assert_eq!(&book_trades, &r.trades, "trades differ after op {}", i);
+                let mut resting: Vec<(OrderId, Qty)> = r.resting.iter().map(|o| (o.0, o.4)).collect();
+                resting.sort_unstable();
+                let mut live: Vec<(OrderId, Qty)> = ["b0", "b1", "b2", "s0", "s1", "s2"]
+                    .iter()
+                    .flat_map(|a| b.open_orders_for(a))
+                    .map(|o| (o.id, o.remaining))
+                    .collect();
+                live.sort_unstable();
+                proptest::prop_assert_eq!(live, resting, "resting orders differ after op {}", i);
+            }
+        }
+    }
+
     proptest::proptest! {
         #[test]
         fn invariants_hold_and_replay_is_identical(
