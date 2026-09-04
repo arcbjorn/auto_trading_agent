@@ -14,7 +14,7 @@
 //!   resting order; matching stops there and the remainder is cancelled.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 /// Price in ticks. 1 tick = 0.01 USDC per ETH.
@@ -28,6 +28,11 @@ pub type Seq = u64;
 /// Events kept in memory for inspection (tests, debugging). The journal is the history; the
 /// broadcast takes its events from a separate buffer that the sequencer drains every batch.
 pub const RECENT_EVENTS: usize = 100_000;
+
+/// Backstops that hold whatever the layers above do: no order may be priced above
+/// 1,000,000.00 USDC or be larger than 10,000 ETH.
+pub const MAX_PRICE: Price = 100_000_000;
+pub const MAX_QTY: Qty = 100_000_000;
 
 /// Closed orders kept in memory (lookups, listings, idempotent retries): when more have closed,
 /// the oldest closed order is archived. Live orders are always kept.
@@ -655,6 +660,110 @@ impl Book {
         self.fill_ids.remove(&id);
     }
 
+    /// Structural audit for tests and soaks, returning the first violation: every kept level
+    /// matches its queue, every live order rests exactly once on its own side and price, the
+    /// book is not crossed, statuses agree with quantities, the account index is exact,
+    /// reservations back the live orders when balances are enforced, retained trade ids are
+    /// contiguous, and every retention bound holds.
+    pub fn check_invariants(&self) -> Result<(), String> {
+        let mut resting: HashSet<OrderId> = HashSet::new();
+        for (name, side, levels) in [("bids", Side::Buy, &self.bids), ("asks", Side::Sell, &self.asks)] {
+            for (&price, level) in levels {
+                if level.total == 0 || level.live == 0 {
+                    return Err(format!("{name} level {price} is empty but kept"));
+                }
+                let (mut total, mut live) = (0, 0u32);
+                for id in &level.queue {
+                    // Lazily cancelled orders stay queued until reached; archived ones are gone.
+                    let Some(o) = self.orders.get(id) else { continue };
+                    if !o.status.is_live() {
+                        continue;
+                    }
+                    if o.side != side || o.price != price {
+                        return Err(format!("order {id} rests on the wrong side or price"));
+                    }
+                    if !resting.insert(*id) {
+                        return Err(format!("order {id} rests twice"));
+                    }
+                    total += o.remaining;
+                    live += 1;
+                }
+                if total != level.total || live != level.live {
+                    return Err(format!(
+                        "{name} level {price} says {} lots in {} orders but its queue holds {total} in {live}",
+                        level.total, level.live
+                    ));
+                }
+            }
+        }
+        if let (Some(b), Some(a)) = (self.best_bid(), self.best_ask()) {
+            if b >= a {
+                return Err(format!("crossed book: bid {b} >= ask {a}"));
+            }
+        }
+        let mut backing: HashMap<&Arc<str>, (u128, Qty)> = HashMap::new();
+        for o in self.orders.values() {
+            let consistent = match o.status {
+                Status::Open => o.remaining == o.qty,
+                Status::PartiallyFilled => o.remaining > 0 && o.remaining < o.qty,
+                Status::Filled => o.remaining == 0,
+                Status::Cancelled | Status::Rejected => o.remaining > 0,
+            };
+            if !consistent {
+                return Err(format!(
+                    "order {} is {:?} with {} of {} remaining",
+                    o.id, o.status, o.remaining, o.qty
+                ));
+            }
+            if o.status.is_live() != resting.contains(&o.id) {
+                return Err(format!(
+                    "order {} is live={} but resting={}",
+                    o.id,
+                    o.status.is_live(),
+                    !o.status.is_live()
+                ));
+            }
+            if !self.by_account.get(&o.account).is_some_and(|ids| ids.contains(&o.id)) {
+                return Err(format!("order {} is missing from its account index", o.id));
+            }
+            if o.status.is_live() {
+                let e = backing.entry(&o.account).or_default();
+                match o.side {
+                    Side::Buy => e.0 += o.price as u128 * o.remaining as u128,
+                    Side::Sell => e.1 += o.remaining,
+                }
+            }
+        }
+        for ids in self.by_account.values() {
+            if let Some(id) = ids.iter().find(|id| !self.orders.contains_key(id)) {
+                return Err(format!("the account index holds archived order {id}"));
+            }
+        }
+        if self.enforce_balances {
+            for (account, b) in &self.balances {
+                let (usdc, eth) = backing.get(account).copied().unwrap_or_default();
+                if b.usdc_reserved != usdc || b.eth_reserved != eth {
+                    return Err(format!(
+                        "{account} reserves {} micro-USDC and {} lots but its live orders need {usdc} and {eth}",
+                        b.usdc_reserved, b.eth_reserved
+                    ));
+                }
+            }
+        }
+        if let (Some(first), Some(last)) = (self.trades.front(), self.trades.back()) {
+            if last.id + 1 - first.id != self.trades.len() as u64 {
+                return Err("retained trade ids are not contiguous".into());
+            }
+        }
+        if self.events.len() > RECENT_EVENTS
+            || self.closed.len() > self.retention.closed_orders
+            || self.trades.len() > self.retention.trades
+        {
+            return Err("a retention bound is exceeded".into());
+        }
+        Ok(())
+    }
+
     /// A retained trade by id.
     pub fn trade(&self, id: TradeId) -> Option<&Trade> {
         let first = self.trades.front()?.id;
@@ -839,6 +948,11 @@ impl Book {
     pub fn place(&mut self, req: PlaceRequest, now_ns: i64) -> Result<(Order, Vec<Trade>), EngineError> {
         if req.price == 0 || req.qty == 0 {
             return Err(EngineError::Invalid("price and quantity must be positive".into()));
+        }
+        if req.price > MAX_PRICE || req.qty > MAX_QTY {
+            return Err(EngineError::Invalid(format!(
+                "price must be at most {MAX_PRICE} ticks and quantity at most {MAX_QTY} lots"
+            )));
         }
         if req.account.is_empty() {
             return Err(EngineError::Invalid("account_id is required".into()));
@@ -1422,6 +1536,23 @@ mod tests {
     }
 
     #[test]
+    fn hard_caps_reject_absurd_orders_before_anything_else() {
+        let mut b = Book::new();
+        assert!(matches!(
+            b.place(req("a", "p", Side::Buy, MAX_PRICE + 1, 1, Tif::Gtc), 0),
+            Err(EngineError::Invalid(_))
+        ));
+        assert!(matches!(
+            b.place(req("a", "q", Side::Sell, 1, MAX_QTY + 1, Tif::Gtc), 0),
+            Err(EngineError::Invalid(_))
+        ));
+        assert_eq!(b.seq(), 0, "a rejected request leaves no trace");
+        b.place(req("a", "ok", Side::Buy, MAX_PRICE, MAX_QTY, Tif::Gtc), 0)
+            .unwrap();
+        b.check_invariants().unwrap();
+    }
+
+    #[test]
     fn closed_history_is_bounded_and_live_orders_are_kept() {
         let keep = Retention {
             closed_orders: 20,
@@ -1444,6 +1575,7 @@ mod tests {
             assert_eq!(fills.len(), 1);
             pairs.push((bid.id, ask.id));
         }
+        b.check_invariants().unwrap();
         assert_eq!(b.retained_orders(), 21, "20 closed orders and the live c2");
         assert_eq!(b.retained_trades(), 5);
         assert!(b.order(c1.id).is_none(), "the cancelled order was archived");
@@ -1491,6 +1623,8 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(r.retained_orders(), b.retained_orders());
+        r.check_invariants().unwrap();
+        b.check_invariants().unwrap();
         assert_eq!(r.orders_for("t", |_| true, 100), b.orders_for("t", |_| true, 100));
         assert_eq!(r.trades(Some("m"), 100), b.trades(Some("m"), 100));
     }
@@ -1872,6 +2006,7 @@ mod tests {
                         r.cancel(victim);
                     }
                 }
+                proptest::prop_assert!(b.check_invariants().is_ok(), "{:?}", b.check_invariants());
                 let book_trades: Vec<(OrderId, OrderId, Price, Qty)> =
                     b.trades(None, usize::MAX).iter().rev().map(|t| (t.maker, t.taker, t.price, t.qty)).collect();
                 proptest::prop_assert_eq!(&book_trades, &r.trades, "trades differ after op {}", i);
@@ -1905,6 +2040,7 @@ mod tests {
                         let victim = (i as u64 / 2).max(1);
                         if let Some(o) = b.order(victim).cloned() { let _ = b.cancel(&o.account, victim); }
                     }
+                    proptest::prop_assert!(b.check_invariants().is_ok(), "{:?}", b.check_invariants());
                     if let (Some(bb), Some(ba)) = (b.best_bid(), b.best_ask()) {
                         proptest::prop_assert!(bb < ba, "crossed book: bid {bb} >= ask {ba}");
                     }
@@ -1958,6 +2094,7 @@ mod tests {
                     let victim = (i as u64 / 2).max(1);
                     if let Some(o) = b.order(victim).cloned() { let _ = b.cancel(&o.account, victim); }
                 }
+                proptest::prop_assert!(b.check_invariants().is_ok(), "{:?}", b.check_invariants());
                 let mut usdc = 0u128;
                 let mut eth = 0u64;
                 for (a, _, _) in funding {

@@ -324,6 +324,7 @@ mod tests {
         let _ = compacted.place(more, 60);
         let (recovered, replayed) = Journal::recover(&compact_path, false).unwrap();
         assert_eq!(replayed, 1, "only the tail after the snapshot is replayed");
+        recovered.check_invariants().unwrap();
         assert_eq!(recovered.snapshot(100), compacted.snapshot(100));
         assert_eq!(recovered.seq(), compacted.seq());
         assert_eq!(
