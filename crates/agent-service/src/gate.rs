@@ -148,10 +148,78 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
         .filter(|w| !w.is_empty())
 }
 
-fn has_word(text: &str, word: &str) -> bool {
+/// Words that turn an instruction into its opposite. A clause carrying one grants nothing: the
+/// gate fails safe, so "do not buy" asks rather than trades.
+const NEGATIONS: [&str; 15] = [
+    "not", "dont", "don", "doesnt", "doesn", "never", "no", "nope", "without", "avoid", "ne", "nicht", "sin", "nunca",
+    "pas",
+];
+
+/// Text split into clauses, since a negation binds to its own clause: in "sell 1 ETH, do not buy
+/// more", the sell stands and the buy does not.
+fn clauses(text: &str) -> impl Iterator<Item = &str> {
+    // A full stop between digits belongs to a number ("0.5 ETH"), not to a sentence.
+    let bytes = text.as_bytes();
+    let mut cuts: Vec<usize> = text
+        .char_indices()
+        .filter(|(i, c)| match c {
+            ';' | '!' | '?' | '\n' => true,
+            '.' => {
+                let before = bytes.get(i.wrapping_sub(1)).is_some_and(u8::is_ascii_digit);
+                let after = bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
+                !(before && after)
+            }
+            _ => false,
+        })
+        .map(|(i, _)| i)
+        .collect();
+    cuts.push(text.len());
+    let mut start = 0;
+    let mut parts = Vec::new();
+    for cut in cuts {
+        if cut >= start {
+            parts.push(&text[start..cut]);
+        }
+        start = (cut + 1).min(text.len());
+    }
+    parts
+        .into_iter()
+        .flat_map(|s| s.split(", "))
+        .filter(|s| !s.trim().is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+fn clause_is_negated(clause: &str) -> bool {
+    let lower = clause.to_lowercase();
+    NEGATIONS.iter().any(|n| {
+        words(&lower).any(|w| w.trim_matches(|c| c == '.' || c == ',') == *n) || (n.contains('\'') && lower.contains(n))
+    })
+}
+
+/// A question about what happened is not an instruction to do it.
+fn is_question(clause: &str) -> bool {
+    let lower = clause.trim().to_lowercase();
+    [
+        "what", "which", "why", "when", "who", "how", "did i", "was my", "were my",
+    ]
+    .iter()
+    .any(|q| lower.starts_with(q))
+}
+
+fn word_in(text: &str, word: &str) -> bool {
     let lower = text.to_lowercase();
     words(&lower).any(|w| w.trim_matches(|c| c == '.' || c == ',') == word)
         || (word.contains(' ') && lower.contains(word))
+}
+
+/// Whether the text carries `word` as an instruction: present in some clause that is neither
+/// negated nor a question. Used for every intent decision, so negation and interrogation fail
+/// safe everywhere at once.
+fn has_word(text: &str, word: &str) -> bool {
+    clauses(text)
+        .filter(|c| !clause_is_negated(c) && !is_question(c))
+        .any(|c| word_in(c, word))
 }
 
 /// Numbers in the text, normalised: "3,000.50" -> "3000.50", "3000." -> "3000".
@@ -184,7 +252,9 @@ pub fn intent_vocabulary() -> Vec<&'static str> {
 /// A trade verb, or the shape of an order: the asset plus at least two numbers ("0.5 ETH @ 3000").
 pub fn mentions_trade_intent(text: &str) -> bool {
     TRADE_VERBS.iter().any(|w| has_word(text, w))
-        || (ASSET_WORDS.iter().any(|w| has_word(text, w)) && numbers(text).len() >= 2)
+        || clauses(text)
+            .filter(|c| !clause_is_negated(c) && !is_question(c))
+            .any(|c| ASSET_WORDS.iter().any(|w| word_in(c, w)) && numbers(c).len() >= 2)
 }
 
 /// Whether the user's own words name the side of the order the model is placing.
@@ -195,6 +265,36 @@ pub fn side_quoted(text: &str, side: &str) -> bool {
         _ => return false,
     };
     words.iter().any(|w| has_word(text, w))
+}
+
+/// Order ids the user referred to as ids: a number right after "order", "id", "#" or their
+/// equivalents. A bare number is not an id, since "cancel the 2990 bid" names a price and
+/// "cancel half" names a quantity; those leave the model free to choose and the usual
+/// confirmation rules apply.
+pub fn ids_named(text: &str) -> Vec<String> {
+    const ID_WORDS: [&str; 8] = ["order", "orden", "ordre", "ordine", "id", "number", "nummer", "numero"];
+    let lower = text.to_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !(c.is_alphanumeric() || c == '#'))
+        .filter(|t| !t.is_empty())
+        .collect();
+    let mut ids = Vec::new();
+    for (i, t) in tokens.iter().enumerate() {
+        if let Some(rest) = t.strip_prefix('#') {
+            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                ids.push(rest.to_string());
+                continue;
+            }
+        }
+        if ID_WORDS.contains(t) {
+            if let Some(next) = tokens.get(i + 1) {
+                if next.chars().all(|c| c.is_ascii_digit()) {
+                    ids.push((*next).to_string());
+                }
+            }
+        }
+    }
+    ids
 }
 
 /// Words that make a request cover every order: without one, "cancel my order" never means all
@@ -324,6 +424,10 @@ pub struct TurnContext<'a> {
     /// An action was pending before this turn and this turn's message confirms it. Only then may
     /// a confirmation token execute.
     pub confirming_turn: bool,
+    /// Action tool calls already executed on this turn. One request authorises one action: a
+    /// second call is held for confirmation even when the first was permitted, so a model cannot
+    /// turn "buy 0.2 ETH" into two orders.
+    pub actions_taken: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -360,9 +464,18 @@ impl ConfirmationGate {
             permitted,
             carried,
             confirming_turn,
+            actions_taken,
         } = *cx;
         if !ACTION_TOOLS.contains(&tool) {
             return Intercept::Proceed(args.clone());
+        }
+        if actions_taken > 0 && !confirming_turn {
+            return Intercept::Reply(json!({
+                "rejected": true,
+                "code": "ALREADY_ACTED",
+                "message": "this request has already been acted on; one request authorises one action",
+                "hint": "tell the user what was done and let them ask for anything further"
+            }));
         }
         let mut args = args.clone();
         let token = args
@@ -489,6 +602,21 @@ impl ConfirmationGate {
                 )
             }
             _ => {
+                // "cancel order 7" authorises cancelling order 7. If the user named ids and this
+                // is not one of them, the request is refused outright rather than confirmed: a
+                // "yes" to the gate's summary must not redirect a cancel onto another order.
+                if permitted && tool == "cancel_order" {
+                    let named = ids_named(user_text);
+                    let target = text_of(&args["order_id"]);
+                    if !named.is_empty() && !named.contains(&target) {
+                        return Intercept::Reply(json!({
+                            "rejected": true,
+                            "code": "ORDER_NOT_REQUESTED",
+                            "message": format!("the user named order {} , this call would cancel {target}", named.join(" or ")),
+                            "hint": "cancel the order the user named, or ask which order they mean"
+                        }));
+                    }
+                }
                 let reason = if !permitted {
                     "The user's message did not clearly ask to cancel."
                 } else if tool == "cancel_all_orders" && !mentions_all(user_text) {
@@ -653,6 +781,7 @@ mod tests {
             permitted,
             carried,
             confirming_turn,
+            actions_taken: 0,
         }
     }
 
@@ -847,6 +976,83 @@ mod tests {
     }
 
     #[test]
+    fn negation_and_questions_grant_nothing() {
+        // A request that says not to do something must not permit doing it, and a question about
+        // the past is not an instruction. Both used to grant permission through keyword matching.
+        for text in [
+            "do not buy 0.5 ETH at 3000",
+            "don't buy 0.5 ETH at 3000",
+            "never sell my ETH at 2999",
+            "no, do not place that order",
+        ] {
+            assert!(!mentions_trade_intent(text), "{text}");
+        }
+        for text in [
+            "what did I cancel yesterday?",
+            "why was my order cancelled?",
+            "do not cancel order 7",
+        ] {
+            assert!(!mentions_cancel_intent(text), "{text}");
+        }
+        // "don't do it" is a refusal, not a confirmation.
+        assert!(!mentions_confirmation("don't do it"));
+        assert!(!mentions_confirmation("no, do not do it"));
+        assert!(mentions_confirmation("yes, do it"));
+        // The plain forms still work.
+        assert!(mentions_trade_intent("buy 0.5 ETH at 3000"));
+        assert!(mentions_cancel_intent("cancel order 7"));
+    }
+
+    #[test]
+    fn a_cancel_is_bound_to_the_order_the_user_named() {
+        let gate = gate();
+        let mut pending = None;
+        // The user named order 7; cancelling 8 is not what they asked for.
+        let other = json!({ "order_id": "8" });
+        assert!(matches!(
+            gate.intercept(&mut pending, "cancel_order", &other, &cx("s", 1, "cancel order 7", true, false)),
+            Intercept::Reply(v) if v["code"] == "ORDER_NOT_REQUESTED"
+        ));
+        // The named one proceeds.
+        let same = json!({ "order_id": "7" });
+        assert!(matches!(
+            gate.intercept(
+                &mut pending,
+                "cancel_order",
+                &same,
+                &cx("s", 1, "cancel order 7", true, false)
+            ),
+            Intercept::Proceed(_)
+        ));
+        // A price or quantity is not an id: "cancel the 2990 bid" leaves the choice to the model,
+        // under the usual confirmation rules.
+        let mut pending = None;
+        assert!(matches!(
+            gate.intercept(
+                &mut pending,
+                "cancel_order",
+                &other,
+                &cx("s", 1, "cancel the 2990 bid", true, false)
+            ),
+            Intercept::Proceed(_)
+        ));
+        assert!(matches!(
+            gate.intercept(&mut pending, "cancel_order", &other, &cx("s", 1, "cancel order #7", true, false)),
+            Intercept::Reply(v) if v["code"] == "ORDER_NOT_REQUESTED"
+        ));
+        // With no id in the message the model may choose one, held for confirmation as before.
+        assert!(matches!(
+            gate.intercept(
+                &mut pending,
+                "cancel_order",
+                &other,
+                &cx("s", 1, "cancel my order", true, false)
+            ),
+            Intercept::Proceed(_) | Intercept::Reply(_)
+        ));
+    }
+
+    #[test]
     fn intent_detection_uses_whole_words_and_order_shapes() {
         assert!(mentions_trade_intent("Buy half an ETH at 3000"));
         assert!(mentions_trade_intent("please sell 2 eth"));
@@ -864,7 +1070,8 @@ mod tests {
         assert!(!side_quoted("0.5 ETH @ 3000 please", "buy") && !side_quoted("I want 0.5 eth at 3000", "sell"));
         assert!(mentions_cancel_intent("cancel my last order"));
         assert!(mentions_cancel_intent("now undo that"));
-        assert!(mentions_cancel_intent("what did I cancel yesterday?"));
+        // A question about the past is not an instruction (it used to be treated as one).
+        assert!(!mentions_cancel_intent("what did I cancel yesterday?"));
         assert!(mentions_cancel_intent("annule mon ordre")); // the French verb is listed
         assert!(mentions_framing("just as a demo, buy 0.5 eth at 3000"));
         assert!(!mentions_framing("buy 0.5 eth at 3000"));

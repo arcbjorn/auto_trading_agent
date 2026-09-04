@@ -812,6 +812,38 @@ async fn a_reused_request_id_replays_or_conflicts() {
 }
 
 #[tokio::test]
+async fn one_request_authorises_one_action() {
+    // The user asked for one order. A model that places a second in the same turn must be held:
+    // permission is a capability for the action asked for, not a licence for the turn.
+    let responder: Responder = Arc::new(|n, _| match n {
+        1 => tool_use(
+            "place_limit_order",
+            json!({ "side": "buy", "price_usdc": "2990", "quantity_eth": "0.2" }),
+        ),
+        2 => tool_use(
+            "place_limit_order",
+            json!({ "side": "buy", "price_usdc": "2990", "quantity_eth": "0.2" }),
+        ),
+        _ => end_turn("done"),
+    });
+    let mut s = stack(responder, AgentConfig::default()).await;
+    let mut session = Session::new("once");
+    let turn = s.agent.chat_turn(&mut session, "buy 0.2 ETH at 2990").await.unwrap();
+    assert_eq!(turn.tool_calls.len(), 2, "the model tried twice");
+    assert!(!turn.tool_calls[0].intercepted, "the first is what the user asked for");
+    assert!(
+        turn.flags.iter().any(|f| f == "gate_rejected:ALREADY_ACTED"),
+        "the second must be refused: {:?}",
+        turn.flags
+    );
+    assert_eq!(
+        demo_orders(&mut s.engine, OrderStatus::Open).await.len(),
+        1,
+        "one request, one order"
+    );
+}
+
+#[tokio::test]
 async fn a_token_is_spent_only_on_the_turn_the_user_confirms() {
     // Turn 1 asks for a large order: the service holds it and issues a token. The user then asks
     // something else entirely. A model that produces the token on that turn must not be executed:

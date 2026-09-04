@@ -422,6 +422,7 @@ impl Agent {
                                 permitted,
                                 carried: carried.is_some(),
                                 confirming_turn: confirmation_turn,
+                                actions_taken: executed.len(),
                             };
                             match confirm.intercept(&mut session.pending, &name, &args, &cx) {
                                 Intercept::Reply(v) => {
