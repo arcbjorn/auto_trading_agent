@@ -31,6 +31,7 @@ jobs:
           sleep 1
           export ENGINE_ADDR=http://127.0.0.1:50051
           uv run --with mcp python scripts/mcp_interop_check.py --stdio target/debug/mcp-server
+          python3 scripts/mcp_stdio_notifications_check.py target/debug/mcp-server
           MCP_BIND=127.0.0.1:8000 ./target/debug/mcp-server --http &
           sleep 1
           uv run --with mcp python scripts/mcp_interop_check.py --http http://127.0.0.1:8000/mcp
