@@ -745,6 +745,7 @@ async fn session_store_is_bounded() {
             max_sessions: 3,
             idle_ttl: Duration::from_secs(3_600),
             turns_per_minute: 20,
+            max_turns: 200,
         },
     ));
     let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::clone(&state))
@@ -808,6 +809,36 @@ async fn sessions_are_rate_limited_per_minute() {
         .await
         .unwrap();
     assert_eq!(other.status(), 200);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn sessions_have_a_turn_cap() {
+    let responder: Responder = Arc::new(|_, _| end_turn("ok"));
+    let s = stack(responder, AgentConfig::default()).await;
+    let state = Arc::new(State::with_limits(
+        s.agent,
+        agent_service::http::SessionLimits {
+            max_turns: 3,
+            ..agent_service::http::SessionLimits::default()
+        },
+    ));
+    let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), state).await.unwrap();
+    let client = reqwest::Client::new();
+    let mut statuses = Vec::new();
+    for _ in 0..4 {
+        statuses.push(
+            client
+                .post(format!("http://{addr}/chat"))
+                .json(&json!({ "session_id": "long", "message": "hi" }))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16(),
+        );
+    }
+    assert_eq!(statuses, vec![200, 200, 200, 409], "a session ends after its turn cap");
     handle.shutdown().await;
 }
 

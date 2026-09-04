@@ -27,6 +27,9 @@ pub struct SessionLimits {
     pub idle_ttl: Duration,
     /// Turns one session may start per rolling minute; beyond it `POST /chat` answers 429.
     pub turns_per_minute: u32,
+    /// Turns one session may hold in total; beyond it `POST /chat` answers 409 and the client
+    /// starts a new session, so no conversation grows without bound.
+    pub max_turns: u32,
 }
 
 impl Default for SessionLimits {
@@ -35,6 +38,7 @@ impl Default for SessionLimits {
             max_sessions: 1_000,
             idle_ttl: Duration::from_secs(3_600),
             turns_per_minute: 20,
+            max_turns: 200,
         }
     }
 }
@@ -178,6 +182,12 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 if let Some((_, earlier)) = s.responses.iter().find(|(r, _)| r == id) {
                     return Ok(respond(StatusCode::OK, earlier.clone()));
                 }
+            }
+            if s.turns >= state.limits.max_turns {
+                return Ok(respond(
+                    StatusCode::CONFLICT,
+                    json!({ "error": format!("this session reached its {} turns; start a new session", state.limits.max_turns), "session_id": session_id }),
+                ));
             }
             let now = Instant::now();
             while s
