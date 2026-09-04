@@ -64,8 +64,12 @@ async fn mock_model(responder: Responder) -> MockModel {
                             r.len()
                         };
                         let reply = responder(n, &body);
-                        // A responder can force an HTTP status with "__status".
+                        // A responder can force an HTTP status with "__status" and a model
+                        // latency with "__delay_ms".
                         let status = reply["__status"].as_u64().unwrap_or(200) as u16;
+                        if let Some(ms) = reply["__delay_ms"].as_u64() {
+                            tokio::time::sleep(Duration::from_millis(ms)).await;
+                        }
                         Ok::<_, std::convert::Infallible>(
                             hyper::Response::builder()
                                 .status(status)
@@ -771,6 +775,88 @@ async fn session_store_is_bounded() {
         .await
         .unwrap();
     assert_eq!(latest["turns"], 1);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn concurrent_sessions_do_not_wait_for_each_other() {
+    // Every model call takes 40 ms. Sixty-four sessions with two turns each would need more
+    // than five seconds one after another; run together they take a fraction of that, and the
+    // store still holds no more than its cap.
+    let responder: Responder = Arc::new(|_, body| {
+        let mut reply = end_turn("ok");
+        reply["__delay_ms"] = json!(40);
+        // Echo the session's message so each reply can be checked against its own session.
+        // The last user turn is a list of blocks (the permission note travels with it).
+        let last = &body["messages"]
+            .as_array()
+            .and_then(|m| m.last())
+            .cloned()
+            .unwrap_or(Value::Null)["content"];
+        let text = match last {
+            Value::String(t) => t.clone(),
+            Value::Array(blocks) => blocks
+                .iter()
+                .filter_map(|b| b["text"].as_str())
+                .find(|t| t.starts_with("hello"))
+                .unwrap_or("")
+                .to_string(),
+            _ => String::new(),
+        };
+        reply["content"][0]["text"] = json!(format!("ok {text}"));
+        reply
+    });
+    let s = stack(responder, AgentConfig::default()).await;
+    let state = Arc::new(State::with_limits(
+        s.agent,
+        agent_service::http::SessionLimits {
+            max_sessions: 16,
+            ..agent_service::http::SessionLimits::default()
+        },
+    ));
+    let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::clone(&state))
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let started = std::time::Instant::now();
+    let mut tasks = tokio::task::JoinSet::new();
+    for i in 0..64 {
+        let client = client.clone();
+        tasks.spawn(async move {
+            let mut latencies = Vec::new();
+            for turn in 0..2 {
+                let t0 = std::time::Instant::now();
+                let r = client
+                    .post(format!("http://{addr}/chat"))
+                    .json(&json!({ "session_id": format!("c{i}"), "message": format!("hello {i} {turn}") }))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(r.status(), 200);
+                let body: Value = r.json().await.unwrap();
+                assert_eq!(body["reply"], format!("ok hello {i} {turn}"));
+                latencies.push(t0.elapsed());
+            }
+            latencies
+        });
+    }
+    let mut latencies = Vec::new();
+    while let Some(r) = tasks.join_next().await {
+        latencies.extend(r.unwrap());
+    }
+    let elapsed = started.elapsed();
+    latencies.sort();
+    println!(
+        "128 turns across 64 sessions in {} ms; turn p50 {} ms, p95 {} ms",
+        elapsed.as_millis(),
+        latencies[latencies.len() / 2].as_millis(),
+        latencies[latencies.len() * 95 / 100].as_millis()
+    );
+    assert!(
+        elapsed < Duration::from_millis(2_500),
+        "sessions ran one after another: {elapsed:?}"
+    );
+    assert!(state.session_count() <= 16, "the store grew past its cap");
     handle.shutdown().await;
 }
 
