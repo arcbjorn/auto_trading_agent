@@ -35,11 +35,16 @@ async fn sixteen_tasks_place_orders_concurrently() {
         };
         fund(&mut funder, &account).await;
     }
+    // Every task connects first and starts placing at the same instant, so the queue sees the
+    // most contention the test can produce.
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
     let mut tasks = Vec::new();
     for t in 0..16u64 {
         let url = url.clone();
+        let barrier = std::sync::Arc::clone(&barrier);
         tasks.push(tokio::spawn(async move {
             let mut c = EngineClient::connect(url).await.unwrap();
+            barrier.wait().await;
             // Even tasks buy, odd tasks sell, so no account ever trades with itself.
             let (side, account) = if t % 2 == 0 {
                 (Side::Buy, format!("buyer-{t}"))
