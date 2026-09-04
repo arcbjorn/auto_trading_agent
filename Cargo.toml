@@ -40,6 +40,17 @@ http-body-util = "0.1"
 bytes = "1"
 reqwest = { version = "0.13", features = ["json"] }
 proptest = "1"
+sha2 = "0.10"
+tonic-health = "0.14"
+tonic-reflection = "0.14"
+
+# Every crate opts in with `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+todo = "deny"
+dbg_macro = "deny"
 
 [profile.release]
 lto = "thin"
