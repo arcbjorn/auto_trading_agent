@@ -25,6 +25,7 @@ pub const MAKER: &str = "mm";
 
 pub struct Stack {
     pub engine: EngineClient<Channel>,
+    pub engine_addr: std::net::SocketAddr,
     pub mcp_url: String,
     engine_handle: engine_server::ServerHandle,
     mcp_handle: mcp_server::HttpServerHandle,
@@ -53,6 +54,7 @@ impl Stack {
         let (mcp_addr, mcp_handle) = serve_http("127.0.0.1:0".parse()?, server).await?;
         Ok(Self {
             engine,
+            engine_addr,
             mcp_url: format!("http://{mcp_addr}/mcp"),
             engine_handle,
             mcp_handle,
@@ -476,7 +478,7 @@ pub fn check_invariants(agent: &str, rows: &[Row], errors: usize) -> anyhow::Res
     Ok(())
 }
 
-async fn run_one(driver: &Driver, suite: &str, case: &Case, rep: u32) -> anyhow::Result<Row> {
+pub async fn run_one(driver: &Driver, suite: &str, case: &Case, rep: u32) -> anyhow::Result<Row> {
     let mut stack = Stack::start().await?;
     stack.fund(&case.funding).await?;
     stack.seed(&case.seed_book).await?;

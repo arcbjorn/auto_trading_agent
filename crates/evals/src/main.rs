@@ -3,6 +3,7 @@
 //!   evals run  [--suite execution|paraphrase|safety|all] [--case ID] [--reps N] [--parallel N] [--agent model|oracle|null|unsafe[:place|cancel_all|swap|ask_first|replay_token|hide_summary]] [--cases DIR] [--out DIR] [--perturb casing|noise|typos|all] [--judge] [--assert]
 //!   evals sim  [--seeds N] [--rounds R] [--agent model|baseline|null] [--out DIR]
 //!   evals demo                       the whole stack in one process and a scripted conversation
+//!   evals web  [--addr HOST:PORT]    the same stack behind a browser page (default 127.0.0.1:8080)
 //!
 //! `--agent model` calls the Messages API and needs ANTHROPIC_API_KEY. `oracle` performs the
 //! expected actions directly (it must score 100% on execution) and `null` does nothing (it must
@@ -19,6 +20,7 @@ mod judge;
 mod perturb;
 mod report;
 mod sim;
+mod web;
 
 use std::path::PathBuf;
 
@@ -41,6 +43,8 @@ pub struct Args {
     pub perturb: Option<String>,
     /// Score every reply with a second model call (see `judge.rs`).
     pub judge: bool,
+    /// Where `evals web` listens.
+    pub addr: String,
 }
 
 fn parse_args() -> Args {
@@ -58,6 +62,7 @@ fn parse_args() -> Args {
         parallel: 1,
         perturb: None,
         judge: false,
+        addr: "127.0.0.1:8080".into(),
     };
     let mut it = std::env::args().skip(1);
     if let Some(cmd) = it.next() {
@@ -84,6 +89,7 @@ fn parse_args() -> Args {
             "--out" => args.out_dir = value.into(),
             "--seeds" => args.seeds = value.parse().unwrap_or(3),
             "--rounds" => args.rounds = value.parse().unwrap_or(5),
+            "--addr" => args.addr = value,
             other => eprintln!("ignoring unknown flag {other}"),
         }
     }
@@ -102,7 +108,8 @@ async fn main() -> anyhow::Result<()> {
         "run" => harness::run(&args).await,
         "sim" => sim::run(&args).await,
         "demo" => demo::run(&args).await,
+        "web" => web::run(&args).await,
         "report" => report::regenerate(&args.out_dir),
-        other => anyhow::bail!("unknown command {other}; use run, sim, demo or report"),
+        other => anyhow::bail!("unknown command {other}; use run, sim, demo, web or report"),
     }
 }

@@ -36,17 +36,21 @@ fn compact(v: &Value) -> String {
     }
 }
 
+/// The book the demo starts from: two levels a side around 3000, resting under the market maker.
+pub fn seed_book() -> SeedBook {
+    SeedBook {
+        bids: vec![["2999.00".into(), "0.8".into()], ["2998.50".into(), "2.0".into()]],
+        asks: vec![["3001.00".into(), "0.5".into()], ["3002.00".into(), "1.0".into()]],
+    }
+}
+
 pub async fn run(_args: &Args) -> anyhow::Result<()> {
     let model = ModelClient::from_env()?;
     println!("model: {}", model.describe());
     let mut stack = Stack::start().await?;
     let funding = Funding::default();
     stack.fund(&funding).await?;
-    let book = SeedBook {
-        bids: vec![["2999.00".into(), "0.8".into()], ["2998.50".into(), "2.0".into()]],
-        asks: vec![["3001.00".into(), "0.5".into()], ["3002.00".into(), "1.0".into()]],
-    };
-    stack.seed(&book).await?;
+    stack.seed(&seed_book()).await?;
     println!(
         "account {ACCOUNT}: {} USDC and {} ETH; book seeded with bids 2999.00 x 0.8, 2998.50 x 2.0 and asks 3001.00 x 0.5, 3002.00 x 1.0\n",
         funding.usdc, funding.eth

@@ -2,7 +2,7 @@
 -include .env
 export
 
-.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent docmap eval-oracle eval-null eval-unsafe eval-model eval-perturbed eval-judged sim demo interop
+.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent docmap eval-oracle eval-null eval-unsafe eval-model eval-perturbed eval-judged sim demo demo-web interop
 
 build:
 	cargo build --workspace --release
@@ -66,6 +66,10 @@ eval-judged:
 
 demo:
 	cargo run --release -p evals -- demo
+
+# The same stack behind a browser page on 127.0.0.1:8080; chat needs a model key, the rest does not.
+demo-web:
+	cargo run --release -p evals -- web
 
 sim:
 	cargo run --release -p evals -- sim --agent baseline --seeds 5 --rounds 8
