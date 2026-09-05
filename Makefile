@@ -17,7 +17,7 @@ lint:
 fmt:
 	cargo fmt --all
 
-# Rewrites the line anchors of every [file.rs::Symbol](...) link in the docs; CI runs it with --check.
+# Rewrites code anchors; CI uses --check to validate these and local file/heading links.
 docmap:
 	python3 scripts/docmap.py
 
