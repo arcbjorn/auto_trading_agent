@@ -27,84 +27,101 @@ fn example_args(tool: &str) -> &'static str {
     }
 }
 
-/// One-click calls, chosen to show an accepted order, a fill, and each kind of refusal.
-const PRESETS: [(&str, &str, &str); 8] = [
-    ("market summary", "get_market_summary", "{}"),
+/// One-click calls in three groups: reads, actions that change the book, and refusals.
+const PRESETS: [(&str, &str, &str, &str); 8] = [
+    ("reads", "market summary", "get_market_summary", "{}"),
     (
+        "reads",
         "quote: buy 0.5 ETH",
         "get_quote",
         r#"{"side": "buy", "quantity_eth": "0.5"}"#,
     ),
-    ("balances", "get_balances", "{}"),
+    ("reads", "balances", "get_balances", "{}"),
     (
+        "actions",
         "buy 0.1 at 2999.50 (rests)",
         "place_limit_order",
         r#"{"side": "buy", "price_usdc": "2999.50", "quantity_eth": "0.1"}"#,
     ),
     (
+        "actions",
         "sell 0.2 at 2999.00 (fills)",
         "place_limit_order",
         r#"{"side": "sell", "price_usdc": "2999.00", "quantity_eth": "0.2"}"#,
     ),
+    ("actions", "cancel all", "cancel_all_orders", "{}"),
     (
+        "refusals",
         "buy 100 ETH (size limit)",
         "place_limit_order",
         r#"{"side": "buy", "price_usdc": "3000.00", "quantity_eth": "100"}"#,
     ),
     (
+        "refusals",
         "buy 0.1 at 5000 (collar)",
         "place_limit_order",
         r#"{"side": "buy", "price_usdc": "5000.00", "quantity_eth": "0.1"}"#,
     ),
-    ("cancel all", "cancel_all_orders", "{}"),
 ];
 
-pub fn section(app: &App) -> String {
-    let cfg = app.policy.config();
-    let presets: String = PRESETS
+fn preset_group(group: &str) -> String {
+    let buttons: String = PRESETS
         .iter()
-        .map(|(label, tool, args)| {
+        .filter(|(g, ..)| *g == group)
+        .map(|(_, label, tool, args)| {
             format!(
                 "<button type=\"button\" class=\"small\" data-tool=\"{tool}\" data-args=\"{}\" data-go>{label}</button>",
                 esc(args)
             )
         })
         .collect();
+    format!("<div class=\"group\"><span class=\"lbl\">{group}</span>{buttons}</div>")
+}
+
+pub fn section(app: &App) -> String {
+    let cfg = app.policy.config();
     format!(
-        r##"<section id="mcp">
+        r##"<section class="tab" id="tab-mcp" hidden>
 <h2>2 · MCP server <small>eleven tools, three resources and a prompt over Streamable HTTP</small></h2>
-<p class="lead">The model perceives and acts only through these tools. Arguments and results are in human units (USDC with two decimals, ETH with four), and a deterministic policy checks every action before it reaches the engine. A refusal comes back as an ordinary result marked <code>rejected</code>, with a code and a hint that tell the model what to do instead; tool errors are kept for bad arguments and outages.</p>
-<div class="grid two">
-  <div class="panel"><h3>Tools <span class="right muted">tools/list, as the model receives it</span></h3>{tools}</div>
-  <div class="panel"><h3>Call a tool <span class="right muted">tools/call over JSON-RPC</span></h3>
-    <div class="actions">{presets}</div>
-    <form hx-post="/ui/mcp/call" hx-target="#mcp-result" hx-indicator="#mcp-ind">
-      <div class="actions" style="margin-top:0"><input type="text" id="tool" name="tool" value="get_market_summary" style="flex:1" spellcheck="false"><button type="submit" class="accent">call</button><span id="mcp-ind" class="htmx-indicator">calling</span></div>
-      <textarea id="args" name="args" spellcheck="false">{{}}</textarea>
-    </form>
-    <div id="mcp-result"></div>
+<div class="lead"><p>The model perceives and acts only through these tools, and a deterministic policy checks every action before it reaches the engine.</p><details><summary>more</summary><p>Arguments and results are in human units (USDC with two decimals, ETH with four). A refusal comes back as an ordinary result marked <code>rejected</code>, with a code and a hint that tell the model what to do instead; tool errors are kept for bad arguments and outages. The same server speaks stdio for Claude Desktop and Claude Code, and is checked against the official MCP client in CI.</p></details></div>
+<div class="cols even">
+  <div class="stack">
+    <div class="panel"><h3>Tools <span class="right muted">tools/list, as the model receives it</span></h3>{tools}</div>
+    <div class="panel"><h3>Policy <span class="right muted">policy.rs, before the engine</span></h3>
+      <dl class="kv">
+        <dt>largest order</dt><dd class="num">{max_eth} ETH</dd>
+        <dt>largest order value</dt><dd class="num">{max_usdc} USDC</dd>
+        <dt>price collar</dt><dd class="num">{collar} bps from mid</dd>
+        <dt>open orders per account</dt><dd class="num">{max_open}</dd>
+        <dt>actions per minute</dt><dd class="num">{rate}</dd>
+        <dt>session notional cap</dt><dd class="num">{cap} USDC</dd>
+        <dt>trading halted</dt><dd>{halted}</dd>
+      </dl>
+      <details><summary>the codes</summary><p class="muted small">MAX_ORDER_SIZE, MAX_ORDER_VALUE, PRICE_COLLAR, MAX_OPEN_ORDERS, RATE_LIMIT, SESSION_CAP, HALTED, each with a hint. The engine adds its own checks underneath: balances back every order, and self-trades are prevented.</p></details>
+    </div>
   </div>
-  <div class="panel"><h3>Policy <span class="right muted">policy.rs, before the engine</span></h3>
-    <dl class="kv">
-      <dt>largest order</dt><dd class="num">{max_eth} ETH</dd>
-      <dt>largest order value</dt><dd class="num">{max_usdc} USDC</dd>
-      <dt>price collar</dt><dd class="num">{collar} bps from mid</dd>
-      <dt>open orders per account</dt><dd class="num">{max_open}</dd>
-      <dt>actions per minute</dt><dd class="num">{rate}</dd>
-      <dt>session notional cap</dt><dd class="num">{cap} USDC</dd>
-      <dt>trading halted</dt><dd>{halted}</dd>
-    </dl>
-    <p class="muted small">The rejections carry a code (MAX_ORDER_SIZE, MAX_ORDER_VALUE, PRICE_COLLAR, MAX_OPEN_ORDERS, RATE_LIMIT, SESSION_CAP, HALTED) and a hint. The engine adds its own checks underneath: balances back every order, and self-trades are prevented.</p>
-  </div>
-  <div class="panel"><h3>Resources and prompt <span class="right muted">resources/read, prompts/get</span></h3>{resources}
-    <div id="resource-result"></div>
-    {prompt}
+  <div class="stack">
+    <div class="panel"><h3>Call a tool <span class="right muted">tools/call over JSON-RPC</span></h3>
+      {reads}{actions}{refusals}
+      <form hx-post="/ui/mcp/call" hx-target="#mcp-result" hx-indicator="#mcp-ind">
+        <div class="actions" style="margin-top:.5rem"><input type="text" id="tool" name="tool" value="get_market_summary" style="flex:1" spellcheck="false"><button type="submit" class="accent">call</button><span id="mcp-ind" class="htmx-indicator">calling</span></div>
+        <textarea id="args" name="args" spellcheck="false" style="min-height:3.6rem">{{}}</textarea>
+      </form>
+      <div id="mcp-result"></div>
+    </div>
+    <div class="panel"><h3>Resources and prompt <span class="right muted">resources/read, prompts/get</span></h3>{resources}
+      <div id="resource-result"></div>
+      {prompt}
+    </div>
   </div>
 </div>
 </section>"##,
         tools = html::live("mcp-tools", "/ui/mcp/tools", "30s", "never"),
         resources = html::live("mcp-resources", "/ui/mcp/resources", "30s", "never"),
         prompt = html::live("mcp-prompt", "/ui/mcp/prompt", "300s", "never"),
+        reads = preset_group("reads"),
+        actions = preset_group("actions"),
+        refusals = preset_group("refusals"),
         max_eth = eth(cfg.max_order_lots),
         max_usdc = usdc_from_micro(cfg.max_order_notional_micro),
         collar = cfg.collar_bps,

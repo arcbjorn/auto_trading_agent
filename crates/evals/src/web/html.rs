@@ -80,7 +80,8 @@ pub fn thousands(n: u64) -> String {
     out
 }
 
-/// The page: header, then one section per part of the task, each filled by fragments.
+/// The page: a header with the tab bar, the live market bar, then one tab section per part of
+/// the task. Tabs are plain sections toggled by `app.js`; the active one is kept in the URL hash.
 pub fn page(status: &str, sections: &str) -> String {
     format!(
         r##"<!doctype html>
@@ -99,17 +100,20 @@ pub fn page(status: &str, sections: &str) -> String {
 <div class="wrap">
 <header class="top">
   <div class="logo"><span class="at">~</span> auto_trading_agent</div>
-  <nav class="links">
-    <a href="#engine">engine</a>
-    <a href="#mcp">mcp</a>
-    <a href="#agent">agent</a>
-    <a href="#evals">evals</a>
-    <a href="#results">results</a>
+  <nav class="tabs" role="tablist">
+    <button type="button" role="tab" data-tab="engine"><i>1</i> engine</button>
+    <button type="button" role="tab" data-tab="mcp"><i>2</i> mcp</button>
+    <button type="button" role="tab" data-tab="agent"><i>3</i> agent</button>
+    <button type="button" role="tab" data-tab="evals"><i>4</i> evals</button>
+    <button type="button" role="tab" data-tab="results"><i>5</i> results</button>
   </nav>
-  <div class="status">{status}<br><button id="theme" class="small" type="button">dark</button></div>
+  <div class="status">{status} <button id="theme" class="small" type="button">dark</button></div>
 </header>
-<p class="sub">ETH/USDC. The engine, the MCP server, the agent and the evaluation harness run in this one process; every number on this page arrived over gRPC, MCP or the chat API.</p>
+<div id="ticker" class="ticker" hx-get="/ui/engine/market" hx-trigger="load, every 1s, engine from:body" hx-swap="innerHTML"></div>
+<main>
 {sections}
+</main>
+<footer class="muted small">One process: the engine, the MCP server, the agent and the harness. Every number on this page arrived over gRPC, MCP or the chat API.</footer>
 </div>
 </body>
 </html>"##

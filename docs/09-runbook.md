@@ -44,7 +44,7 @@ The book starts empty and unfunded. `make run-engine` funds the demo account (50
 
 ## Web demo
 
-`make demo-web` (or `cargo run --release -p evals -- web [--addr HOST:PORT]`) starts the same stack behind a page at http://127.0.0.1:8080. The page is server-rendered HTML with htmx, served by the process itself; every panel is a fragment built from the same gRPC, MCP and HTTP calls a client would make.
+`make demo-web` (or `cargo run --release -p evals -- web [--addr HOST:PORT]`) starts the same stack behind a page at http://127.0.0.1:8080. The page is server-rendered HTML with htmx, served by the process itself; every panel is a fragment built from the same gRPC, MCP and HTTP calls a client would make. Five tabs follow the order of the task, a ticker under the header shows the market and the demo wallet on every tab, and each tab opens with one sentence and a `more` toggle for the rest.
 
 * Engine: the live order book, trades, wallets and statement, event stream and statistics, polled once a second and refreshed at once after any action on the page. A load test places orders from N gRPC connections inside the spread, then checks that the book is not crossed and that USDC and ETH are conserved across every account. A reset cancels every order and rests the demo levels again.
 * MCP: the tool list as the model receives it, a form that calls any tool and shows the JSON-RPC exchange, presets that show an accepted order, a fill and each kind of policy rejection, the policy limits, the resources and the prompt.

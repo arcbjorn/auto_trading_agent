@@ -43,4 +43,25 @@
     var form = box.form; if (form && window.htmx) htmx.trigger(form, 'submit');
   });
   label();
+  // Tabs: one section at a time; the active one lives in the URL hash so a reload keeps it.
+  function showTab(name) {
+    var found = false;
+    document.querySelectorAll('section.tab').forEach(function (s) {
+      var on = s.id === 'tab-' + name; s.hidden = !on; if (on) found = true;
+    });
+    if (!found) { showTab('engine'); return; }
+    document.querySelectorAll('[data-tab]').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-tab') === name);
+    });
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('[data-tab]') : null;
+    if (!b) return;
+    e.preventDefault();
+    var name = b.getAttribute('data-tab');
+    if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+    showTab(name);
+  });
+  window.addEventListener('hashchange', function () { showTab((location.hash || '#engine').slice(1)); });
+  showTab((location.hash || '#engine').slice(1));
 })();

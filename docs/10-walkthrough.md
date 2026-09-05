@@ -47,7 +47,7 @@ The third turn shows the confirmation gate: no price was stated, so the service 
 make demo-web
 ```
 
-The same stack behind http://127.0.0.1:8080, with nothing to install: the process serves the page. What to expect, top to bottom:
+The same stack behind http://127.0.0.1:8080, with nothing to install: the process serves the page. Five tabs in the order of the task, with the market ticker on every one. What to expect, tab by tab:
 
 * The order book with the two seeded levels a side, the demo account's and the market maker's wallets, and the engine's statistics, refreshing once a second.
 * "fire" in the concurrent-placement panel: 8,000 orders from 8 connections in well under a second on a laptop, then `book not crossed: holds`, `USDC conserved across 10 accounts: holds` and `ETH conserved: holds`.

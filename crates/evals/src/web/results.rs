@@ -41,19 +41,21 @@ pub fn section(app: &App) -> String {
     let list: String = reports(app)
         .iter()
         .map(|(name, title)| {
+            // File stems tell the reports apart; several share the title "Evaluation report".
             format!(
-                "<li><a href=\"#results\" hx-get=\"/ui/results/{n}\" hx-target=\"#report\" hx-swap=\"innerHTML\" hx-on:click=\"document.querySelectorAll('#report-list a').forEach(function(a){{a.style.fontWeight=''}});this.style.fontWeight='700'\">{t}</a> <span class=\"muted small\">{n}</span></li>",
+                "<li><a href=\"#results\" title=\"{t}\" hx-get=\"/ui/results/{n}\" hx-target=\"#report\" hx-swap=\"innerHTML\" hx-on:click=\"document.querySelectorAll('#report-list a').forEach(function(a){{a.style.fontWeight=''}});this.style.fontWeight='700'\">{stem}</a></li>",
                 n = esc(name),
-                t = esc(title)
+                t = esc(title),
+                stem = esc(name.trim_end_matches(".md"))
             )
         })
         .collect();
     let first = reports(app).first().map(|(n, _)| n.clone()).unwrap_or_default();
     format!(
-        r##"<section id="results">
+        r##"<section class="tab" id="tab-results" hidden>
 <h2>5 · Results <small>every measurement and the report behind it, from docs/results</small></h2>
-<p class="lead">These files were written by the tools on this page: the evaluation harness, the simulation and the benchmarks. They are the recorded runs against real models, kept in the repository so the numbers in the README can be traced to a report.</p>
-<div class="grid" style="grid-template-columns: minmax(260px, 1fr) minmax(0, 2.4fr)">
+<div class="lead"><p>The recorded runs against real models, kept in the repository so every number in the README traces to a report written by the tools on this page.</p></div>
+<div class="cols narrow-left">
   <div class="panel"><h3>Reports</h3><ul class="list small" id="report-list" style="display:block">{list}</ul></div>
   <div class="panel"><h3>Report</h3><div id="report" hx-get="/ui/results/{first}" hx-trigger="load" hx-swap="innerHTML"></div></div>
 </div>

@@ -262,6 +262,9 @@ async fn route(
         (Method::GET, "/healthz") => html::respond(StatusCode::OK, "application/json", r#"{"ok":true}"#),
         (Method::GET, "/ui/engine/market") => engine::market(app).await?,
         (Method::GET, "/ui/engine/book") => engine::book(app).await?,
+        (Method::GET, p) if p.starts_with("/ui/engine/book/") => {
+            engine::book_depth(app, p.trim_start_matches("/ui/engine/book/").parse().unwrap_or(5)).await?
+        }
         (Method::GET, "/ui/engine/trades") => engine::trades(app).await?,
         (Method::GET, "/ui/engine/accounts") => engine::accounts(app).await?,
         (Method::GET, "/ui/engine/stats") => engine::stats(app).await?,
@@ -287,14 +290,19 @@ async fn route(
 }
 
 fn page(app: &App) -> String {
+    // The status shows ports and the model id; the full description is on the agent tab.
     let chat = match &app.model {
-        Ok(m) => format!("chat <b>{}</b>", html::esc(m)),
-        Err(_) => "chat <b>off</b> (no model key)".to_string(),
+        Ok(m) => format!(
+            "chat <b>{}</b>",
+            html::esc(m.split("model=").nth(1).and_then(|r| r.split(' ').next()).unwrap_or(m))
+        ),
+        Err(_) => "chat <b>off</b>".to_string(),
     };
+    let port = |addr: &str| addr.rsplit(':').next().map(|p| format!(":{p}")).unwrap_or_default();
     let status = format!(
         "engine <b>{}</b> · mcp <b>{}</b> · {chat}",
-        html::esc(&app.engine_addr.to_string()),
-        html::esc(app.mcp_url.trim_start_matches("http://"))
+        port(&app.engine_addr.to_string()),
+        port(app.mcp_url.trim_end_matches("/mcp"))
     );
     // A fresh session per page load; "new session" reloads the page.
     let session_id = format!(
@@ -501,7 +509,7 @@ mod tests {
         assert!(summary.contains("best_bid"), "{summary}");
         assert!(get("/ui/mcp/resources").await.contains("orders://me/open"));
         assert!(get("/ui/mcp/prompt").await.contains("trading_assistant"));
-        assert!(page.contains("id=\"mcp\"") && page.contains("session notional cap"));
+        assert!(page.contains("id=\"tab-mcp\"") && page.contains("session notional cap"));
         // Chat without a model: the panel says so instead of failing.
         let off = post("/ui/chat", "session_id=web-1&message=hello")
             .await
@@ -556,11 +564,11 @@ mod tests {
             perturbed.contains("perturbed (casing)") && perturbed.contains("balance-query"),
             "{perturbed}"
         );
-        assert!(page.contains("id=\"evals\"") && page.contains("hostile-result"));
+        assert!(page.contains("id=\"tab-evals\"") && page.contains("hostile-result"));
         // Results: the stored reports render as HTML; the index first, paths stay inside the directory.
         let index = get("/ui/results/README.md").await;
         assert!(index.contains("<table") && index.contains("class=\"md\""), "{index}");
-        assert!(page.contains("id=\"results\"") && page.contains("report-model-deepseek-v4-flash.md"));
+        assert!(page.contains("id=\"tab-results\"") && page.contains("report-model-deepseek-v4-flash.md"));
         for bad in [
             "/ui/results/../README.md",
             "/ui/results/nope.md",

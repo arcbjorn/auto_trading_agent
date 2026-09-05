@@ -38,35 +38,37 @@ pub struct EventRow {
 }
 
 const KEPT_EVENTS: usize = 60;
-const SHOWN_EVENTS: usize = 18;
-const DEPTH: u32 = 8;
+const SHOWN_EVENTS: usize = 10;
+const DEPTH: u32 = 10;
 
 pub fn section() -> String {
     format!(
-        r##"<section id="engine">
+        r##"<section class="tab" id="tab-engine">
 <h2>1 · Matching engine <small>deterministic ETH/USDC limit order book behind gRPC</small></h2>
-<p class="lead">One thread owns the book; commands arrive over a bounded channel and are applied in batches; every event carries a sequence number. Prices are integer ticks (0.01 USDC), quantities integer lots (0.0001 ETH). These panels poll the gRPC API once a second and refresh at once after any action on this page.</p>
-{market}
-<div class="grid">
-  <div class="panel"><h3>Order book <span class="right muted">GetOrderBook, depth {DEPTH}</span></h3>{book}</div>
-  <div class="panel"><h3>Trades <span class="right muted">ListTrades, newest first</span></h3>{trades}</div>
-  <div class="panel"><h3>Wallets and statement <span class="right muted">GetBalances, GetStatement</span></h3>{accounts}</div>
-  <div class="panel"><h3>Event stream <span class="right muted">Subscribe</span></h3>{events}</div>
-  <div class="panel"><h3>Engine statistics <span class="right muted">GetStats</span></h3>{stats}</div>
-  <div class="panel"><h3>Concurrent placement <span class="right muted">PlaceOrder from N connections</span></h3>
-    <form hx-post="/ui/engine/load" hx-target="#load-result" hx-indicator="#load-ind" class="actions">
-      <label class="inline">clients <input type="text" name="clients" value="8"></label>
-      <label class="inline">orders each <input type="text" name="per" value="1000"></label>
-      <button class="accent" type="submit">fire</button>
-      <span id="load-ind" class="htmx-indicator">running</span>
-    </form>
-    <div id="load-result" class="small"></div>
-    <p class="muted small">Each client is its own gRPC connection placing GTC orders inside the current spread, so they trade with each other and leave the demo levels alone; their leftovers are cancelled afterwards. Then the book must not be crossed, and USDC and ETH must be conserved across every account.</p>
+<div class="lead"><p>One thread owns the book, commands arrive over a bounded channel and are applied in batches, and every event carries a sequence number.</p><details><summary>more</summary><p>Prices are integer ticks (0.01 USDC), quantities integer lots (0.0001 ETH). Wallets back every order and self-trades are prevented inside the matcher. A write-ahead journal with snapshot compaction makes a restart replay to the same state. These panels poll the gRPC API once a second and refresh at once after any action on this page.</p></details></div>
+<div class="cols even">
+  <div class="stack">
+    <div class="panel"><h3>Order book <span class="right muted">GetOrderBook, depth {DEPTH}</span></h3>{book}</div>
+    <div class="panel"><h3>Trades <span class="right muted">ListTrades, newest first</span></h3>{trades}</div>
+    <div class="panel"><h3>Event stream <span class="right muted">Subscribe</span></h3>{events}</div>
+  </div>
+  <div class="stack">
+    <div class="panel"><h3>Wallets and statement <span class="right muted">GetBalances, GetStatement</span></h3>{accounts}</div>
+    <div class="panel"><h3>Concurrent placement <span class="right muted">PlaceOrder from N connections</span></h3>
+      <form hx-post="/ui/engine/load" hx-target="#load-result" hx-indicator="#load-ind" class="actions" style="margin-top:0">
+        <label class="inline">clients <input type="text" name="clients" value="8"></label>
+        <label class="inline">orders each <input type="text" name="per" value="1000"></label>
+        <button class="accent" type="submit">fire</button>
+        <span id="load-ind" class="htmx-indicator">running</span>
+      </form>
+      <div id="load-result" class="small"></div>
+      <details><summary>what is checked</summary><p class="muted small">Each client is its own gRPC connection placing GTC orders inside the current spread, so they trade with each other and leave the demo levels alone; their leftovers are cancelled afterwards. Then the book must not be crossed, and USDC and ETH must be conserved across every account.</p></details>
+    </div>
+    <details class="panel"><summary><h3>Engine statistics <span class="right muted">GetStats, click to open</span></h3></summary>{stats}</details>
   </div>
 </div>
 <div class="actions"><button type="button" hx-post="/ui/engine/reset" hx-target="#reset-result">reset book</button><span id="reset-result" class="muted small"></span></div>
 </section>"##,
-        market = html::live("market", "/ui/engine/market", "1s", "engine"),
         book = html::live("book", "/ui/engine/book", "1s", "engine"),
         trades = html::live("trades", "/ui/engine/trades", "1s", "engine"),
         accounts = html::live("accounts", "/ui/engine/accounts", "1s", "engine"),
@@ -75,8 +77,16 @@ pub fn section() -> String {
     )
 }
 
+/// The market bar: the line under the header that every action on the page moves.
 pub async fn market(app: &App) -> anyhow::Result<Html> {
-    let m = app.engine.clone().get_market(GetMarketRequest {}).await?.into_inner();
+    let mut engine = app.engine.clone();
+    let m = engine.get_market(GetMarketRequest {}).await?.into_inner();
+    let w = engine
+        .get_balances(GetBalancesRequest {
+            account_id: ACCOUNT.into(),
+        })
+        .await?
+        .into_inner();
     let (bid, ask) = (u(m.best_bid_ticks), u(m.best_ask_ticks));
     let price = |t: u64| if t == 0 { "–".to_string() } else { usdc(t) };
     let (spread, mid) = if bid > 0 && ask > 0 {
@@ -84,23 +94,35 @@ pub async fn market(app: &App) -> anyhow::Result<Html> {
     } else {
         ("–".into(), "–".into())
     };
+    let cell = |k: &str, v: String, class: &str| {
+        format!("<span><span class=\"k\">{k}</span><b class=\"num {class}\">{v}</b></span>")
+    };
     Ok(html::html(format!(
-        r#"<div class="panel"><dl class="kv" style="grid-template-columns: repeat(6, max-content); gap: 0 1.5rem">
-<dt>best bid</dt><dt>best ask</dt><dt>spread</dt><dt>mid</dt><dt>last trade</dt><dt>sequence</dt>
-<dd class="bid num">{}</dd><dd class="ask num">{}</dd><dd class="num">{spread}</dd><dd class="num">{mid}</dd><dd class="num">{}</dd><dd class="num">{}</dd>
-</dl></div>"#,
-        price(bid),
-        price(ask),
-        price(u(m.last_trade_price_ticks)),
-        thousands(m.sequence)
+        "<span><span class=\"k\">ETH/USDC</span></span>{}{}{}{}{}{}<span class=\"wallet\"><span class=\"k\">{ACCOUNT}</span><b class=\"num\">{} USDC</b> · <b class=\"num\">{} ETH</b><span class=\"muted\"> ({} / {} reserved)</span></span>",
+        cell("best bid", price(bid), "bid"),
+        cell("best ask", price(ask), "ask"),
+        cell("spread", spread, ""),
+        cell("mid", mid, ""),
+        cell("last trade", price(u(m.last_trade_price_ticks)), ""),
+        cell("sequence", thousands(m.sequence), ""),
+        usdc_from_micro(u128::from(w.usdc_available_micro)),
+        eth(w.eth_available_lots),
+        usdc_from_micro(u128::from(w.usdc_reserved_micro)),
+        eth(w.eth_reserved_lots),
     )))
 }
 
 pub async fn book(app: &App) -> anyhow::Result<Html> {
+    book_depth(app, DEPTH).await
+}
+
+pub async fn book_depth(app: &App, depth: u32) -> anyhow::Result<Html> {
     let b = app
         .engine
         .clone()
-        .get_order_book(GetOrderBookRequest { depth: DEPTH })
+        .get_order_book(GetOrderBookRequest {
+            depth: depth.clamp(1, 20),
+        })
         .await?
         .into_inner();
     let max = b
@@ -150,7 +172,7 @@ pub async fn trades(app: &App) -> anyhow::Result<Html> {
         .clone()
         .list_trades(ListTradesRequest {
             account_id: String::new(),
-            limit: 12,
+            limit: 10,
         })
         .await?
         .into_inner();
