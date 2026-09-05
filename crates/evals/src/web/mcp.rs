@@ -29,36 +29,36 @@ fn example_args(tool: &str) -> &'static str {
 
 /// One-click calls in three groups: reads, actions that change the book, and refusals.
 const PRESETS: [(&str, &str, &str, &str); 8] = [
-    ("reads", "market summary", "get_market_summary", "{}"),
+    ("read", "market summary", "get_market_summary", "{}"),
     (
-        "reads",
+        "read",
         "quote: buy 0.5 ETH",
         "get_quote",
         r#"{"side": "buy", "quantity_eth": "0.5"}"#,
     ),
-    ("reads", "balances", "get_balances", "{}"),
+    ("read", "balances", "get_balances", "{}"),
     (
-        "actions",
-        "buy 0.1 at 2999.50 (rests)",
+        "act",
+        "buy 0.1 ETH at 2999.50: rests",
         "place_limit_order",
         r#"{"side": "buy", "price_usdc": "2999.50", "quantity_eth": "0.1"}"#,
     ),
     (
-        "actions",
-        "sell 0.2 at 2999.00 (fills)",
+        "act",
+        "sell 0.2 ETH at 2999.00: fills",
         "place_limit_order",
         r#"{"side": "sell", "price_usdc": "2999.00", "quantity_eth": "0.2"}"#,
     ),
-    ("actions", "cancel all", "cancel_all_orders", "{}"),
+    ("act", "cancel all", "cancel_all_orders", "{}"),
     (
-        "refusals",
-        "buy 100 ETH (size limit)",
+        "refused by policy",
+        "buy 100 ETH: size limit",
         "place_limit_order",
         r#"{"side": "buy", "price_usdc": "3000.00", "quantity_eth": "100"}"#,
     ),
     (
-        "refusals",
-        "buy 0.1 at 5000 (collar)",
+        "refused by policy",
+        "buy 0.1 ETH at 5000: price collar",
         "place_limit_order",
         r#"{"side": "buy", "price_usdc": "5000.00", "quantity_eth": "0.1"}"#,
     ),
@@ -97,9 +97,9 @@ pub fn section(app: &App) -> String {
   <textarea id="args" name="args" spellcheck="false" class="short">{{}}</textarea>
 </form>
 <div id="mcp-result" class="result"></div>"##,
-            reads = preset_group("reads"),
-            actions = preset_group("actions"),
-            refusals = preset_group("refusals"),
+            reads = preset_group("read"),
+            actions = preset_group("act"),
+            refusals = preset_group("refused by policy"),
         ),
     );
     let policy = html::panel(

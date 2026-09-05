@@ -121,7 +121,7 @@ pub async fn market(app: &App) -> anyhow::Result<Html> {
         format!("<span><span class=\"k\">{k}</span><b class=\"num {class}\">{v}</b></span>")
     };
     Ok(html::html(format!(
-        "<span><span class=\"k\">ETH/USDC</span></span>{}{}{}{}{}{}<span class=\"wallet\"><span class=\"k\">{ACCOUNT}</span><b class=\"num\">{} USDC</b> · <b class=\"num\">{} ETH</b><span class=\"muted\"> ({} / {} reserved)</span></span>",
+        "<span><span class=\"k\">ETH/USDC</span></span>{}{}{}{}{}{}<span class=\"wallet\"><span class=\"k\">{ACCOUNT} wallet</span><b class=\"num\">{} USDC</b> · <b class=\"num\">{} ETH</b><span class=\"muted\"> ({} / {} reserved)</span></span>",
         cell("best bid", price(bid), "bid"),
         cell("best ask", price(ask), "ask"),
         cell("spread", spread, ""),

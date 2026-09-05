@@ -61,6 +61,15 @@ pub fn chip(class: &str, text: &str) -> String {
     format!("<span class=\"chip {class}\">{}</span>", esc(text))
 }
 
+/// A chip whose meaning is one hover away.
+pub fn chip_titled(class: &str, text: &str, title: &str) -> String {
+    format!(
+        "<span class=\"chip {class}\" title=\"{}\">{}</span>",
+        esc(title),
+        esc(text)
+    )
+}
+
 /// A panel that loads itself and then refreshes on a timer and on the named page event.
 pub fn live(id: &str, url: &str, every: &str, event: &str) -> String {
     format!(

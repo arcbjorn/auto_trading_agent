@@ -157,7 +157,9 @@ select { width: auto; max-width: 100%; }
 .actions, .group { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
 .actions { margin: 0; }
 .group + .group { margin-top: var(--s2); }
-.group .lbl { color: var(--muted); font-size: var(--t0); min-width: 5.5rem; }
+.group .lbl { color: var(--muted); font-size: var(--t0); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; min-width: 9.5rem; cursor: default; }
+button i { font-style: normal; color: var(--title); margin-right: var(--s1); }
+button:hover i { color: var(--bg); }
 form.row { display: flex; gap: var(--s2); align-items: stretch; margin-top: var(--s3); }
 form.row input[type=text] { flex: 1; }
 label.inline { color: var(--muted); font-size: var(--t0); display: inline-flex; gap: var(--s2); align-items: center; }
