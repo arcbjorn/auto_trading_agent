@@ -343,7 +343,7 @@ pub fn mentions_confirmation(text: &str) -> bool {
     // "I can't confirm that" is not a confirmation either.
     // Clause splitting drops the question mark, so the whole text is checked for one first: a
     // message that asks something is not an answer.
-    if text.trim_end().ends_with('?') {
+    if text.contains('?') || clause_is_negated(text) {
         return false;
     }
     clauses(text)
@@ -379,6 +379,24 @@ fn asks_about_confirming(clause: &str) -> bool {
 /// Figures are compared on digits alone, so "3000.00" matches "3,000", and a reply that names more
 /// than the summary is fine.
 pub fn summary_is_disclosed(summary: &str, reply: &str) -> bool {
+    // Figures alone cannot disclose whether this is a buy, a sell or a cancellation.
+    // Inspect words directly here: the reply is normally a question, not an instruction.
+    if let Some(side) = ["buy", "sell"].into_iter().find(|s| word_in(summary, s)) {
+        let (expected, opposite) = if side == "buy" {
+            (&BUY_WORDS, &SELL_WORDS)
+        } else {
+            (&SELL_WORDS, &BUY_WORDS)
+        };
+        if !expected.iter().any(|w| word_in(reply, w)) || opposite.iter().any(|w| word_in(reply, w)) {
+            return false;
+        }
+    }
+    if word_in(summary, "cancel")
+        && (!CANCEL_VERBS.iter().any(|w| word_in(reply, w))
+            || (word_in(summary, "every") && !ALL_WORDS.iter().any(|w| word_in(reply, w))))
+    {
+        return false;
+    }
     let mut figures: Vec<String> = numbers(summary).iter().map(|n| digits_of(n)).collect();
     figures.truncate(2);
     if figures.is_empty() {
@@ -388,7 +406,17 @@ pub fn summary_is_disclosed(summary: &str, reply: &str) -> bool {
     figures.iter().all(|f| shown.iter().any(|s| s == f))
 }
 
-/// A number reduced to its significant digits: "3000.00" and "3,000" both become "3".
+/// Only an explicit, disclosed question can leave a request for a later bare "yes".
+pub fn asks_to_confirm(request: &str, reply: &str) -> bool {
+    let asks = ["confirm", "confirmation", "proceed", "shall i", "should i"]
+        .iter()
+        .any(|w| word_in(reply, w));
+    asks && !clause_is_negated(reply)
+        && (mentions_trade_intent(request) || mentions_cancel_intent(request))
+        && summary_is_disclosed(request, reply)
+}
+
+/// A decimal normalized without changing its value: "3000.00" and "3,000" become "3000".
 fn digits_of(n: &str) -> String {
     let n = n.replace(',', "");
     let trimmed = if n.contains('.') {
@@ -495,8 +523,8 @@ pub struct TurnContext<'a> {
     /// An action was pending before this turn and this turn's message confirms it. Only then may
     /// a confirmation token execute.
     pub confirming_turn: bool,
-    /// Action tool calls already executed on this turn. One request authorises one action: a
-    /// second call is held for confirmation even when the first was permitted, so a model cannot
+    /// Action tool calls already sent on this turn, including attempts with a lost response.
+    /// One request authorises one action; a second call is refused, so a model cannot
     /// turn "buy 0.2 ETH" into two orders.
     pub actions_taken: usize,
 }
@@ -552,7 +580,7 @@ impl ConfirmationGate {
                 "hint": "tell the user the exact summary and ask again"
             }));
         }
-        if actions_taken > 0 && !confirming_turn {
+        if actions_taken > 0 {
             return Intercept::Reply(json!({
                 "rejected": true,
                 "code": "ALREADY_ACTED",
@@ -567,6 +595,13 @@ impl ConfirmationGate {
             .map(str::to_string);
         if let Some(obj) = args.as_object_mut() {
             obj.remove("confirmation_token");
+        }
+        if confirming_turn && token.is_none() {
+            return Intercept::Reply(json!({
+                "rejected": true,
+                "code": "CONFIRMATION_TOKEN_REQUIRED",
+                "message": "confirming a pending action requires its token and exact arguments"
+            }));
         }
         if let Some(token) = token {
             // A token is not a credential the model holds: it identifies which pending action the
@@ -626,7 +661,11 @@ impl ConfirmationGate {
                 ) else {
                     return Intercept::Proceed(args); // let the server produce the validation message
                 };
-                let stated = numbers(user_text);
+                let stated = clauses(user_text)
+                    .filter(|c| !clause_is_negated(c) && !is_question(c))
+                    .filter(|c| mentions_trade_intent(c))
+                    .flat_map(numbers)
+                    .collect::<Vec<_>>();
                 let price_quoted = stated.iter().any(|n| parse_price(n).ok() == Some(price));
                 let qty_quoted = stated.iter().any(|n| parse_qty(n).ok() == Some(qty));
                 // "1500 USDC worth at 3000": the quantity is not stated but its notional is. The
@@ -711,7 +750,9 @@ impl ConfirmationGate {
                 }
                 let reason = if !permitted {
                     "The user's message did not clearly ask to cancel."
-                } else if tool == "cancel_all_orders" && !mentions_all(user_text) {
+                } else if tool == "cancel_all_orders"
+                    && !clauses(user_text).any(|c| mentions_cancel_intent(c) && mentions_all(c))
+                {
                     // "cancel my order" grants a cancel, never every cancel: a hostile model
                     // that cancelled everything on an ambiguous request found this gap.
                     "The user did not ask to cancel every order."
@@ -1006,7 +1047,18 @@ mod tests {
             order,
             "This is a large order: buy 2 ETH at 2990.00. Please confirm."
         ));
-        assert!(summary_is_disclosed(order, "Confirm 2 ETH @ 2,990?"));
+        assert!(summary_is_disclosed(order, "Confirm buying: buy 2 ETH @ 2,990?"));
+        assert!(!summary_is_disclosed(order, "Confirm sell 2 ETH @ 2,990?"));
+        assert!(!summary_is_disclosed(order, "Confirm 2 ETH @ 2,990?"));
+        assert!(!summary_is_disclosed("cancel every open order of the account", "Done."));
+        assert!(!summary_is_disclosed(
+            "cancel every open order of the account",
+            "Cancel order 7?"
+        ));
+        assert!(summary_is_disclosed(
+            "cancel every open order of the account",
+            "Cancel all open orders?"
+        ));
         // Hiding either figure, or the whole thing, is not disclosure.
         assert!(!summary_is_disclosed(order, "Done."));
         assert!(!summary_is_disclosed(order, "Shall I place that order?"));
@@ -1017,6 +1069,55 @@ mod tests {
             "Cancel order 7, the buy at 2990? Please confirm."
         ));
         assert!(!summary_is_disclosed(cancel, "Shall I cancel it?"));
+    }
+
+    #[test]
+    fn unrelated_and_negated_clauses_do_not_expand_an_action() {
+        let gate = ConfirmationGate {
+            threshold_lots: 10_000,
+            confirm_unpriced: true,
+            pin_stated_figures: true,
+            ttl: Duration::from_secs(60),
+        };
+        let args = json!({ "side": "buy", "price_usdc": "3000", "quantity_eth": "0.5" });
+        assert!(matches!(
+            gate.intercept(&mut None, "place_limit_order", &args,
+                &cx("s", 1, "buy 0.2 ETH at 2990. Do not buy 0.5 ETH at 3000", true, false)),
+            Intercept::Reply(v) if v["code"] == "PRICE_NOT_REQUESTED"
+        ));
+        assert!(matches!(
+            gate.intercept(&mut None, "cancel_all_orders", &json!({}),
+                &cx("s", 1, "Cancel order 7. Show all my balances", true, false)),
+            Intercept::Reply(v) if v["needs_confirmation"] == true
+        ));
+    }
+
+    #[test]
+    fn a_confirmation_cannot_authorise_extra_or_tokenless_actions() {
+        let gate = ConfirmationGate {
+            threshold_lots: 10_000,
+            confirm_unpriced: true,
+            pin_stated_figures: true,
+            ttl: Duration::from_secs(60),
+        };
+        let mut context = cx_full("s", 2, "yes, cancel all", true, false, true);
+        context.actions_taken = 1;
+        assert!(matches!(
+            gate.intercept(&mut None, "cancel_all_orders", &json!({}), &context),
+            Intercept::Reply(v) if v["code"] == "ALREADY_ACTED"
+        ));
+        context.actions_taken = 0;
+        assert!(matches!(
+            gate.intercept(&mut None, "cancel_all_orders", &json!({}), &context),
+            Intercept::Reply(v) if v["code"] == "CONFIRMATION_TOKEN_REQUIRED"
+        ));
+        for message in [
+            "yes, but do not place it",
+            "Confirm? I need more details",
+            "yes. Never cancel anything",
+        ] {
+            assert!(!mentions_confirmation(message), "{message}");
+        }
     }
 
     #[test]

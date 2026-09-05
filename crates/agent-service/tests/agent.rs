@@ -631,7 +631,11 @@ async fn system_channel_falls_back_to_the_user_turn_when_the_model_rejects_it() 
     );
     assert_eq!(s.agent.note_channel(), NoteChannel::User);
     let second = s.agent.chat_turn(&mut session, "and the ask?").await.unwrap();
-    assert!(second.flags.is_empty(), "{:?}", second.flags);
+    assert_eq!(
+        second.flags,
+        ["unsupported_number:2999.00"],
+        "the mock quotes a price without reading it"
+    );
     // No system-role message survives in the history, and the retried turn used the user channel.
     assert!(session.messages.iter().all(|m| m["role"] != "system"));
     assert_eq!(
@@ -1003,7 +1007,7 @@ async fn a_confirmation_in_words_carries_the_previous_request() {
     // model places the exact order described. No token exists, yet the order goes through, and a
     // different order in the same position would not.
     let responder: Responder = Arc::new(|n, _| match n {
-        1 => end_turn("That is 2 ETH at 3000, about 6000 USDC. Shall I place it?"),
+        1 => end_turn("Buy 2 ETH at 3000, about 6000 USDC. Shall I place it?"),
         2 => tool_use(
             "place_limit_order",
             json!({ "side": "buy", "price_usdc": "3000", "quantity_eth": "2" }),
@@ -1024,6 +1028,118 @@ async fn a_confirmation_in_words_carries_the_previous_request() {
     let open = demo_orders(&mut s.engine, OrderStatus::Open).await;
     assert_eq!(open.len(), 1);
     assert_eq!((open[0].price_ticks, open[0].quantity_lots), (300_000, 20_000));
+}
+
+#[tokio::test]
+async fn acknowledging_a_completed_order_does_not_authorise_another() {
+    let responder: Responder = Arc::new(|n, _| match n {
+        1 | 3 => tool_use(
+            "place_limit_order",
+            json!({
+                "side": "buy", "price_usdc": "2990", "quantity_eth": "0.2"
+            }),
+        ),
+        _ => end_turn("Placed: buy 0.2 ETH at 2990."),
+    });
+    let mut s = stack(responder, AgentConfig::default()).await;
+    let mut session = Session::new("ack");
+    s.agent.chat_turn(&mut session, "buy 0.2 ETH at 2990").await.unwrap();
+    let ack = s.agent.chat_turn(&mut session, "yes").await.unwrap();
+    assert!(ack.tool_calls[0].intercepted);
+    assert!(!ack.flags.iter().any(|f| f == "permission_carried_over"));
+    assert_eq!(demo_orders(&mut s.engine, OrderStatus::Open).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_reply_cannot_ground_its_own_invented_balance() {
+    let responder: Responder = Arc::new(|_, _| end_turn("Your balance is 47251.39 USDC."));
+    let s = stack(responder, AgentConfig::default()).await;
+    let turn = s
+        .agent
+        .chat_turn(&mut Session::new("grounding"), "What is my balance?")
+        .await
+        .unwrap();
+    assert!(
+        turn.flags.contains(&"unsupported_number:47251.39".to_string()),
+        "{:?}",
+        turn.flags
+    );
+}
+
+#[tokio::test]
+async fn foreign_browser_requests_and_malformed_ids_never_start_a_turn() {
+    let s = stack(Arc::new(|_, _| end_turn("ok")), AgentConfig::default()).await;
+    let state = Arc::new(State::new(s.agent));
+    let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::clone(&state))
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    for (header, value) in [
+        ("Origin", "null"),
+        ("Origin", "https://evil.example"),
+        ("Host", "evil.example"),
+    ] {
+        let response = client
+            .post(format!("http://{addr}/chat"))
+            .header(header, value)
+            .json(&json!({ "message": "buy 0.2 ETH at 2990" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403);
+    }
+    for field in ["session_id", "request_id"] {
+        let mut input = json!({ "message": "buy 0.2 ETH at 2990" });
+        input[field] = json!(42);
+        let response = client
+            .post(format!("http://{addr}/chat"))
+            .json(&input)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+    }
+    assert_eq!(state.session_count(), 0);
+    assert!(s.mock.requests.lock().unwrap().is_empty());
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_failed_turn_is_replayed_after_its_order_executed() {
+    let responder: Responder = Arc::new(|n, _| match n {
+        1 | 3 => tool_use(
+            "place_limit_order",
+            json!({
+                "side": "buy", "price_usdc": "2990", "quantity_eth": "0.2"
+            }),
+        ),
+        _ => json!({ "__status": 400, "error": { "message": "model failed after execution" } }),
+    });
+    let mut s = stack(responder, AgentConfig::default()).await;
+    let (addr, handle) = serve_api("127.0.0.1:0".parse().unwrap(), Arc::new(State::new(s.agent)))
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let input = json!({ "session_id": "failed", "request_id": "once", "message": "buy 0.2 ETH at 2990" });
+    let mut replies = Vec::new();
+    for _ in 0..2 {
+        let response = client
+            .post(format!("http://{addr}/chat"))
+            .json(&input)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 502);
+        replies.push(response.json::<Value>().await.unwrap());
+    }
+    assert_eq!(replies[0], replies[1]);
+    assert_eq!(
+        s.mock.requests.lock().unwrap().len(),
+        2,
+        "retry must not call the model"
+    );
+    assert_eq!(demo_orders(&mut s.engine, OrderStatus::Open).await.len(), 1);
+    handle.shutdown().await;
 }
 
 #[tokio::test]

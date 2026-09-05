@@ -194,24 +194,6 @@ pub struct Agent {
     system_channel_rejected: AtomicBool,
 }
 
-/// The text of the last user turn, without the service's note and without tool results.
-fn previous_user_text(messages: &[Value]) -> Option<String> {
-    messages.iter().rev().filter(|m| m["role"] == "user").find_map(|m| {
-        let text = match &m["content"] {
-            Value::String(s) => s.clone(),
-            Value::Array(blocks) => blocks
-                .iter()
-                .filter(|b| b["type"] == "text")
-                .filter_map(|b| b["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-            _ => String::new(),
-        };
-        let text = text.split("[service]").next().unwrap_or("").trim().to_string();
-        (!text.is_empty()).then_some(text)
-    })
-}
-
 /// The MCP tool list as the Messages API wants it: name, description, schema.
 ///
 /// Sorted by name so the list is byte-identical on every request, since it is the cache prefix.
@@ -327,8 +309,9 @@ impl Agent {
         // A bare "yes" after a request the model answered with a question of its own (without
         // calling a tool) has nothing pending in the gate. It stands for the previous request:
         // that message's words grant the permission and its figures pin the order.
-        let carried: Option<String> = (!pending_before && self.cfg.gate_tools && gate::is_bare_confirmation(user_text))
-            .then(|| previous_user_text(&session.messages))
+        let previous_request = session.confirmation_request.take();
+        let carried = (!pending_before && self.cfg.gate_tools && gate::is_bare_confirmation(user_text))
+            .then_some(previous_request)
             .flatten();
         let gate_text: String = match &carried {
             Some(prev) => format!("{prev}\n{user_text}"),
@@ -575,7 +558,15 @@ impl Agent {
         }
         {
             let mut sources: Vec<String> = vec![self.system.clone(), user_text.to_string()];
-            sources.extend(session.messages.iter().map(Value::to_string));
+            // Assistant output is what we are checking, never evidence for itself (including
+            // earlier speculative assistant messages in this turn or in the history).
+            sources.extend(
+                session
+                    .messages
+                    .iter()
+                    .filter(|m| m["role"] != "assistant")
+                    .map(Value::to_string),
+            );
             for r in &records {
                 sources.push(r.args.to_string());
                 sources.push(r.result.clone());
@@ -588,8 +579,17 @@ impl Agent {
         }
         if self.cfg.compensate && flags.iter().any(|f| f == "intent_mismatch:place_limit_order") {
             for oid in &placed_ids {
-                match self.mcp.call_tool("cancel_order", &json!({ "order_id": oid })).await {
-                    Ok(r) if !r.is_error => {
+                let args = json!({ "order_id": oid });
+                if self
+                    .audit_before(&session.id, turn, "cancel_order", &args, "compensation")
+                    .is_err()
+                {
+                    flags.push("audit_unavailable".into());
+                    flags.push(format!("compensation_failed:{oid}"));
+                    continue;
+                }
+                match self.mcp.call_tool("cancel_order", &args).await {
+                    Ok(r) if !r.is_error && r.structured.as_ref().is_none_or(|s| s["rejected"] != true) => {
                         flags.push(format!("compensated:cancel:{oid}"));
                         reply.push_str(
                             " (An order was placed without an explicit instruction from you and has been cancelled.)",
@@ -604,13 +604,17 @@ impl Agent {
         // service's own text ("buy 2.0000 ETH at 3000.00 USDC (up to 6000.00 USDC)"), so its
         // figures are what must appear. A reply that mentions none of them disclosed nothing, and
         // the pending action stays undisclosed: a later "yes" will not execute it.
-        if let Some(p) = session.pending.as_mut() {
-            if !p.disclosed && p.asked_on_turn == turn {
-                p.disclosed = gate::summary_is_disclosed(&p.summary, &reply);
-                if !p.disclosed {
-                    flags.push("summary_not_disclosed".into());
-                }
+        if let Some(p) = session.pending.as_mut()
+            && !p.disclosed
+            && p.asked_on_turn == turn
+        {
+            p.disclosed = gate::summary_is_disclosed(&p.summary, &reply);
+            if !p.disclosed {
+                flags.push("summary_not_disclosed".into());
             }
+        }
+        if actions_attempted == 0 && session.pending.is_none() && gate::asks_to_confirm(user_text, &reply) {
+            session.confirmation_request = Some(user_text.to_string());
         }
 
         let result = TurnResult {
