@@ -7,8 +7,8 @@ Each requirement of the task, the code that implements it and the test or run th
 | Requirement | Code | Proof |
 |---|---|---|
 | Spot limit buy and sell orders | [book.rs::Book::place](../crates/engine/src/book.rs#L1278-L1542) | [book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2485-L2521) |
-| Order cancellations | [book.rs::Book::cancel](../crates/engine/src/book.rs#L1546-L1548) | [concurrency.rs::cancels_race_placements_and_leave_the_book_empty](../crates/engine-server/tests/concurrency.rs#L212-L283) |
-| Exposed strictly via gRPC | [proto/clob.proto](../proto/clob.proto) | [concurrency.rs::idempotent_retry_and_status_codes](../crates/engine-server/tests/concurrency.rs#L598-L690) |
+| Order cancellations | [book.rs::Book::cancel](../crates/engine/src/book.rs#L1546-L1548) | [concurrency.rs::cancels_race_placements_and_leave_the_book_empty](../crates/engine-server/tests/concurrency.rs#L212-L286) |
+| Exposed strictly via gRPC | [proto/clob.proto](../proto/clob.proto) | [concurrency.rs::idempotent_retry_and_status_codes](../crates/engine-server/tests/concurrency.rs#L601-L693) |
 | Thread-safe | [sequencer.rs::spawn_with_journal](../crates/engine/src/sequencer.rs#L236-L305) | [concurrency.rs::sixteen_tasks_place_orders_concurrently](../crates/engine-server/tests/concurrency.rs#L23-L110) |
 | Efficient under concurrent placement | [sequencer.rs::apply](../crates/engine/src/sequencer.rs#L132-L210) | [grpc_bench.rs](../crates/engine-server/examples/grpc_bench.rs), [soak.rs](../crates/engine-server/examples/soak.rs) |
 | Deterministic | [journal.rs::Journal::recover](../crates/engine/src/journal.rs#L108-L110) | [journal.rs::replay_rebuilds_the_same_book_and_continues_its_counters](../crates/engine/src/journal.rs#L638-L789) |
