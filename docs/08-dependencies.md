@@ -2,19 +2,14 @@
 
 ## Toolchain
 
-Rust edition 2024 on a pinned stable toolchain; `rust-version` states the minimum the code needs
-rather than the version it was built with. Edition 2024 is what makes `std::env::set_var` unsafe,
-since it races with any thread reading the environment, which is why the protobuf build script
-configures `protoc` directly instead of setting a variable. The workspace forbids `unsafe_code`,
-denies `todo!` and `dbg!`, and the four crates holding market state deny unchecked numeric casts
-(see ADR-25).
+Rust edition 2024, minimum 1.88; `rust-toolchain.toml` selects the stable channel. The workspace
+forbids `unsafe_code`, denies `todo!` and `dbg!`, and the four crates holding market state deny
+unchecked numeric casts (see ADR-25). The protobuf build script configures `protoc` directly.
 
 ## Policy
 
-Every runtime dependency must have years of production use at scale, judged by adoption and
-maintenance rather than version number, since Rust convention keeps many foundational crates
-below 1.0. Young or fast-moving crates are replaced by hand-written code when the surface is
-small enough (the MCP protocol layer). Nothing here is `unsafe`.
+Prefer established runtime dependencies, judged by adoption and maintenance. Implement small
+protocol surfaces directly when an SDK adds unnecessary scope, as with the MCP layer.
 
 ## Runtime dependencies
 
@@ -57,7 +52,7 @@ The web demo (`evals web`) serves one third-party file: htmx 2.0.10 (`crates/eva
 | pulldown-cmark | The result reports use headings, paragraphs, lists and tables; a small renderer in `markdown.rs` covers them |
 | protox | A pure-Rust protobuf compiler; the real protoc is vendored instead |
 
-## gRPC in Rust, for the record
+## gRPC implementations
 
 | Crate | First release | Total downloads | Last 90 days | Latest release |
 |---|---|---|---|---|

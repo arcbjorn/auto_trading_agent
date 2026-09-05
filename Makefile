@@ -25,7 +25,7 @@ bench:
 	cargo run --release -p engine --example bench
 	cargo run --release -p engine-server --example grpc_bench
 
-# Three million orders over gRPC with the journal on, restarting between rounds: memory must level off.
+# Four million orders over gRPC with the journal on, restarting between rounds: memory must level off.
 soak:
 	scripts/soak.sh 4
 

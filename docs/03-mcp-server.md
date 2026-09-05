@@ -1,10 +1,10 @@
 # 03 · The MCP server
 
-MCP is how a host asks a server "what can you do?" and calls those things over JSON-RPC 2.0. This server is a thin translator: one gRPC client, eleven tools, three resources, one prompt. The design work is ergonomics for the model — say just enough, in its units, with the arithmetic already done, and make every error fixable in one retry.
+The MCP server exposes eleven tools, three resources and one prompt over JSON-RPC 2.0. It translates human units to gRPC, computes market summaries and applies risk policy before submitting actions.
 
 ## Why the protocol layer is written by hand
 
-MCP is two years old. No SDK for it, in any language, has the production history of tokio, hyper or serde, and the official Rust SDK still changes its API between minor versions. The subset this server needs is small: nine methods plus notifications. Writing it on `serde_json` keeps the dependency surface to crates that have been in production for years and makes the protocol behaviour fully visible in `crates/mcp-server/src/protocol.rs`. Conformance is checked against the official Python client (see *Interoperability* below).
+The protocol subset is small enough to implement directly on `serde_json` and `hyper`, keeping dependencies limited and dispatch visible in `crates/mcp-server/src/protocol.rs`. The tradeoff is maintaining schemas and protocol behavior ourselves. CI checks interoperability with the official Python client.
 
 ## Protocol subset
 
@@ -13,7 +13,7 @@ MCP is two years old. No SDK for it, in any language, has the production history
 | `initialize` | Negotiates the version: echoes the client's version when it is one of `2025-11-25`, `2025-06-18`, `2025-03-26`, otherwise answers with the latest. Advertises `tools`, `resources` and `prompts` capabilities and the standing instructions |
 | `notifications/initialized`, other notifications | Consumed, no reply |
 | `ping` | `{}` |
-| `tools/list` | The nine tool definitions with input schema, output schema and annotations |
+| `tools/list` | Eleven tool definitions with input schema, output schema and annotations |
 | `tools/call` | Runs a tool. Unknown tool: JSON-RPC `-32602`. Invalid arguments and engine errors: a readable `isError` result |
 | `resources/list`, `resources/templates/list`, `resources/read` | Three JSON resources and one template; unknown URI: `-32002` |
 | `resources/subscribe`, `resources/unsubscribe` | Known URIs only; the server then sends `notifications/resources/updated` when the engine changes. Over stdio only: the stateless HTTP transport refuses a subscription with an explanation, because it has no stream to deliver on |
@@ -27,7 +27,7 @@ Envelope rules follow JSON-RPC 2.0: `jsonrpc` must be `"2.0"`, an `id` must be a
 
 **stdio.** One JSON message per line on stdin and stdout. Nothing else is ever written to stdout; logs go to stderr. This is what Claude Desktop and Claude Code expect (`mcp-server` with no flag).
 
-**Streamable HTTP, stateless.** `POST /mcp` with a request answers `application/json`; a notification answers `202 Accepted`. `GET /mcp` answers `405` because the server never opens a server-to-client stream, which the specification allows. No session id is issued, so clients never send one. The `Origin` header, when present, must be a loopback origin (DNS-rebinding protection for a server meant to run locally); an `MCP-Protocol-Version` header, when present, must be a supported version. Bodies are capped at 1 MiB. `GET /healthz` answers `ok`. (`mcp-server --http`, default `127.0.0.1:8000`.)
+**Streamable HTTP, stateless.** `POST /mcp` returns `application/json` for requests and `202 Accepted` for notifications. `GET /mcp` returns `405`; there is no server-to-client stream or session id. Host and optional Origin headers must be loopback; a supplied `MCP-Protocol-Version` must be supported. Bodies are capped at 1 MiB. `GET /healthz` answers `ok`. Run with `mcp-server --http` (default `127.0.0.1:8000`); see the [local trust boundary](09-runbook.md#local-trust-boundary).
 
 ## The tools
 
@@ -36,12 +36,12 @@ Envelope rules follow JSON-RPC 2.0: `jsonrpc` must be `"2.0"`, an `id` must be a
 | `get_market_summary` | none | best bid and ask, mid, spread, last trade, tick and lot size, sequence. About 70 tokens | read-only, idempotent |
 | `get_order_book` | `depth` 1–20, default 5 | aggregated price levels per side, best first, plus spread, mid, sequence | read-only, idempotent |
 | `get_quote` | `side`, `quantity_eth` | walks up to 200 levels: fillable quantity, whether fully fillable, average price, worst price, notional, levels consumed | read-only, idempotent |
-| `place_limit_order` | `side`, `price_usdc`, `quantity_eth`, optional `client_order_id` | order id, status, filled and remaining quantity, average fill price, fills; or `{rejected: true, code, message, hint}` from the policy | not read-only, non-destructive, idempotent with a client id |
+| `place_limit_order` | `side`, `price_usdc`, `quantity_eth`, optional `client_order_id` | order id, status, filled and remaining quantity, average fill price, fills; or `{rejected: true, code, message, hint}` from the policy | destructive, not idempotent (client id is optional) |
 | `get_balances` | none | available and reserved USDC and ETH of this account in human units, and whether the engine enforces balances. Deposits are an operator action over gRPC, deliberately not a tool | read-only, idempotent |
-| `get_statement` | none | how the account has done: deposits and withdrawals, ETH bought and sold with USDC paid and received, venue inventory at its average cost, realised P&L, and unrealised P&L at the current reference price (mid, else last trade, else the quoted side), all in human units with a note on what realised means | read-only, idempotent |
-| `get_order` | `order_id` | one of this account's orders with its current status and remaining quantity, whatever its age; another account's id is denied | read-only, idempotent |
+| `get_statement` | none | deposits, withdrawals, bought/sold totals, venue inventory and average cost, realised P&L and unrealised P&L at the current reference price; all in human units | read-only, idempotent |
+| `get_order` | `order_id` | a retained order's status and remaining quantity; another account's id is denied | read-only, idempotent |
 | `cancel_order` | `order_id` | final status and cancelled quantity | destructive, idempotent |
-| `cancel_all_orders` | none | every open order of the account cancelled in one call: count, the cancelled orders, and any that were already gone. One policy action, however many orders, so "cancel everything" cannot trip the rate limit | destructive, idempotent |
+| `cancel_all_orders` | none | atomically cancels the account's open orders; returns the count and cancelled orders. Counts as one policy action | destructive, idempotent |
 | `list_orders` | `status` open / filled / cancelled / all (default open), `limit` 1–50 | compact rows, newest first | read-only |
 | `list_trades` | `limit` 1–50 | compact rows, newest first, each with `side` (what this account did) and `role` (maker or taker) and the account's own order id; counterparty ids are never shown | read-only |
 
@@ -53,15 +53,12 @@ Design rules applied throughout:
 * **The arithmetic is done here.** Quotes, notionals, average prices and the side of each trade are computed here so the model never sums seven price levels or works out which of two order ids was its own.
 * **Errors are instructions.** `price_usdc "3000.123" has more than 2 decimals; it must be a multiple of 0.01. Round it and retry`, or `NotFound: order 99 not found. Check the id with list_orders.`
 * **Identity is bound server-side.** The account comes from `ACCOUNT_ID`, never from a tool argument, so the model cannot act on another account's orders.
-* **A cancelled order says why.** `place_limit_order` and the listings carry `cancel_reason` (`user`, `ioc`, `fok`, `self_trade_prevention`, `exposure_limit`). When the engine cancelled a remainder itself, the result adds a one-sentence `note` the model can relay: what happened and what to do about it. The demo conversation found this gap. A confirmed "sell now" came back cancelled, and neither the tool result nor the model could explain why.
+* **Cancellation reasons.** Placements and listings carry `cancel_reason` (`user`, `ioc`, `fok`, `self_trade_prevention`, `exposure_limit`), with an explanatory `note` when the engine cancels a remainder.
 * **A refused order says what is available.** An order the wallet cannot back comes back as a readable error with the needed and available amounts and a hint to report the balance, not to retry.
 * **Ids are not a text channel.** A `client_order_id` comes back in every listing the model reads, so it is limited to 128 characters of letters, digits, `.`, `_`, `:` and `-`; anything else is refused with a readable error. The engine enforces the length again.
 * **The collar always has a reference.** The fat-finger check measures the limit price against the midpoint when both sides of the book exist, else the last trade, else the one quoted side, so a one-sided or freshly traded-through book does not switch the check off. Only an empty market with no trade yet has no reference.
-* **The session cap counts what the engine took.** The per-session value cap is charged before the gRPC call and released again if the engine rejects the order, so a retry after a transient failure is not double-counted.
+* **Submission accounting.** Placements serialize policy checks and submission within the MCP process. Submitted notional is charged before gRPC, refunded on definitive rejection and retained on ambiguous transport failures. Matching client ids deduplicate placements while the engine retains them; MCP's policy-free retry lookup covers the latest 200 orders.
 * **The book after the action comes with the result.** `place_limit_order`, `cancel_order` and `cancel_all_orders` return the best bid and ask as they stood right after the command. The engine attaches them to its own reply, from the same batch, so they are exact rather than a second read. The system prompt tells the model to report the market from them.
-
-  Measured on the DeepSeek suites: tool calls per turn fell from 2.00 to 1.83 on execution and from 2.00 to 1.47 on paraphrase, with every case still passing. The idea is borrowed from a sibling implementation of this exercise.
-* **Annotations tell the truth.** `place_limit_order` is marked destructive and not idempotent: a placement commits funds and can fill at once, and it deduplicates only when the caller supplies `client_order_id`, which is optional. An external review found the earlier annotations promised more than the tool delivers.
 * **Bounded results.** A placement lists at most 50 fills and says so with `fills_truncated`; the totals above the list always cover every fill. Every call to the engine carries a deadline (`ENGINE_TIMEOUT_MS`, 2 s), so a stalled engine is a tool error the model can report, not a hung turn.
 * **Metrics.** `GET /metrics` on the HTTP transport renders tool calls by tool and outcome, policy rejections by code and HTTP outcomes in the Prometheus text format, and fetches the engine's counters over `GetStats` on each scrape.
 * **Typed output.** Every tool declares an `outputSchema` and returns `structuredContent` plus the same JSON as text, as the specification recommends.
@@ -76,7 +73,7 @@ Design rules applied throughout:
 
 ## Resources and prompt
 
-A tool the model does not need on a turn still costs context: the eleven definitions are about a thousand tokens on the Messages API side. The chat service keeps that cost to one cache write per session by never changing the list (see [04](04-agent-service.md)).
+The eleven tool definitions occupy about a thousand tokens. The chat service keeps the list stable for prompt caching (see [04](04-agent-service.md)).
 
 Resources are application-controlled: a host may attach them to context without the model asking. `market://ETH-USDC/summary`, `market://ETH-USDC/book` (5 levels), the template `market://ETH-USDC/book/{depth}` and `orders://me/open`, all `application/json`. The `trading_assistant` prompt carries the unit rules and the "only trade on explicit instruction" rule for hosts that support prompts. Hosts use tools far more reliably than resources, so the tools are self-sufficient.
 

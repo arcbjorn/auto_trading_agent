@@ -1,6 +1,6 @@
 # 02 · The engine
 
-An order book is two sorted lists: bids highest price first, asks lowest first. A new limit order trades against the other side at any price satisfying its limit; the remainder waits at its own price, behind orders already there. Cancel removes a waiting order. That is the whole business logic — everything below is data structures, determinism and concurrency.
+The book sorts bids highest first and asks lowest first. Incoming limit orders match the opposite side within their limit; any resting remainder joins the queue at its own price.
 
 ## Matching rules
 
@@ -11,9 +11,9 @@ An order book is two sorted lists: bids highest price first, asks lowest first. 
 | Maker price | Trades execute at the resting order's price; the taker gets the price improvement |
 | GTC | The unfilled remainder rests at the order's own limit |
 | IOC | The unfilled remainder is cancelled |
-| FOK | Availability is checked first; the order is rejected without touching the book if the full quantity is not there |
+| FOK | Availability is checked first; insufficient quantity rejects the order without matching |
 | Self-trade prevention | "Cancel newest": an incoming order never trades with its own account's resting order; matching stops there and the remainder is cancelled |
-| Idempotency | `client_order_id` is unique per account. The same request again returns the original reply (order and fills); the same key with different parameters is `ALREADY_EXISTS` |
+| Idempotency | While retained, `client_order_id` is unique per account. Matching retries reconstruct the placement reply with retained fills; different parameters return `ALREADY_EXISTS` |
 
 ### Worked example
 
@@ -32,12 +32,12 @@ pub struct Book {
     bids: BTreeMap<Price, Level>,                      // best bid = last key
     asks: BTreeMap<Price, Level>,                      // best ask = first key
     orders: HashMap<OrderId, Order>,                   // O(1) cancel and lookup
-    by_account: HashMap<Arc<str>, Vec<OrderId>>,       // one account's orders, placement order
+    by_account: HashMap<Arc<str>, BTreeSet<OrderId>>,  // one account's orders, placement order
     by_client_id: HashMap<Arc<str>, HashMap<Arc<str>, OrderId>>, // idempotency: account -> client id
-    original_replies: HashMap<OrderId, (Order, Vec<Trade>)>,
-    events: Vec<Event>,                                // append-only history
-    trades: Vec<Trade>,                                // sequence order
-    trades_by_account: HashMap<Arc<str>, Vec<usize>>,  // positions in `trades`
+    fill_ids: HashMap<OrderId, (Qty, Vec<TradeId>)>,   // reconstruct placement replies
+    events: VecDeque<Event>,                           // bounded event history
+    trades: VecDeque<Trade>,                           // retained trades, sequence order
+    trades_by_account: HashMap<Arc<str>, VecDeque<TradeId>>,
     last_trade_price: Option<Price>,
     next_order: u64, next_trade: u64, next_seq: u64,   // counters, never clocks or UUIDs
 }
@@ -46,29 +46,17 @@ struct Level { total: Qty, live: u32, queue: VecDeque<OrderId> }  // FIFO of ids
 
 Each level holds a FIFO of order ids, so an order lives in exactly one place. Cancel is O(1): mark the order, subtract its remaining quantity from the level total, drop the level when the total reaches zero; the matcher skips cancelled ids lazily when it reaches them.
 
-**Compaction survives a crash.** It happens in three steps, each a rename or a delete: move the journal aside (`.retired`), write the new snapshot and rename it into place, delete the retired file. The directory is synced after each rename, so the entries themselves survive a crash.
+**Atomic cancellation.** `CancelAllOrders` cancels an account's live orders in one matcher command and journal record.
 
-Recovery decides what to do from a generation counter, not a clock. The snapshot carries the generation it was written for, and the retired journal is stamped with the same number. A snapshot at that generation or later already contains the retired journal, so recovery deletes it. An older snapshot does not, so recovery replays it, then finishes the interrupted compaction before returning. That last part matters: without it the state lives only in memory and the next restart loses it.
+**Rate limiting.** `ENGINE_ACCOUNT_RATE_PER_SEC` uses a token bucket before queue admission: 50 mutations/second/account in the standalone binary, unlimited in the library default. Excess requests receive `RESOURCE_EXHAUSTED` and a retry delay. The same limit applies to pipelined requests.
 
-A test crashes at each of the three steps and restarts twice from each. Two earlier attempts were wrong and an external review caught both: publishing the snapshot before truncating the journal could apply deposits twice, and replaying without persisting lost the state on the next restart.
-
-If a journal commit fails, the matcher stops. The book has already changed and the journal may not hold it, so continuing would serve state a restart could not reproduce.
-
-**Cancelling everything is one command.** `CancelAllOrders` cancels every live order of an account inside the matcher, journaled as a single record, so the book is never observed half cancelled and one tool call replaces up to a thousand round trips.
-
-**Archiving by age too.** Closed orders and trades older than `ENGINE_RETAIN_HOURS` (24) are archived on the next command whatever the counts, so a quiet venue does not hold week-old history. The closing time is the command's own clock, which the journal records, so replay archives the same records. Live orders never expire.
-
-**A rate limit at the edge.** `ENGINE_ACCOUNT_RATE_PER_SEC` (unlimited by default) is a token bucket per account in front of the queue: a flooding client is answered `RESOURCE_EXHAUSTED` with the time to retry before its command is queued, so it cannot fill the queue for everyone else. It applies to the pipelined stream too, one result at a time.
-
-**Streamed snapshots.** A snapshot is written as JSON lines, a header then one record per line straight from the book's maps, and read back one line at a time into a `BookBuilder` that `from_state` uses too. Recovering a million-order journal peaked at 136 MB resident with the earlier single-object snapshot and 122 MB with lines; the snapshot itself is a fifth larger and recovery a tenth slower for the per-line parsing. A modest gain, kept because it is the shape a much larger book would need. Snapshots in the earlier form are still read.
-
-**Exposure limits in the matcher.** Per-account caps on live orders and on open notional (`ENGINE_MAX_OPEN_ORDERS`, `ENGINE_MAX_OPEN_NOTIONAL_USDC`, unlimited by default) are checked inside the single-writer transaction right before a remainder rests, so two concurrent placements cannot both pass a check made outside. Fills stand; a remainder that would exceed a cap is cancelled with reason `exposure_limit`, which the MCP result explains. The limits travel with the snapshot, and recovery refuses a snapshot taken under other limits, since replay would rest different orders. The audit checks the per-account counters against the live orders.
+**Exposure limits.** The matcher checks per-account live-order and open-notional caps before a remainder rests. Standalone defaults are 20 orders and 200000 USDC (`ENGINE_MAX_OPEN_ORDERS`, `ENGINE_MAX_OPEN_NOTIONAL_USDC`); library defaults are unlimited. Fills stand, but a remainder exceeding either cap is cancelled with reason `exposure_limit`. Checking inside the matcher prevents concurrent placements from bypassing the limits.
 
 **Pipelined placement.** `PlaceOrders` is a bidirectional stream. The client sends requests without waiting for replies and gets one result per request, in request order. A refused request comes back as a result carrying its status code, not as the end of the stream.
 
 Two tasks make that work: one queues each request into the matcher as it arrives, waiting for room rather than answering `RESOURCE_EXHAUSTED`; the other forwards replies in order.
 
-The difference is large. One stream places 955k orders a second on the laptop, four streams 673k, against 63k for sixteen unary clients. Unary calls spend their time on the wire; a stream keeps the matcher busy.
+Recorded throughput: 955k orders/s on one stream, 673k on four, versus 63k with sixteen unary clients. See [results](results/README.md).
 
 `GetStats` returns the matcher's counters for dashboards: commands, batches, largest batch, events, orders and trades retained, sequence, and queue room.
 
@@ -76,29 +64,23 @@ The difference is large. One stream places 955k orders a second on the laptop, f
 
 **Hard caps.** No order may be priced above 1,000,000.00 USDC or be larger than 10,000 ETH (`MAX_PRICE`, `MAX_QTY`), whatever the wallet mode and whatever the layers above enforce. A rejected request leaves no trace: no id, no sequence number.
 
-**A structural audit.** `Book::check_invariants` walks the whole book and returns the first violation. It checks that every kept level matches its queue in quantity and live count, that every live order rests exactly once on its own side and price, and that the book is not crossed. Statuses agree with quantities and the account index is exact. Reservations back the live orders when balances are enforced. Retained trade ids are contiguous and every retention bound holds. The property tests run it after every operation; the retention and recovery tests run it on their results.
+**Structural audit.** `Book::check_invariants` checks level totals and queues, live-order placement, an uncrossed book, statuses, account and exposure indices, reservations, contiguous retained trade ids and retention bounds. Property tests run it after each operation; retention and recovery tests also check their results.
 
-**Nothing grows without bound.** Live orders are kept for ever. Closed orders and trades are kept to a limit: the last 100,000 of each (`RETAINED_CLOSED_ORDERS`, `RETAINED_TRADES`), and anything older than a day (`ENGINE_RETAIN_HOURS`). Past that the oldest is archived.
+**Closed history is bounded.** The engine retains up to 100,000 closed orders and trades (`RETAINED_CLOSED_ORDERS`, `RETAINED_TRADES`), with an age limit of 24 hours (`ENGINE_RETAIN_HOURS`). Successful placements and cancellations advance pruning using journaled command timestamps; reads do not. Live orders never expire. Account count, funded balances, ledgers and journal disk usage have no global cap.
 
 Archiving a closed order removes it from the lookups, from its account's listing, and from the idempotency index. So `GetOrder` answers `NOT_FOUND`, and reusing its `client_order_id` places a new order rather than replaying the old one. Nothing else changes: balances, ledgers and the book itself are untouched, and the account's statement still counts every fill.
 
-Three details make that safe. The per-account index is an ordered set (`BTreeSet`), so removing one order costs `O(log n)` and listings stay newest-first. An archived order still sitting in a price level's queue is skipped when the matcher reaches it, exactly like a cancelled one. And a retry is answered by rebuilding the original reply from the order, the quantity it filled, and whichever fill ids remain, rather than from a stored copy of every reply ever sent.
-
-The archiving order is part of the snapshot, so a restarted engine forgets the same orders as one that never stopped.
-
-The cost: the million-order benchmark peaks at 406 MB instead of 761 MB, and the ordered index takes about 8% off throughput. `Book::with_retention` sets the limits. The test `closed_history_is_bounded_and_live_orders_are_kept` covers listings, retries of both retained and archived orders, the queue skip, and the restart.
+The per-account `BTreeSet` supports removal in `O(log n)` and newest-first listings. Price-level queues skip archived ids lazily. Retries reconstruct replies from the order and its retained fill ids, avoiding a separate reply cache. Snapshots preserve pruning order; `Book::with_retention` sets the limits. Tests cover listings, retries, queue cleanup and restart.
 
 `make soak` (`scripts/soak.sh`, `crates/engine-server/examples/soak.rs`) checks the bound end to end. Four rounds, a million orders each, over gRPC from sixteen clients with the journal on, and every order still resting 32 placements later is cancelled. Each round runs in a fresh process that recovers the previous snapshot and journal tail, compacts, and reports its own memory.
 
 On the laptop: round 1 has nothing to recover and peaks at 110 MB. Rounds 2 and 3 each recover a 39 to 40 MB snapshot plus a 195 MB journal in 2.2 to 2.5 s, and peak at 108 and 107 MB. The snapshot stops growing at the retention limit, and so does the process.
 
-The first soak run showed 261 to 269 MB from round 2 on. Replay was writing every replayed event into the buffer the sequencer broadcasts from, and nobody had drained it yet, so the whole journal sat in memory as events until the first batch. Replay now empties that buffer as it goes.
-
-**Listings never scan the book.** Every read runs on the matcher thread, so its cost is latency for every other command. Both listings are indexed: `ListOrders` walks one account's id list backwards and stops at the limit, and `ListTrades` walks that account's positions in the trade vector.
+**Account-indexed listings.** `ListOrders` walks an account's ordered ids backwards; `ListTrades` walks its trade ids. Both stop at the requested limit and run on the matcher thread.
 
 With a million orders in the book, listing ten open orders of one account takes 0.7 µs. The full scan it replaced took 20 ms, on the matcher thread, and the MCP server does that listing before every order it places (to count open orders for the policy).
 
-Account and client ids are interned per account as `Arc<str>`, so the clones an order makes on its way through the event, the reply cache and the reply are refcount bumps.
+Account and client ids use interned `Arc<str>` values to avoid copying strings into events and replies.
 
 A trade records both order ids, both account ids and the taker's side, so a listing can say which side an account traded on and whether it was maker or taker; the gRPC layer blanks the counterparty's account in account-scoped listings.
 
@@ -112,7 +94,7 @@ The same input sequence always produces the same output, which makes the engine 
 
 Two property tests cover the book. The first generates random sequences of places (GTC, IOC, FOK) and cancels across four accounts. After every step it asserts that the book is never crossed, that displayed depth equals the open quantity, that every trade is at the maker's price and inside the taker's limit, that no self-trade happens, that sequence numbers are unique, and that replaying the same sequence gives an identical event log.
 
-The second runs those same sequences through a deliberately naive matcher written in the test: resting orders in a vector, the best price and lowest id found by scanning on every fill, self-trade prevention and FOK availability spelled out the obvious way. After every operation the two must agree on the trades (same order, makers, takers, prices, quantities) and on the resting orders. The reference is slow and obviously right; the book is fast and now demonstrably matches it.
+The second compares the book with a vector-based reference matcher that scans for the best price and earliest id on every fill. Trades and resting orders must agree after every operation, including self-trade prevention and FOK handling.
 
 ## Thread safety and concurrency: the single writer
 
@@ -123,9 +105,9 @@ tonic runs each RPC as a tokio task, so many `PlaceOrder` calls arrive at once. 
 * Handlers hold an `EngineHandle`: a channel sender and a pointer to the latest snapshot. Nothing else can reach the book, and the compiler enforces it.
 * Contention is one channel send. The book itself has no lock and no `unsafe`.
 * Reads of the top of book (`GetOrderBook`, `GetMarket`) never enter the queue: readers swap to the latest published snapshot lock-free.
-* The matcher works in batches: it blocks for one command, then drains whatever else is already queued (up to 256), applies them all in arrival order, publishes one snapshot, and only then sends the replies. Under a burst this amortises the snapshot over many commands; publishing before replying means a client that reads the book after its own reply always sees its own order. At the load of the benchmarks the queue rarely holds more than a few commands, so throughput is unchanged within noise; the guarantee is the point.
+* The matcher drains up to 256 queued commands, applies them in arrival order and publishes one snapshot before replying. A read after a successful reply sees at least that command's effects.
 * The channel is bounded (10,000 by default). When it is full, `try_send` fails and the handler answers `RESOURCE_EXHAUSTED` instead of growing memory.
-* Unlike an interpreter with a global lock, the matcher thread and the tokio worker threads run on different cores, so encoding, networking and matching overlap.
+* The matcher and tokio workers can run on separate cores, overlapping matching, encoding and networking.
 
 `crates/engine-server/tests/concurrency.rs` runs a real tonic server with sixteen concurrent clients placing 500 orders each. Every response succeeds, every event's sequence number is unique and contiguous, and the book is never crossed. A second test has eight accounts rest 150 orders each at shared price levels and cancel all of them from parallel tasks while the others are still placing: every cancel succeeds and the book ends empty, which checks the lazily dropped cancelled ids and the per-level totals under interleaving.
 
@@ -165,9 +147,9 @@ A subscriber more than 8,192 events behind is not silently skipped. Its stream e
 
 ## Durability: a journal of commands, replayed
 
-The book is deterministic, so durability needs only its inputs. Set `ENGINE_JOURNAL=/path/file.jsonl` and every place and cancel is appended to a write-ahead journal before it is applied: one JSON line holding the request and the wall clock it was accepted with. The journal is committed once per matcher batch, before that batch's replies go out. Reads are never journaled.
+Set `ENGINE_JOURNAL=/path/file.jsonl` to journal placements, cancellations, deposits and withdrawals with their timestamps before applying them. The journal commits once per matcher batch, before replies. Reads are not journaled. A failed commit stops the matcher because its in-memory state may no longer be recoverable.
 
-On start the engine replays the file through the same code and arrives at the same orders, trades, ids and sequence numbers. The next order id and sequence continue from there, and an idempotent retry of a `client_order_id` from before the restart still returns the original order. A corrupt line fails startup rather than quietly losing data.
+Startup replays commands through the same matcher, restoring orders, trades, wallets and counters. Retained client ids still deduplicate retries. A corrupt line fails startup.
 
 Two levels of durability, measured on the laptop in the README with the gRPC benchmark:
 
@@ -179,11 +161,13 @@ Two levels of durability, measured on the laptop in the README with the gRPC ben
 
 Batching is what makes the fsync variant usable under load: one `fsync` covers every command queued while the previous one ran.
 
-A journal line is about 136 bytes, so a million orders are about 130 MB. The file does not grow without bound. When the engine starts and the journal is larger than `ENGINE_JOURNAL_COMPACT_MB` (64 by default), it writes the recovered book as a snapshot beside the journal and empties the journal, so recovery becomes the snapshot plus whatever was appended since.
+At startup, a journal above `ENGINE_JOURNAL_COMPACT_MB` (64 by default) is compacted into a snapshot plus an empty tail. Compaction does not run during service, so disk usage can grow until restart. Snapshots stream as JSON lines; the older single-object format remains readable.
+
+Compaction durably publishes a generation marker, retires the journal, publishes its snapshot, then durably removes the retired input before removing the marker. Recovery compares generations to avoid replaying deposits twice, and snapshots recovered retired input before processing an active tail. Ambiguous generations fail startup. Tests cover interrupted compaction and repeated restarts.
 
 The snapshot holds the book's durable state: retained orders and trades, the fills each order took at placement (for idempotent retries), the archiving order, wallets and counters. Price levels and indices are derived again on load, with time priority inside a level restored as id order.
 
-A snapshot records whether balances were enforced and refuses to load under the other setting, since orders placed without reservations cannot be settled with them. The in-memory event log starts empty after a snapshot; the journal is the history.
+A snapshot binds balance mode, exposure limits and retention settings; recovery refuses mismatches. Journal-only recovery has no configuration manifest, so those settings must be preserved by the operator. The in-memory event log starts empty after loading a snapshot.
 
 The recovery tests live in three places.
 
@@ -193,7 +177,7 @@ The recovery tests live in three places.
 
 ## gRPC contract
 
-`proto/clob.proto` defines eleven unary RPCs and one server-streaming RPC (`Subscribe`): `PlaceOrder`, `CancelOrder`, `GetOrder`, `ListOrders`, `ListTrades`, `GetOrderBook`, `GetMarket`, `Deposit`, `Withdraw`, `GetBalances`, `GetStatement`. The generated code lives in `crates/clob-proto`; `build.rs` runs the real `protoc` (a system one when `PROTOC` is set, otherwise the binary vendored by `protoc-bin-vendored`), so a fresh checkout builds with nothing but cargo.
+`proto/clob.proto` defines thirteen unary RPCs: `PlaceOrder`, `CancelOrder`, `CancelAllOrders`, `GetOrder`, `ListOrders`, `ListTrades`, `GetOrderBook`, `GetMarket`, `Deposit`, `Withdraw`, `GetBalances`, `GetStatement`, `GetStats`; plus bidirectional `PlaceOrders` and server-streaming `Subscribe`. Generated code lives in `crates/clob-proto`. Its build script uses `PROTOC` when set, otherwise the vendored compiler.
 
 `Trade` carries `taker_side`, `maker_account` and `taker_account`. An account-scoped `ListTrades` fills in only the requesting account's id and leaves the counterparty blank; an unscoped listing (the harness, an operator) carries both.
 
@@ -202,7 +186,6 @@ The recovery tests live in three places.
 | Quantity or price not positive, unknown side, non-numeric id, empty account or client id, account or client id longer than 128 bytes | `INVALID_ARGUMENT` |
 | Unknown order id | `NOT_FOUND` |
 | Cancel of an order that is filled, cancelled or rejected | `FAILED_PRECONDITION` |
-| Order not backed by the account's available USDC or ETH | `FAILED_PRECONDITION`, message in human units with what is available |
 | Order not backed by the account's available USDC or ETH | `FAILED_PRECONDITION`, message in human units with what is available |
 | Order belongs to another account | `PERMISSION_DENIED` |
 | Same `client_order_id` with different parameters | `ALREADY_EXISTS` |
@@ -214,7 +197,7 @@ The recovery tests live in three places.
 
 | What | Where | Command |
 |---|---|---|
-| 14 unit tests (rules, cancel, idempotency, IOC/FOK, self-trade, listings, indexed listings against a log scan, reserve/settle/release, ledger and withdrawals, state round trip) and 3 property tests (book invariants and replay; agreement with a naive reference matcher; balance conservation and zero-sum ledgers), each auditing the book with `check_invariants` after every operation | `crates/engine/src/book.rs` | `cargo test -p engine` |
+| Unit and property tests: matching, idempotency, retention, balances, ledgers, invariants and reference-matcher agreement | `crates/engine/src/book.rs` | `cargo test -p engine` |
 | Concurrency (placements, racing cancels), restart from the journal, and status-code integration tests over a real tonic server | `crates/engine-server/tests/concurrency.rs` | `cargo test -p engine-server` |
 | Journal replay identity | `crates/engine/src/journal.rs` | `cargo test -p engine` |
 | Pure book throughput and listing cost in a million-order book | `crates/engine/examples/bench.rs` | `cargo run --release -p engine --example bench` |

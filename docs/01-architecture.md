@@ -2,35 +2,29 @@
 
 ## The shape of the system
 
-Four components in a line. Only the engine holds state and enforces market rules; every layer above it translates.
+The engine owns market state and matching rules. The MCP server applies risk policy, the agent service manages conversations, and the evaluation harness checks outcomes.
 
 ![Four components in a line: agent-service, mcp-server and engine-server, with the eval harness grading the engine's end state](assets/architecture.svg)
 
 * **engine** (library) is the pure order book: no I/O, no threads, no clocks.
 * **engine-server** wraps it in tonic. Every handler task sends a command to the one matcher thread and awaits the reply.
 * **mcp-server** speaks the Model Context Protocol, written by hand as JSON-RPC 2.0 on `serde_json`, over stdio (for Claude Desktop and Claude Code) and Streamable HTTP (for the service and the MCP Inspector). It holds one gRPC client and the deterministic risk policy.
-* **agent-service** turns a sentence into tool calls with Claude through the Messages API over raw HTTPS, and owns the conversation-level guardrails.
+* **agent-service** turns a sentence into tool calls with Claude or DeepSeek through provider-specific HTTPS clients, and owns the conversation-level guardrails.
 * **evals** drives the whole stack in-process, seeds the book, runs a case, and grades what the engine ended up holding.
 
-## The rule that keeps the design honest
+## Action checks
 
-The model may only ever *request* an action. Validation, risk limits, identity and ordering are enforced in code below it: the MCP server validates and applies policy, the engine validates again and sequences, and the service decides which action tools a turn may execute. No prompt can bend any of that.
+The model requests an action. The service checks intent and confirmation, the MCP server validates arguments and applies risk policy, and the engine checks funds, ownership and matching rules. Intent recognition uses language heuristics; numeric checks and sequencing are deterministic.
 
 ## Data flow of one order
 
-1. The user writes "buy half an ETH at 3000".
-2. The service reads the words, not the model's intent: a trade verb and two figures mean this turn may place an order. It appends that permission to the conversation as a note.
+1. The user writes "buy 0.5 ETH at 3000".
+2. The service recognises trade intent and appends a permission note to the conversation.
 3. The model calls `place_limit_order` with `side`, `price_usdc` and `quantity_eth` as decimal strings.
-4. The gate checks the call against the user's own words. The figures match, so it proceeds. (Had the order been large, unpriced, or on the other side, it would come back as `needs_confirmation` with an exact summary and a token.)
+4. The gate checks the side and figures against the request. Large or unpriced orders require confirmation; a contradictory side is rejected. An allowed call gets a pre-action audit record before submission.
 5. The MCP server converts the decimals to ticks and lots exactly, applies the risk policy, and calls `PlaceOrder` over gRPC with an idempotency key derived from the session and turn.
 6. The engine queues the command, the matcher applies it, publishes a snapshot, and replies with the order, its fills, and the top of book afterwards.
 7. The service audits the turn, checks every figure in the reply against the turn's inputs, and answers the user.
-2. The service sees a trade verb, appends a note after the user's message (a system-role message on Claude Opus 5) saying that placing is permitted on this turn and cancelling is not, and calls Claude with the same system prompt and tool list it uses on every turn.
-3. Claude calls `place_limit_order(side="buy", price_usdc="3000", quantity_eth="0.5")`. The service checks the permission, adds an idempotency key and, because 0.5 ETH is below the confirmation threshold, forwards the call.
-4. The MCP server parses the decimals exactly into 300000 ticks and 5000 lots, runs the risk policy (size, value, collar, open orders, rate, session cap, kill switch), and sends `PlaceOrder` over gRPC.
-5. The tonic handler queues the command; the matcher thread applies it with whatever else is queued, records events, publishes one snapshot and replies. The response carries the order and any fills.
-6. The MCP server returns human units and precomputed numbers (filled quantity, average price) as structured content; the service feeds it back to Claude, which answers in one sentence.
-7. The verifier confirms the executed action matches the user's words and numbers, and the turn is written to the audit log.
 
 ## Units
 
@@ -40,7 +34,7 @@ The model may only ever *request* an action. Validation, risk limits, identity a
 | quantity | `int64 quantity_lots` | 1 lot = 0.0001 ETH | 0.25 ETH = 2500 |
 | notional | `u128` ticks × lots | 1 unit = 0.000001 USDC | 3601.90 USDC = 3601900000 |
 
-Floats appear nowhere: the MCP layer converts decimal strings to integers and back with exact arithmetic (`crates/mcp-server/src/units.rs`).
+Prices, quantities and matching use integers: the MCP layer converts decimal strings to integers and back with exact arithmetic (`crates/mcp-server/src/units.rs`). Rate limiting, evaluation statistics and the reply-number diagnostic also use floating-point arithmetic.
 
 ## Repository layout
 

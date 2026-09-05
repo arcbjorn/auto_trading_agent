@@ -1,6 +1,6 @@
 # 04 · The agent service
 
-`POST /chat` runs a model in a loop (Claude by default, DeepSeek V4 with `MODEL_PROVIDER=deepseek`): it reads the message, decides which tools to call, the service runs them against the MCP server and feeds the results back, and the loop ends when Claude answers in text. The service owns the conversation-level guardrails: per-turn tool permission, confirmation of large orders, idempotency keys, a post-turn verifier, an audit log.
+`POST /chat` runs Claude or DeepSeek V4 in a tool loop against the MCP server until the model answers in text. The service manages per-turn permissions, confirmations, idempotency keys, reply verification and the audit log.
 
 ## Calling the model
 
@@ -39,21 +39,13 @@ Environment for the DeepSeek provider: `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` (def
 
 ## Why the tool list never changes
 
-Two facts about the API decide this.
-
-Prompt caching is a prefix match over `tools`, then `system`, then `messages`. A tool list that differs between turns invalidates everything, every turn.
-
-And the newest models bind each thinking block to the exact conversation prefix that produced it. Rebuilding `tools` or `system` between requests of one conversation invalidates those blocks, which is an error on organisations created after August 2026.
-
-So the service sends the same system prompt and the same eleven tools on every request of a session. What a turn may do is expressed inside `messages`, and enforced in code when a tool is actually called. The history is only ever appended to.
+Prompt caching matches the prefix over `tools`, `system`, then `messages`; changing the tool list invalidates that prefix. Models that bind thinking blocks to their conversation prefix also require it to stay stable. The service therefore sends the same system prompt and eleven tools throughout a session, appending permission notes to `messages` and enforcing them at call time.
 
 The note travels on the operator channel where the model has one. Claude Opus 5, Opus 4.8 and the Fable and Mythos models accept a `{"role": "system", ...}` message after the user's, which the model cannot mistake for user text and user text cannot forge. Other models get the same note as a second text block inside the user message (`[service] This turn permits: ...`).
 
 The channel is chosen from the model name, and `NOTE_CHANNEL=system|user` overrides it. If the API answers a system-role message with a 400, the service re-sends that turn on the user channel and stays there for the rest of the process.
 
-Either way the permission is enforced in code, so a forged note can mislead the model but never the engine.
-
-There is a third option we did not take: declaring action tools with `defer_loading` and surfacing them with `tool_addition` blocks, which is the cache-preserving form of per-turn tool lists. It is a beta, and was left for later.
+The note guides the model; the gate enforces permission independently. Deferred tool loading (`defer_loading` and `tool_addition`) remains an unused beta alternative.
 
 ## The loop
 
@@ -62,7 +54,7 @@ permissions = trade? cancel?   from the user's own words (or a confirmation of a
 push user message, then the note "[service] This turn permits: place orders = yes/no, cancel orders = yes/no ..."
     (a role: system message, or a second text block in the user message)
 loop (at most 8 iterations):
-    msg = POST /v1/messages   (same system, same tools, every time)
+    msg = model.create       (provider client; same system and tools)
     push assistant content (append-only history)
     match stop_reason:
         tool_use  -> for each tool_use block: permission -> confirm -> MCP call -> tool_result
@@ -76,35 +68,37 @@ audit: a pre_action line before every action tool call (the call is refused if i
 
 All tool results of one assistant turn go back in a single user message, as the API requires for parallel tool use.
 
-A tool called outside the turn's permission is not refused. It becomes a confirmation request (`needs_confirmation`, flagged `confirmation_requested:no_intent`) and waits for the user to say so in a turn of their own. So a misbehaving model call never reaches the engine by itself, and a request the keyword gate does not recognise ("compra medio ETH a 3000", "get me half an eth at 3000") still works after one question.
-
-The same flow covers cancels. The token is bound to the tool and its arguments, so a pending cancel permits cancels on the confirming turn, not placements.
+A call outside the turn's permission is held as `needs_confirmation`, flagged `confirmation_requested:no_intent`. The user must confirm the disclosed action on a later turn. The token binds the exact tool and arguments, including cancels; each turn allows at most one action attempt.
 
 `GET /metrics` renders turns by outcome, tool calls by tool and outcome (ok, held, error), flag families, a model-latency histogram and live sessions, in the Prometheus text format.
 
-A bare confirmation ("yes", "ok, confirm", "sí") when nothing is pending stands for the previous user message: the gate evaluates permission and the stated figures over both, and an order matching them needs no token, since the user has just confirmed it in words. The flag `permission_carried_over` marks such turns.
+A bare confirmation ("yes", "ok, confirm", "sí") with nothing pending can carry the previous request only if that turn sent no action and its reply explicitly asked for confirmation with the side and figures. The gate checks the carried request's parameters and marks `permission_carried_over`.
 
-Permission comes from the user's words. It is granted by a trade verb (buy, sell, bid, offer, go long, grab, dump, and so on), by the shape of an order (the asset plus at least two numbers, as in "0.5 ETH @ 3000"), by a cancel verb for `cancel_order` and `cancel_all_orders`, or by a confirmation word while an order is pending. These are heuristics, and the paraphrase suite is where they are measured. The verifier applies the same rules after the fact, and additionally flags a placed order whose price and quantity both fail to appear in a message that did contain numbers (`params_not_in_request`).
+The gate recognises trade and cancel verbs, order shapes such as "0.5 ETH @ 3000", and confirmations. Recognised questions and negations grant no permission. The paraphrase suite measures these heuristics; the [guardrails](05-guardrails.md) describe parameter checks and verification limits.
 
-On the turn in which the user confirms a pending action, the note changes shape: it names the action and its token ("The user confirmed the pending action (cancel order 5). Call cancel_order now with the same arguments plus confirmation_token ..."). The first live runs showed a model occasionally asking a second time instead of completing the flow; the explicit note removes that ambiguity without changing what is enforced.
+On confirmation, the permission note names the pending action and token and instructs the model to call the matching tool. This avoids an unnecessary second confirmation question.
 
 ## Sessions and the API
 
 Sessions are in-memory and bounded. Each holds an append-only message history, the turn counter, a pending confirmation if any, and the last order id.
 
-Each session has its own lock, held for the length of a turn, so one session's turns are serial while different sessions run at once. The store's own lock is held only to look a session up. (A test runs 64 sessions with two turns each against a model that answers in 40 ms, and finishes in under 200 ms.)
+Per-session locks serialize turns while allowing different sessions to progress independently. Lookup takes a lease under the store lock, preventing eviction while a request is active.
+
+This API has no caller authentication; sessions share the configured MCP account. Host and Origin validation enforce the local browser boundary described in the [runbook](09-runbook.md#local-trust-boundary).
 
 A client-supplied `session_id` must be 1 to 64 characters of letters, digits, `.`, `_` or `-`, because it becomes part of every idempotency key the engine echoes back in listings the model reads. Anything else is a 400.
 
-When the store holds `MAX_SESSIONS`, sessions idle longer than `SESSION_IDLE_SECS` are dropped first, then the least recently used one that has no request in flight. `POST /chat` takes `{"session_id": optional, "message": string}` and answers:
+At `MAX_SESSIONS`, eviction prefers sessions idle beyond `SESSION_IDLE_SECS`, then the least recently used inactive session. If all are busy, the request receives 429.
 
-A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) makes a retried POST, from a client that lost the response to a network error, return the earlier answer instead of running the turn, and its actions, again; the last sixteen answers per session are kept. Each session may start twenty turns per minute (`TURNS_PER_MINUTE`); the twenty-first within a minute is answered 429 without touching the model. A session also ends after `MAX_TURNS` (200) with a 409, so no conversation, and no history sent to the model, grows without bound.
+`POST /chat` accepts `message` and optional `session_id` and `request_id`. The last sixteen request outcomes retain the exact message, status and response, including failures. Matching retries replay; changed text or an interrupted handler's unknown outcome returns 409. Restart, eviction and older ids fall outside this window. Rate, turn and context limits are listed below.
+
+Example response:
 
 ```json
 {
   "session_id": "web-1", "turn": 1,
   "reply": "Placed order 5: buy 0.5000 ETH at 3000.00, resting.",
-  "tool_calls": [ { "name": "place_limit_order", "args": {...}, "result": "...", "is_error": false, "intercepted": false, "latency_ms": 3 } ],
+  "tool_calls": [ { "name": "place_limit_order", "args": {"side": "buy", "price_usdc": "3000.00", "quantity_eth": "0.5"}, "result": "...", "is_error": false, "intercepted": false, "latency_ms": 3 } ],
   "usage": { "input_tokens": 61, "output_tokens": 212, "cache_read_input_tokens": 2310, "cache_creation_input_tokens": 140 },
   "model": "claude-opus-5", "stop_reason": "end_turn", "iterations": 2,
   "latency_ms": 4210, "model_latency_ms": 4180, "flags": [], "permitted": ["place_limit_order"]
@@ -126,7 +120,7 @@ A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) m
 | `MCP_URL` | `http://127.0.0.1:8000/mcp` | |
 | `AGENT_BIND` | `127.0.0.1:8080` | |
 | `AUDIT_LOG` | `audit.jsonl` | hash-chained JSON lines, verified at startup; empty string disables (an explicit choice, never a fallback); one log per process |
-| `AUDIT_KEY` | unset | when set, the chain is keyed, so a line cannot be rewritten without it. Unkeyed the chain detects accidental corruption and mid-file edits, not an attacker who can rewrite the file; see the module docs |
+| `AUDIT_KEY` | unset | legacy secret-prefix SHA-256; see [audit limitations](05-guardrails.md#what-the-audit-chain-establishes) |
 | `CONFIRM_THRESHOLD_ETH` | `1` | orders at or above this size need a confirmation turn |
 | `CONFIRM_UNPRICED` | `1` | an order whose price or side the user never stated (the model chose it, as for "sell now" or "0.5 ETH @ 3000 please") needs a confirmation turn whatever its size |
 | `TURNS_PER_MINUTE` | `20` | turns one session may start per rolling minute; beyond it `POST /chat` answers 429 |
@@ -141,9 +135,9 @@ A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) m
 
 ## Autonomous mode (experimental)
 
-The brief asks for a supervised service: a person asks, the model requests, code decides. Letting the model act on a goal goes beyond it, so this mode is marked experimental in the code, on the page and here; the chat API never uses it. `AgentConfig::autonomous()` is the configuration for a goal run: the message is a goal ("accumulate 2 ETH at or below 3050"), not an order, and the operator who wrote it is the permission. It turns off the intent gate, the confirmation turns, the rule that the figures in the message pin the order, and the post-turn intent check. What remains is what code enforces regardless of the model: the MCP policy, balances, self-trade prevention, and the audit log, which the goal run's agent shares with the chat.
+`AgentConfig::autonomous()` lets the simulation and web goal runner act on a goal such as "accumulate 2 ETH at or below 3050". It disables intent gating, confirmation, parameter pinning and post-turn intent checks. MCP policy, balances, self-trade prevention and auditing remain active. The chat API never uses this mode.
 
-It is an explicit setting, not the gate switched off. With `gate_tools: false` alone the verifier still compares every executed action with the words and compensates a mismatch, and a goal prompt's own figures would refuse every price the model chose. The simulation and the web page's "give the agent a goal" both use it.
+Setting `gate_tools: false` alone does not enable autonomous mode: parameter checks and post-turn verification still apply, including compensating cancellation.
 
 ## Testing without the model
 

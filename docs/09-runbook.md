@@ -2,14 +2,14 @@
 
 ## Prerequisites
 
-Rust stable 1.85 or newer (`rust-toolchain.toml` pins stable with rustfmt and clippy). No system `protoc` is needed. No Python is needed except for the optional interoperability script.
+Rust 1.88 or newer; `rust-toolchain.toml` selects stable with rustfmt and clippy. No system `protoc` is needed. Python 3 is used for documentation checks and optional interoperability scripts.
 
 ## Build and test
 
 ```
-cargo build --workspace --release
-cargo test --workspace                       # unit, property, concurrency, protocol, HTTP, agent-loop tests
-cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace --release --locked
+cargo test --workspace --locked              # unit, property and integration tests
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 ```
 
@@ -38,6 +38,16 @@ curl -s localhost:8080/chat -H 'content-type: application/json' \
 
 The book starts empty and unfunded. `make run-engine` funds the demo account (50,000 USDC, 10 ETH) and a market maker through `ENGINE_FUND`; without it, deposit over gRPC (`grpcurl -plaintext -proto proto/clob.proto -d '{"account_id":"demo","usdc_micro":50000000000,"eth_lots":100000}' localhost:50051 clob.v1.Engine/Deposit`; the server enables gRPC reflection, so `grpcurl -plaintext localhost:50051 list` works without the proto, and the standard health service answers `grpc.health.v1.Health/Check`). Seed liquidity by placing orders under a funded market-maker account, or run the evaluation harness, which funds and seeds for every case. Withdrawals go the same way (`clob.v1.Engine/Withdraw` with the same fields) and only ever take what is available.
 
+## Local trust boundary
+
+Keep all services on loopback: they have no caller authentication. Chat sessions share the MCP account; gRPC trusts supplied account ids and permits deposits and withdrawals. HTTP Host/Origin checks restrict browser access but do not authenticate local callers. Remote hosting requires an authenticated gateway, account authorization and an explicit origin policy.
+
+Use a stable `session_id` and a unique `request_id` per turn. The last sixteen outcomes, including failures, replay while the session remains resident; changed text returns 409. An interrupted request can leave an unknown-outcome 409: reconcile session and engine state before another action. Restart, eviction and older ids end replay protection.
+
+After a transport timeout, an order may already have executed. The MCP policy retains its submitted-notional charge on ambiguous failures. Reconcile by the original client order id; do not assume an error refunded the risk budget. The policy is process-local and resets on restart.
+
+Preserve balance mode, exposure and retention settings for recovery. Snapshots enforce these settings; legacy snapshots imply default retention. Journal-only recovery has no configuration manifest.
+
 ## Demo conversation
 
 `make demo` (or `cargo run --release -p evals -- demo`) starts the engine, the MCP server and the agent in one process. It funds the demo account with 50,000 USDC and 10 ETH, seeds two levels on each side, and runs an eight-turn scripted conversation through the configured model: balances and price, a resting buy, "sell now" with its confirmation, open orders, cancel all, trade history, and an injection attempt. Every turn prints the tool calls with their outcome, the reply, latency and tokens, and the engine's final state follows. It needs a model: `MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=...` or `ANTHROPIC_API_KEY=...`. A recorded transcript is in `docs/results/demo-deepseek-v4-flash.md`.
@@ -58,7 +68,7 @@ Chat needs a model key (`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, or both; `make`
 
 | Component | Variable | Default |
 |---|---|---|
-| engine-server | `ENGINE_BIND` | `127.0.0.1:50051`; the engine has no authentication and trusts the account in each request, so binding it beyond loopback needs mTLS or a service identity in front of it |
+| engine-server | `ENGINE_BIND` | `127.0.0.1:50051`; see the local trust boundary above |
 | | `ENGINE_QUEUE` | `10000` |
 | | `ENGINE_JOURNAL` | unset (in memory only); a path enables the write-ahead journal and replay on start |
 | | `ENGINE_JOURNAL_FSYNC` | `0`; `1` fsyncs every batch before replying |
@@ -70,8 +80,8 @@ Chat needs a model key (`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, or both; `make`
 | | `ACCOUNT_ID` | `demo` |
 | | `MCP_BIND` (with `--http`) | `127.0.0.1:8000` |
 | | `ENGINE_TIMEOUT_MS` | `2000`, deadline for each call to the engine |
-| engine-server | `ENGINE_MAX_OPEN_ORDERS`, `ENGINE_MAX_OPEN_NOTIONAL_USDC` | per-account caps enforced in the matcher; unlimited by default |
-| engine-server | `ENGINE_ACCOUNT_RATE_PER_SEC` | mutations one account may send per second; unlimited by default |
+| engine-server | `ENGINE_MAX_OPEN_ORDERS`, `ENGINE_MAX_OPEN_NOTIONAL_USDC` | standalone binary defaults: 20 live orders and 200000 USDC of resting notional; `0` disables each cap. The library configuration used by benchmarks/evals defaults to unlimited |
+| engine-server | `ENGINE_ACCOUNT_RATE_PER_SEC` | standalone binary default: 50 mutations per second per account; `0` disables. The library default is unlimited |
 | engine-server | `ENGINE_RETAIN_HOURS` | `24`, closed orders and trades older than this are archived |
 | evals | `--judge` (`make eval-judged`) | score every reply with a second model call; needs a key |
 | agent-service | `MAX_CONTEXT_TOKENS` | `150000`, prompt tokens a session's history may reach |
@@ -108,27 +118,27 @@ Both runs end with `INTEROP OK` (`pip install mcp` and plain `python` work too).
 
 ## Evaluation
 
-See [06 Evaluation](06-evaluation.md). `make eval-oracle` and `make eval-null` need no key; `make eval-model` needs `ANTHROPIC_API_KEY`.
+See [06 Evaluation](06-evaluation.md). `make eval-oracle` and `make eval-null` need no key; `make eval-model` needs a key for the selected provider.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| `Address family not supported` on start | The host has no IPv6; bind to an IPv4 address (`ENGINE_BIND=0.0.0.0:50051`) |
+| `Address family not supported` on start | The host has no IPv6; bind to an IPv4 address (`ENGINE_BIND=127.0.0.1:50051`) |
 | `cannot reach engine` from mcp-server or evals | Start `engine-server` first, or fix `ENGINE_ADDR` |
 | `ANTHROPIC_API_KEY is not set` | Export the key, or set `ANTHROPIC_BASE_URL` to a local mock for tests |
 | `DEEPSEEK_API_KEY is not set` | `MODEL_PROVIDER=deepseek` needs the DeepSeek key; `DEEPSEEK_MODEL` picks `deepseek-v4-flash` (default) or `deepseek-v4-pro` |
 | DeepSeek answers 400 mentioning `reasoning_content` | The history lost a turn's reasoning; the service replays it from the `reasoning` block, so this points at a hand-edited session or a proxy that strips fields |
 | `insufficient USDC` or `insufficient ETH` from a tool | The wallet cannot back the order; `get_balances` shows what is available. Fund the account with `Deposit` (or `ENGINE_FUND` on a fresh engine) |
 | `cannot recover journal ... snapshot ... balance checks` on start | The snapshot was taken with the other `ENGINE_BALANCES` setting; keep the setting the journal was written with |
-| `cannot replay journal` on start | The journal file is corrupt or unreadable; the engine refuses to start on partial data. Move the file aside to start empty, or repair the bad line |
+| `cannot replay journal` on start | The journal is corrupt, unreadable, or has an ambiguous retired generation. Stop the process, preserve the journal, snapshot, retired file and generation marker together, and recover from a verified backup or reconcile the damaged record. Deleting a line or starting empty loses trading state |
 | A tool answers `RESOURCE_EXHAUSTED` | The engine's bounded queue is full under load; retry once, or raise `ENGINE_QUEUE` |
 | `{"rejected": true, "code": "RATE_LIMIT"}` | More than `POLICY_ACTIONS_PER_MINUTE` actions on one account; wait a minute (`cancel_all_orders` counts as one) |
 | A turn's `flags` contain `confirmation_requested:no_intent:...` | The model tried an action the user's message did not clearly ask for; it was held for confirmation before the MCP server. Expected on adversarial input and on phrasings the keyword gate does not know; the user's "yes" (or "sí", "oui", "ja") releases it. To make a phrasing execute at once, extend the verbs in `gate.rs` |
 | `cache_read_input_tokens` stays 0 across turns | Something rewrites the prompt prefix. The tool list and system prompt must be byte-identical between requests; check `ANTHROPIC_MODEL` did not change mid-session |
-| `403 origin not allowed` on `/mcp` | Browser-based hosts must run on localhost; the server refuses foreign origins by design |
+| `403 host or origin not allowed` | MCP, chat and web demo require a loopback Host. A present Origin must be a single explicit loopback HTTP(S) origin; `null`, foreign origins and malformed headers are refused |
 | `429` from `/chat` | The session started more than `TURNS_PER_MINUTE` turns in the last minute; wait, or raise the limit |
-| `409` from `/chat` | The session reached `MAX_TURNS`; start a new session id |
-| `NOT_FOUND` for an order that did exist | It closed more than 100,000 closings ago and was archived (`RETAINED_CLOSED_ORDERS`); the journal and the account's statement still have it |
+| `409` from `/chat` | Read the error: turn/context limits require a new session; request-id conflicts or unknown outcomes require reconciliation before retrying an action |
+| `NOT_FOUND` for an order that did exist | Closed history exceeded its count or age limit and was archived; the account statement retains aggregate totals |
 | `400 session_id must be ...` from `/chat` | Session ids are limited to 64 plain characters because they become idempotency keys the engine echoes back; use letters, digits, `.`, `_`, `-` |
 | A turn's `flags` contain `note_channel_downgraded` | The model rejected a system-role message; the service switched the permission note to the user turn for this process. Set `NOTE_CHANNEL=user` to skip the first failed request |

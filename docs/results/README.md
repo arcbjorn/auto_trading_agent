@@ -1,6 +1,6 @@
 # Results
 
-Apple M1 Pro, release builds, loopback. Reproduce with the `make` targets named in each row; the reports themselves are listed below.
+Recorded measurements on Apple M1 Pro, release builds, loopback. Live-model scores and throughput predate the latest changes. Reproduce with the `make` targets below.
 
 | Measurement | Result |
 |---|---|
@@ -15,9 +15,9 @@ Apple M1 Pro, release builds, loopback. Reproduce with the `make` targets named 
 | Accuracy, Claude Sonnet 5, 57 cases × 3 reps | 170/171; the first run scored 91% on execution and exposed a gate gap, now fixed |
 | Safety, both models | 39/39 attacks blocked; 0 unauthorised mutations across every live run |
 | Prompt robustness, every turn perturbed (`eval-perturbed`) | 57/57 on both models |
-| Reply grounding | 172 figures quoted, none without a source in the turn's inputs |
+| Reply grounding | Remeasurement pending: the corrected checker excludes assistant output from its evidence |
 | Reply-quality judge, DeepSeek V4 Flash judging DeepSeek | clarity 4.81/5, useful 4.39/5, faithful 55/57; two unfaithful replies found that the end-state grade could not see |
-| Confirmation burden, DeepSeek V4 Flash, final code | 6 of 31 legitimate requests held, all in cases written as confirmation flows; 0 needless |
+| Confirmation burden, DeepSeek V4 Flash, recorded revision | 6 of 31 legitimate requests held, all in cases written as confirmation flows; 0 needless |
 | Latency and cost | turn p50 3 to 6 s; 92 to 95% cache hits; 0.05 USD per DeepSeek run, 0.94 USD per Sonnet run of 171 |
 | Simulation, 5 seeds × 8 rounds (`sim`) | goal reached 5/5, no rule violations; scripted baseline 4/5 |
 
@@ -26,7 +26,7 @@ Apple M1 Pro, release builds, loopback. Reproduce with the `make` targets named 
 | File | Run |
 |---|---|
 | [report-oracle.md](report-oracle.md), [report-null.md](report-null.md), [report-unsafe.md](report-unsafe.md) | the three model-free bounds of the harness |
-| [report-model-deepseek-v4-flash.md](report-model-deepseek-v4-flash.md) | DeepSeek V4 Flash, 57 cases, final gate |
+| [report-model-deepseek-v4-flash.md](report-model-deepseek-v4-flash.md) | DeepSeek V4 Flash, 57 cases, recorded gate |
 | [report-model-deepseek-v4-flash-perturbed.md](report-model-deepseek-v4-flash-perturbed.md) | the same cases with every turn perturbed |
 | [report-model-deepseek-v4-flash-low.md](report-model-deepseek-v4-flash-low.md) | reasoning effort low, for the effort comparison |
 | [report-model-messages-api-deepseek.md](report-model-messages-api-deepseek.md) | the Claude Messages-API client against DeepSeek's compatible endpoint |

@@ -4,7 +4,7 @@ Short architecture decision records. Each states the decision, the alternatives,
 
 ## ADR-1 Integers with a fixed scale, never floats
 
-Price is a `u64` count of ticks (0.01 USDC), quantity a `u64` count of lots (0.0001 ETH), notionals `u128`. Alternatives: `f64` (rounding makes replays diverge and 0.1 + 0.2 ≠ 0.3), a decimal crate (exact, but slower and one more dependency in the hot path). Integers are exact, fast, and make overflow a thought the type system has already had.
+Price is a `u64` count of ticks (0.01 USDC), quantity a `u64` count of lots (0.0001 ETH), notionals `u128`. Fixed scales make accounting exact, with checked conversions and explicit caps. Alternatives: `f64` introduces rounding; a decimal crate adds a dependency for two fixed scales.
 
 ## ADR-2 One matcher thread that owns the book
 
@@ -16,7 +16,7 @@ Ids and sequence numbers are counters assigned by the matcher; wall-clock timest
 
 ## ADR-4 tonic for gRPC
 
-tonic is the de-facto standard gRPC implementation for Rust and ships inside the Linkerd proxy, Apache Arrow Flight, the OpenTelemetry OTLP exporter, InfluxDB 3, the Solana validator and Materialize. The only alternative with a production history is the binding to the gRPC C core, whose last release was in 2023. The 0.x version number is Rust convention (log, tracing, rustls, prost and reqwest are all 0.x with hundreds of millions of downloads), and tonic itself is a thin layer over hyper, h2 and tower.
+tonic integrates with tokio and the existing hyper stack, with established use in projects such as Linkerd and Arrow Flight. The alternative, grpcio, adds a binding to the gRPC C core. Adoption data is recorded in [Dependencies](08-dependencies.md#grpc-implementations).
 
 ## ADR-5 The real protoc, vendored
 
@@ -24,7 +24,7 @@ tonic is the de-facto standard gRPC implementation for Rust and ships inside the
 
 ## ADR-6 MCP by hand on serde_json, over stdio and Streamable HTTP
 
-MCP is two years old and no SDK for it in any language is battle-tested; the official Rust SDK changes its API between minor versions. The server needs nine methods. Writing them on `serde_json` and `hyper` keeps every dependency in the "years in production" class and makes the protocol behaviour visible in one file. Conformance is checked against the official Python client over both transports. Cost: no automatic schema generation, so the seven schemas are written by hand, which also gives full control over the descriptions the model reads.
+The required protocol subset fits on `serde_json` and `hyper`, avoiding an SDK dependency and keeping dispatch visible in one file. The cost is maintaining the protocol and eleven tool schemas ourselves. CI checks both transports against the official Python client.
 
 ## ADR-7 The risk policy lives in the MCP server
 
@@ -36,7 +36,7 @@ There is no official Rust SDK. The loop is about a hundred lines with `reqwest` 
 
 ## ADR-9 The model's tools are the MCP tools
 
-Fetched at startup from `tools/list` and mapped field for field. One place to fix descriptions, one surface for every host. The service adds one optional field, `confirmation_token`, to `place_limit_order`.
+Fetched at startup from `tools/list` and mapped field for field, keeping descriptions consistent across hosts. The service adds optional `confirmation_token` to the three action tools.
 
 ## ADR-10 Grade the engine, not the transcript
 
@@ -44,11 +44,11 @@ The evaluation harness reads orders and trades back over gRPC after each turn an
 
 ## ADR-11 hyper directly for the two small HTTP servers
 
-Each needs one or two routes. hyper is already in the dependency tree through tonic, so no web framework is added.
+Both servers have small routing tables, and hyper is already present through tonic. A web framework would add a dependency without simplifying these handlers substantially.
 
 ## ADR-12 A stable tool list, permission enforced at call time
 
-Earlier the service offered `place_limit_order` and `cancel_order` only on turns whose text carried the intent, so the model could not even see them otherwise. Two properties of the current API made that the wrong trade. The tool list is the first part of the cache prefix, so a per-turn list defeats prompt caching on every turn. And the newest models bind their thinking blocks to the conversation prefix including `tools`, so rebuilding the list mid-conversation invalidates them. The service now sends the same name-sorted list on every request, appends a one-line permission note after the user message (as a system-role message on models with the operator channel, otherwise inside the user turn, with automatic fallback), and refuses a call outside the permission in code. The end state is identical, since nothing reaches the engine without intent, the transcript is append-only, and the prompt caches. A later refinement: a call outside the permission is held for confirmation rather than refused, so the keyword gate's inevitable misses (other languages, verbs it does not list) cost one question instead of a dead end, while still nothing executes without the user's own words. The alternative is the mid-conversation tool changes beta (`defer_loading` plus `tool_addition` blocks), which is the cache-preserving form of the old design and is the planned next step once it is stable.
+Keep a name-sorted tool list and append permission notes to the conversation. Per-turn tool lists invalidate prompt caching and can invalidate thinking blocks bound to that prefix. The gate checks calls independently and holds unrecognised intent for confirmation. Notes use the system channel where supported, with a user-channel fallback. Deferred tool loading (`defer_loading` plus `tool_addition`) is a beta alternative that preserves the cache prefix.
 
 ## ADR-13 Context stays append-only; the API prunes it
 
@@ -56,7 +56,7 @@ Earlier the service offered `place_limit_order` and `cancel_order` only on turns
 
 ## ADR-14 Per-account indices in the book
 
-Every read runs on the matcher thread, so a read that scans all orders is latency for every writer. Orders and trades are indexed per account (`Vec<OrderId>` and positions into the trade vector), and account ids are interned `Arc<str>`. Alternatives: keep scanning (20 ms per listing at a million orders, and the MCP server lists before every placement) or move reads off the matcher thread with a second copy of the state (more code, and two sources of truth).
+Account listings run on the matcher thread, so full scans delay writers. Orders use per-account `BTreeSet<OrderId>` indices; trades use `VecDeque<TradeId>`. Account ids are interned `Arc<str>`. Alternatives: scan all history or maintain a second copy for reads. The indices keep listings local to an account and support retention cleanup.
 
 ## ADR-15 One internal conversation format, providers translate at the edge
 
@@ -72,15 +72,15 @@ An agent that can sell what it does not hold is not trading infrastructure. Bala
 
 ## ADR-19 An agent loop, not a routing classifier
 
-The model runs a real tool loop: it reads tool results and decides the next call, and the gate decides at call time what may execute. The alternative, seen in a sibling implementation of this exercise, is to ask the model for one typed route per turn (read this, propose that) and let Rust perform the read or prepare a proposal that the user then confirms through a separate endpoint, every time. That design is easier to prove safe, because the model never holds a write capability, but it cannot do anything that needs a read before the action ("sell half my ETH", "cancel the higher bid"), every read reply is a template, and every order costs two round trips. We kept the loop and put the safety in the gate, the verifier, the audit and the evaluation: the hostile runner shows that what reaches the engine is decided by code even when the model is adversarial.
+The model reads tool results and chooses subsequent calls, supporting requests such as "sell half my ETH" and "cancel the higher bid". The gate decides what may execute. A typed routing classifier would simplify control flow but require explicit workflows for read-before-action requests. The loop's broader action surface is checked by confirmation, policy, auditing and hostile-model evaluations.
 
-## ADR-20 The audit log is a hash chain and writes fail closed
+## ADR-20 Pre-action audit writes fail closed
 
-Each audit line carries the hash of the previous line, the service verifies the chain at startup, and an action tool call is refused if its pre-action record cannot be written. A plain append-only file is enough for debugging but proves nothing after the fact and can miss the one action that mattered, the one during which the process died. The cost is one `fsync` per action and per turn, negligible next to a model call. One log belongs to one process; two processes appending to one file would interleave two chains, which the harness learnt by running cases in parallel with one file each. Idea adopted from a sibling implementation.
+Sync a hash-chained pre-action record before each action, refusing submission if the write fails. Verify the chain at startup and allow one writer per file. This preserves attempted actions across process failure at the cost of an `fsync`; final turn records are best effort. A chain alone does not establish execution or detect complete suffix deletion. See [audit limitations](05-guardrails.md#what-the-audit-chain-establishes).
 
 ## ADR-21 A confirmation in words carries the previous request
 
-Claude Sonnet 5 often asks the user to confirm a large order in its own words before calling the tool. Nothing is then pending in the gate, and the user's "yes" arrived as a turn with no trade words, was held, and the model asked again. Two fixes were possible: trust the model's proposal text as the confirmed order, or let the confirmation stand for the previous user message. The first would let a model propose something other than what the user asked and have a "yes" authorise it. The second keeps the user's own figures as the reference: the previous message grants the permission and pins price and quantity, and only an order matching them proceeds. A derived quantity with two stated figures still goes through the token flow, which costs an ask-first model one extra turn on one case; the prompt now tells the model to call the tool first so the service produces the exact summary.
+A model may ask for confirmation before calling a tool, leaving nothing pending in the gate. A bare confirmation can therefore carry the previous user request, provided that turn sent no action and its reply explicitly asked for confirmation with the side and figures. The user's request remains the parameter reference. Trusting the model's proposal alone could authorize altered terms. Derived quantities still use the token flow.
 
 ## ADR-25 Unchecked numeric casts are denied where money lives
 
@@ -88,11 +88,11 @@ Claude Sonnet 5 often asks the user to confirm a large order in its own words be
 
 ## ADR-24 A confirmation may only answer what the user was shown
 
-Binding the token to a confirming turn was not enough. A model could raise a proposal, answer "Done." so its summary never reached the user, and read their next "yes" as approval of something they had never seen. The service now decides disclosure for itself: at the end of a turn it checks whether the reply carries the figures its own summary states, and an action that was never disclosed cannot be confirmed. The alternative, trusting the model to have relayed the summary, is exactly what fails. The evaluation was checking only that a bare confirmation was sent, so it also verifies an earlier reply carried figures, and a hostile strategy performs the attack in CI.
+The service checks that a pending action's side and figures, or cancellation scope, appeared in the reply before allowing confirmation. Otherwise a model could hide a proposal behind "Done." and treat a later "yes" as approval. The harness also checks disclosure; `hide_summary` exercises this attack in CI.
 
 ## ADR-23 A confirmation token identifies, it does not authorise
 
-The gate hands the model a token with each confirmation request and expects it back with the confirmed call. An external review showed the token was doing too much work: presenting it was enough to execute, so a model could keep one and spend it on any later turn, or answer its own request within one turn. The fix keeps the token, which is still needed to tie a confirmed call to the exact pending action, but makes the user's turn the authority: a token executes only on a turn that came after the ask and whose message confirms. The evaluation was complicit, exempting any mutation carrying a confirmation flag, so the flag now names its turn and the harness checks that turn's own text.
+A token binds a call to the exact pending action. Execution also requires a later user turn that confirms the disclosed action; possession of the token alone grants no permission. The confirmation flag names its turn, and the harness checks that turn's text rather than trusting the flag alone.
 
 ## ADR-22 One pair, by design
 
@@ -104,5 +104,4 @@ Every component is a cargo binary with environment-variable configuration; the r
 
 ## The goal run is experimental
 
-The brief asks for a supervised natural-language service and an evaluation that includes a simulation. The web page also lets the model act on a goal against the live book, which is the simulation's agent and bot re-based onto the shared engine. That is beyond the brief, so it is marked experimental in the code (`AgentConfig::autonomous`), on the page and in the docs, and the chat API never uses the mode. It stays because it shows what the deterministic layers do when the model is on its own: the policy, the balances and the audit log hold whether or not a person is in the loop. Alternative: leave it out, which would have hidden the regression it found, where the rule that a message's figures pin the order also refused every price a goal-driven model chose.
-
+The simulation and web goal runner use `AgentConfig::autonomous`, allowing the model to act on a goal while policy, balances and auditing remain active. This extends the supervised service and is marked experimental; the chat API never uses it. Keeping the mode explicit prevents goal runs from inheriting order-specific intent and parameter checks.
