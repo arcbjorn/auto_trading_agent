@@ -76,7 +76,7 @@ pub fn section() -> String {
   <button class="accent" type="submit">fire</button>
   <span id="load-ind" class="htmx-indicator">running</span>
 </form>
-<div id="load-result" class="result small"></div>"##,
+<div id="load-result" class="result flow small"></div>"##,
     );
     let stats = format!(
         "<details class=\"panel\"><summary><h3><span class=\"t\">Engine statistics</span><span class=\"src\">GetStats, click to open</span></h3></summary>{}</details>",

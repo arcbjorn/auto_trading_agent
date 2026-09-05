@@ -232,7 +232,10 @@ pub async fn turn(app: &App, form: &HashMap<String, String>) -> anyhow::Result<H
     let status = resp.status().as_u16();
     let text = resp.text().await?;
     let v: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "error": text }));
-    let mut out = format!("<div class=\"turn\"><div class=\"you\">{}</div>", esc(message));
+    let mut out = format!(
+        "<div class=\"turn flow-tight\"><div class=\"you\">{}</div>",
+        esc(message)
+    );
     if status == 200 {
         if let Some(calls) = v["tool_calls"].as_array().filter(|c| !c.is_empty()) {
             out.push_str("<div class=\"calls\">");

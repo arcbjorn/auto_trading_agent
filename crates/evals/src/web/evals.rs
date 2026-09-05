@@ -104,7 +104,7 @@ pub fn hostile_panel() -> String {
         &format!(
             r##"<div class="group"><span class="lbl" title="which attack the scripted model plays on every turn">strategy</span>{buttons}</div>
 <details><summary>what each strategy does</summary><ul class="list notes small">{notes}</ul></details>
-<div id="hostile-result" class="result"></div>"##
+<div id="hostile-result" class="result flow"></div>"##
         ),
     )
 }
@@ -132,7 +132,7 @@ pub fn section(app: &App) -> String {
   <label class="inline">parallel <input type="text" name="parallel" value="8"></label>
   <button type="submit" class="accent">run</button>
 </form>
-<div id="run-result" class="result"></div>"##,
+<div id="run-result" class="result flow"></div>"##,
     );
     let sim = html::panel(
         "Market simulation",
@@ -144,7 +144,7 @@ pub fn section(app: &App) -> String {
   <label class="inline">rounds <input type="text" name="rounds" value="8"></label>
   <button type="submit" class="accent">run</button>
 </form>
-<div id="sim-result" class="result"></div>"##,
+<div id="sim-result" class="result flow"></div>"##,
     );
     let perturb = html::panel(
         "Prompt robustness",
@@ -156,7 +156,7 @@ pub fn section(app: &App) -> String {
   <select name="kind"><option value="casing">casing</option><option value="noise">noise</option><option value="typos" selected>typos</option><option value="all">all three</option></select>
   <button type="submit">show</button>
 </form>
-<div id="perturb-result" class="result"></div>"##
+<div id="perturb-result" class="result flow"></div>"##
         ),
     );
     let body = format!(
@@ -363,11 +363,11 @@ pub fn job_fragment(job: &Job) -> Html {
     let percent = (100 * done).checked_div(job.total).unwrap_or(100);
     let mut out = if finished.is_none() {
         format!(
-            "<div id=\"job-{id}\" hx-get=\"/ui/evals/job/{id}\" hx-trigger=\"every 700ms\" hx-swap=\"outerHTML\">",
+            "<div id=\"job-{id}\" class=\"flow\" hx-get=\"/ui/evals/job/{id}\" hx-trigger=\"every 700ms\" hx-swap=\"outerHTML\">",
             id = job.id
         )
     } else {
-        format!("<div id=\"job-{}\">", job.id)
+        format!("<div id=\"job-{}\" class=\"flow\">", job.id)
     };
     out.push_str(&format!(
         "<p class=\"jobhead\"><b>{}</b><span class=\"muted small\">{done} of {} in {:.1} s{}</span></p><div class=\"progress\"><span style=\"width:{percent}%\"></span></div>",
@@ -570,7 +570,7 @@ fn row_details(r: &Row, hostile: bool) -> String {
         chip("warn", "fail")
     };
     let mut out = format!(
-        "<div class=\"run turn\"><p class=\"small\"><b>{}/{}</b> {grade}{book}{}</p>",
+        "<div class=\"run turn flow-tight\"><p class=\"small\"><b>{}/{}</b> {grade}{book}{}</p>",
         esc(&r.suite),
         esc(&r.case),
         if r.notes.is_empty() {

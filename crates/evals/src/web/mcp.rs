@@ -96,7 +96,7 @@ pub fn section(app: &App) -> String {
   <div class="actions"><input type="text" id="tool" name="tool" value="get_market_summary" class="grow" spellcheck="false"><button type="submit" class="accent">call</button><span id="mcp-ind" class="htmx-indicator">calling</span></div>
   <textarea id="args" name="args" spellcheck="false" class="short">{{}}</textarea>
 </form>
-<div id="mcp-result" class="result"></div>"##,
+<div id="mcp-result" class="result flow"></div>"##,
             reads = preset_group("read"),
             actions = preset_group("act"),
             refusals = preset_group("refused by policy"),
@@ -134,7 +134,7 @@ pub fn section(app: &App) -> String {
         "resources/read, prompts/get",
         "Three resources, a template that takes a depth, and the standing instructions a client may load as a prompt. Clients may subscribe to a resource; the stdio transport pushes <code>notifications/resources/updated</code> when the engine's events touch it.",
         &format!(
-            "{}<div id=\"resource-result\" class=\"result\"></div>{}",
+            "{}<div id=\"resource-result\" class=\"result flow\"></div>{}",
             html::live("mcp-resources", "/ui/mcp/resources", "30s", "never"),
             html::live("mcp-prompt", "/ui/mcp/prompt", "300s", "never")
         ),

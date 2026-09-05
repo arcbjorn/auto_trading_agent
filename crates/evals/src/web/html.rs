@@ -73,7 +73,7 @@ pub fn chip_titled(class: &str, text: &str, title: &str) -> String {
 /// A panel that loads itself and then refreshes on a timer and on the named page event.
 pub fn live(id: &str, url: &str, every: &str, event: &str) -> String {
     format!(
-        "<div id=\"{id}\" hx-get=\"{url}\" hx-trigger=\"load, every {every}, {event} from:body\" hx-swap=\"innerHTML\"></div>"
+        "<div id=\"{id}\" class=\"flow\" hx-get=\"{url}\" hx-trigger=\"load, every {every}, {event} from:body\" hx-swap=\"innerHTML\"></div>"
     )
 }
 
@@ -94,7 +94,7 @@ pub fn thousands(n: u64) -> String {
 /// switch in the header.
 pub fn panel(title: &str, source: &str, about: &str, body: &str) -> String {
     format!(
-        "<div class=\"panel\"><h3><span class=\"t\">{title}</span><span class=\"src\">{source}</span><button type=\"button\" class=\"about-toggle\" aria-label=\"about this panel\" title=\"about this panel\">?</button></h3><p class=\"about\">{about}</p>{body}</div>"
+        "<div class=\"panel\"><h3><span class=\"t\">{title}</span><span class=\"src\">{source}</span><button type=\"button\" class=\"about-toggle\" aria-label=\"about this panel\" title=\"about this panel\">?</button></h3><p class=\"about\">{about}</p><div class=\"body flow\">{body}</div></div>"
     )
 }
 
