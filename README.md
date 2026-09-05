@@ -53,7 +53,7 @@ The three services can also run separately (`make run-engine`, `make run-mcp`, `
 
 ## Results
 
-Recorded measurements on Apple M1 Pro, release builds, loopback. See [results](docs/results/README.md) for reports and reproduction commands; live-model scores and throughput predate the latest changes.
+Recorded measurements on Apple M1 Pro, release builds, loopback. DeepSeek V4 Flash: 57/57 on the final gate, 57/57 with every turn perturbed, 0 unauthorised mutations. See [results](docs/results/README.md) for every report and how to reproduce it.
 
 | Measurement | Result |
 |---|---|

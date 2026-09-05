@@ -1,6 +1,6 @@
 # Results
 
-Recorded measurements on Apple M1 Pro, release builds, loopback. Live-model scores and throughput predate the latest changes. Reproduce with the `make` targets below.
+Recorded measurements on Apple M1 Pro, release builds, loopback. The DeepSeek runs are against the final gate; the Claude runs and the throughput figures were recorded earlier and are dated in their reports. Reproduce with the `make` targets below.
 
 | Measurement | Result |
 |---|---|
@@ -11,14 +11,14 @@ Recorded measurements on Apple M1 Pro, release builds, loopback. Live-model scor
 | MCP interoperability, official client (`interop`) | all tools, resources and prompt; schemas validated |
 | Harness bounds (`eval-oracle`, `eval-null`) | oracle 100%; null 0% on execution and paraphrase |
 | Five hostile strategies against the gate (`eval-unsafe`) | 0 unauthorised mutations in 26 runs each; the strategies found 6 gaps between them before reaching zero |
-| Accuracy, DeepSeek V4 Flash, 57 cases (`eval-model`) | 57/57 |
+| Accuracy, DeepSeek V4 Flash, 57 cases (`eval-model`) | 57/57 on the final gate; the run before the last gate fix scored 53/57, which is what found the regression |
 | Accuracy, Claude Sonnet 5, 57 cases × 3 reps | 170/171; the first run scored 91% on execution and exposed a gate gap, now fixed |
 | Safety, both models | 39/39 attacks blocked; 0 unauthorised mutations across every live run |
 | Prompt robustness, every turn perturbed (`eval-perturbed`) | 57/57 on both models |
-| Reply grounding | Remeasurement pending: the corrected checker excludes assistant output from its evidence |
+| Reply grounding, both DeepSeek runs | 542 figures quoted across 114 runs, none without a source in the turn's inputs; assistant text no longer counts as evidence |
 | Reply-quality judge, DeepSeek V4 Flash judging DeepSeek | clarity 4.81/5, useful 4.39/5, faithful 55/57; two unfaithful replies found that the end-state grade could not see |
-| Confirmation burden, DeepSeek V4 Flash, recorded revision | 6 of 31 legitimate requests held, all in cases written as confirmation flows; 0 needless |
-| Latency and cost | turn p50 3 to 6 s; 92 to 95% cache hits; 0.05 USD per DeepSeek run, 0.94 USD per Sonnet run of 171 |
+| Confirmation burden, DeepSeek V4 Flash, final gate | 6 of 31 legitimate requests held, all in cases written as confirmation flows; 0 needless |
+| Latency and cost | turn p50 3.4 to 5.6 s; 93 to 95% cache hits; 0.05 USD per DeepSeek run of 57, 0.94 USD per Sonnet run of 171 |
 | Simulation, 5 seeds × 8 rounds (`sim`) | goal reached 5/5, no rule violations; scripted baseline 4/5 |
 
 ## Reports
@@ -26,7 +26,7 @@ Recorded measurements on Apple M1 Pro, release builds, loopback. Live-model scor
 | File | Run |
 |---|---|
 | [report-oracle.md](report-oracle.md), [report-null.md](report-null.md), [report-unsafe.md](report-unsafe.md) | the three model-free bounds of the harness |
-| [report-model-deepseek-v4-flash.md](report-model-deepseek-v4-flash.md) | DeepSeek V4 Flash, 57 cases, recorded gate |
+| [report-model-deepseek-v4-flash.md](report-model-deepseek-v4-flash.md) | DeepSeek V4 Flash, 57 cases, final gate |
 | [report-model-deepseek-v4-flash-perturbed.md](report-model-deepseek-v4-flash-perturbed.md) | the same cases with every turn perturbed |
 | [report-model-deepseek-v4-flash-low.md](report-model-deepseek-v4-flash-low.md) | reasoning effort low, for the effort comparison |
 | [report-model-messages-api-deepseek.md](report-model-messages-api-deepseek.md) | the Claude Messages-API client against DeepSeek's compatible endpoint |

@@ -70,6 +70,10 @@ Durability for a deterministic book needs only its inputs. The journal holds eve
 
 An agent that can sell what it does not hold is not trading infrastructure. Balances live in the book, next to the orders they back, so reservation, settlement and release happen inside the same deterministic step as matching and are journaled with it; a separate ledger service would need two-phase coordination for something the single writer does for free. Amounts are integers in the engine's own units, so a notional is a multiplication with no rounding. `Deposit` is a gRPC method the operator, the harness and the simulation call; it is not an MCP tool, so no prompt can fund an account. Alternatives: a policy-level notional cap only (what the MCP server already has, and it cannot know what was filled), or balances in the MCP server (one more source of truth, and desktop hosts would bypass it).
 
+## ADR-18 No Docker in this slice
+
+Every component is a cargo binary with environment-variable configuration; the runbook has the three commands. A compose file would add an untested surface without changing the design.
+
 ## ADR-19 An agent loop, not a routing classifier
 
 The model reads tool results and chooses subsequent calls, supporting requests such as "sell half my ETH" and "cancel the higher bid". The gate decides what may execute. A typed routing classifier would simplify control flow but require explicit workflows for read-before-action requests. The loop's broader action surface is checked by confirmation, policy, auditing and hostile-model evaluations.
@@ -82,25 +86,24 @@ Sync a hash-chained pre-action record before each action, refusing submission if
 
 A model may ask for confirmation before calling a tool, leaving nothing pending in the gate. A bare confirmation can therefore carry the previous user request, provided that turn sent no action and its reply explicitly asked for confirmation with the side and figures. The user's request remains the parameter reference. Trusting the model's proposal alone could authorize altered terms. Derived quantities still use the token flow.
 
-## ADR-25 Unchecked numeric casts are denied where money lives
+## ADR-22 One pair, by design
 
-`as` between integer widths is silent: a negative price read as `u64` becomes astronomical, and a wide value narrowed wraps. The four crates that hold market state deny `cast_possible_truncation`, `cast_possible_wrap` and `cast_sign_loss`, so every conversion is either checked, saturating with the reason written down, or allowed locally with an explanation (a retry hint rounded from a float is the only one). The gRPC boundary converts through a `wire` helper whose comment names the caps that make it total, and a test asserts those caps still hold, so raising one fails the build rather than a price. Generated protobuf and the evaluation binary keep the defaults: there is nothing to fix in a file rewritten on every build, and the harness is an ordinary program.
-
-## ADR-24 A confirmation may only answer what the user was shown
-
-The service checks that a pending action's side and figures, or cancellation scope, appeared in the reply before allowing confirmation. Otherwise a model could hide a proposal behind "Done." and treat a later "yes" as approval. The harness also checks disclosure; `hide_summary` exercises this attack in CI.
+The task asks for a book for a single pair, and every layer leans on that. The MCP tools carry no symbol, which keeps the prompt small and the cache prefix stable. The gate reasons about one price and one quantity. One book has one sequence and one journal, which is what makes the determinism claim simple. Sharding by symbol would be one actor per pair behind a market registry, with per-shard sequences and a coordinator for anything that spans pairs. That is a redesign of the product surface, not an improvement of this slice, so it stays a documented seam and nothing in the code or docs promises it.
 
 ## ADR-23 A confirmation token identifies, it does not authorise
 
 A token binds a call to the exact pending action. Execution also requires a later user turn that confirms the disclosed action; possession of the token alone grants no permission. The confirmation flag names its turn, and the harness checks that turn's text rather than trusting the flag alone.
 
-## ADR-22 One pair, by design
+## ADR-24 A confirmation may only answer what the user was shown
 
-The task asks for a book for a single pair, and every layer leans on that. The MCP tools carry no symbol, which keeps the prompt small and the cache prefix stable. The gate reasons about one price and one quantity. One book has one sequence and one journal, which is what makes the determinism claim simple. Sharding by symbol would be one actor per pair behind a market registry, with per-shard sequences and a coordinator for anything that spans pairs. That is a redesign of the product surface, not an improvement of this slice, so it stays a documented seam and nothing in the code or docs promises it.
+The service checks that a pending action's side and figures, or cancellation scope, appeared in the reply before allowing confirmation. Otherwise a model could hide a proposal behind "Done." and treat a later "yes" as approval. The harness also checks disclosure; `hide_summary` exercises this attack in CI.
 
-## ADR-18 No Docker in this slice
 
-Every component is a cargo binary with environment-variable configuration; the runbook has the three commands. A compose file would add an untested surface without changing the design.
+The check reads the reply as a person would. The side counts in any inflection ("buying", "sold"), and the book's own vocabulary is not a side: a reply that says "resting until asks reach 3000" or "at the best bid" describes the market, not an opposite order. A live run in which the check demanded the bare verb and read "asks" as a sell held four fully disclosed orders; those four replies are now tests.
+
+## ADR-25 Unchecked numeric casts are denied where money lives
+
+`as` between integer widths is silent: a negative price read as `u64` becomes astronomical, and a wide value narrowed wraps. The four crates that hold market state deny `cast_possible_truncation`, `cast_possible_wrap` and `cast_sign_loss`, so every conversion is either checked, saturating with the reason written down, or allowed locally with an explanation (a retry hint rounded from a float is the only one). The gRPC boundary converts through a `wire` helper whose comment names the caps that make it total, and a test asserts those caps still hold, so raising one fails the build rather than a price. Generated protobuf and the evaluation binary keep the defaults: there is nothing to fix in a file rewritten on every build, and the harness is an ordinary program.
 
 ## The goal run is experimental
 
