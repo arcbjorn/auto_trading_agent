@@ -46,7 +46,7 @@ pub fn seed_book() -> SeedBook {
 
 pub async fn run(_args: &Args) -> anyhow::Result<()> {
     let model = ModelClient::from_env()?;
-    println!("model: {}", model.describe());
+    println!("model: {}", model.label());
     let mut stack = Stack::start().await?;
     let funding = Funding::default();
     stack.fund(&funding).await?;

@@ -251,6 +251,11 @@ impl ModelClient {
         }
     }
 
+    /// The model and its provider, for a person: `deepseek-v4-flash via deepseek`.
+    pub fn label(&self) -> String {
+        format!("{} via {}", self.model_id(), self.provider())
+    }
+
     /// A one-line description for the startup log: model and the settings that shape a request.
     pub fn describe(&self) -> String {
         match self {

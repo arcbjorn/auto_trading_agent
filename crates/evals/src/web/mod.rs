@@ -261,7 +261,7 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
     println!("engine     {} (gRPC)", app.engine_addr);
     println!("mcp        {}", app.mcp_url);
     for m in &app.models {
-        println!("chat       {} through {}/chat", m.describe, m.url);
+        println!("chat       {} via {} through {}/chat", m.id, m.provider, m.url);
     }
     if let Some(why) = &app.no_model {
         println!("chat       off ({why})");
