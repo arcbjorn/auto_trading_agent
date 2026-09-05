@@ -70,7 +70,7 @@
     }
     var t = e.target.closest ? e.target.closest('.about-toggle') : null;
     if (!t) return;
-    var host = t.closest('.panel') || t.closest('section.tab');
+    var host = t.closest('.panel') || t.closest('section');
     if (host) host.classList.toggle('about-open');
   });
   explainLabel();
