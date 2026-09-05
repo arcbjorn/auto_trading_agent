@@ -254,13 +254,23 @@ table.rounds th:not(.l), table.rounds td:not(.text) { width: 1%; }
 .case.pass { border-color: var(--title); }
 .case.fail { border-color: var(--accent); color: var(--accent); }
 .case.pending { color: var(--muted); border-style: dashed; }
-.md h1 { font-size: var(--t3); color: var(--title); margin: var(--s2) 0; }
-.md h2 { font-size: var(--t2); margin: var(--s4) 0 var(--s2); }
-.md p { margin: var(--s2) 0; max-width: 90ch; }
-.md { line-height: 1.55; }
-.md table { width: auto; margin: var(--s2) 0; }
-.md td, .md th { white-space: normal; }
-.md ul { padding-left: var(--s4); }
+#report-list li { padding: 0; }
+#report-list a { display: block; padding: var(--s3) 0; overflow-wrap: anywhere; text-underline-offset: 3px; }
+.md { line-height: 1.65; overflow-wrap: break-word; }
+.md h1 { font-size: var(--t3); color: var(--title); margin: 0 0 var(--s4); }
+.md h2, .md h3 { font-size: var(--t2); margin: var(--s5) 0 var(--s3); }
+.md p { margin: var(--s3) 0; max-width: 90ch; }
+.md .scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.md table { width: 100%; margin: var(--s3) 0; }
+.md td, .md th { padding: var(--s3); white-space: normal; vertical-align: top; }
+.md th { min-width: 7ch; font-weight: 600; }
+.md tbody tr + tr td { border-top: 1px solid var(--line); }
+.md a, .md code { overflow-wrap: anywhere; }
+.md ul, .md ol { margin: var(--s3) 0; padding-left: var(--s5); }
+.md li { padding-left: var(--s1); }
+.md li + li { margin-top: var(--s3); }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
 
 footer { margin-top: var(--s6); padding-top: var(--s3); border-top: 1px solid var(--line); }
 @media (max-width: 640px) { .wrap { padding: 0 var(--s4) var(--s5); } .status { margin-left: 0; } }
