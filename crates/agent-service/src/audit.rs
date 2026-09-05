@@ -145,10 +145,11 @@ impl Audit {
     }
 }
 
-/// One link: SHA-256 over the previous hash, the entry, and the key when one is set. With a key
-/// this is a keyed chain (an HMAC-style construction over a fixed-length prefix, which is not
-/// length-extendable here because every input is fixed length or terminal), so a line cannot be
-/// rewritten without it.
+/// One link: SHA-256 over the previous hash, the entry, and the key when one is set.
+///
+/// With a key this is a keyed chain, so a line cannot be rewritten without it. The construction is
+/// HMAC-style over a fixed-length prefix, and is not length-extendable here because every input is
+/// fixed length or terminal.
 fn chain(prev: [u8; 32], entry: &[u8], key: Option<&[u8]>) -> [u8; 32] {
     let mut h = Sha256::new();
     if let Some(k) = key {

@@ -26,8 +26,8 @@ pub struct AnthropicConfig {
     /// plus automatic caching of the growing conversation.
     pub cache: bool,
     /// Server-side context editing: the API clears old tool results itself, so the history the
-    /// service holds stays append-only (a client-side edit would invalidate the cached prefix and,
-    /// on the newest models, the thinking blocks bound to it).
+    /// service holds stays append-only. A client-side edit would invalidate the cached prefix,
+    /// and on the newest models the thinking blocks bound to it.
     pub context_editing: bool,
     pub timeout: Duration,
     pub max_attempts: u32,

@@ -2,9 +2,11 @@
 //! is ever written to stdout; logs go to stderr.
 //!
 //! This transport has a server-to-client direction, so it also delivers
-//! `notifications/resources/updated`: a pump subscribes to the engine's event stream and, whenever
-//! events arrive, sends one notification per subscribed resource, coalesced over a short window so
-//! a burst of fills is one update rather than hundreds.
+//! `notifications/resources/updated`.
+//!
+//! A pump subscribes to the engine's event stream and sends one notification per subscribed
+//! resource as events arrive. Notifications are coalesced over a short window, so a burst of
+//! fills becomes one update rather than hundreds.
 
 use crate::protocol::McpServer;
 use clob_proto::v1::SubscribeRequest;

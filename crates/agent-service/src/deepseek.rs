@@ -1,11 +1,13 @@
 //! DeepSeek V4 through its native chat-completions API (OpenAI wire format).
 //!
 //! The service keeps one internal conversation format, the Messages API content blocks, and this
-//! client translates at the edge: system and user text, `tool_use` and `tool_result` blocks and
-//! the per-turn `role: system` notes go out as chat-completion messages, and the reply comes back
-//! as blocks. Thinking-mode reasoning is kept as a `reasoning` block on the assistant turn because
-//! DeepSeek requires every earlier turn's `reasoning_content` to be sent back whenever the request
-//! carries tools; dropping it is a 400.
+//! client translates at the edge. System and user text, `tool_use` and `tool_result` blocks, and
+//! the per-turn `role: system` notes go out as chat-completion messages; the reply comes back as
+//! blocks.
+//!
+//! Thinking-mode reasoning is kept as a `reasoning` block on the assistant turn. DeepSeek requires
+//! every earlier turn's `reasoning_content` to be sent back whenever the request carries tools,
+//! and dropping it is a 400.
 //!
 //! Endpoint: `POST {base_url}/chat/completions`, bearer authentication. Models: `deepseek-v4-pro`
 //! and `deepseek-v4-flash` (1M context, up to 384K output, tool calls in thinking mode).

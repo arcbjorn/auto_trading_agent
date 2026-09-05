@@ -1,8 +1,11 @@
 //! Deterministic perturbations of a case's turns, for prompt robustness beyond the hand-written
-//! paraphrases: casing, noise around the request, typos in ordinary words. Numbers and the words
-//! the service's own gate looks for (trade and cancel verbs, sides, the asset, confirmations)
-//! are never touched, so what is measured is the model's reading of everything else, not the
-//! gate's vocabulary. The same case, turn and rep always get the same text.
+//! paraphrases: casing, noise around the request, and typos in ordinary words.
+//!
+//! Numbers are never touched, nor are the words the service's own gate looks for (trade and cancel
+//! verbs, sides, the asset, confirmations). What is measured is the model's reading of everything
+//! else, not the gate's vocabulary.
+//!
+//! The same case, turn and rep always get the same text.
 
 pub const KINDS: [&str; 4] = ["casing", "noise", "typos", "all"];
 

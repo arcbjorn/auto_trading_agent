@@ -56,9 +56,11 @@ struct Entry {
     session: Arc<tokio::sync::Mutex<Session>>,
 }
 
-/// A session held for the length of a request. While one exists the entry cannot be evicted, so
-/// a turn in flight never has its session replaced underneath it (which would let a second turn
-/// of the same session run in parallel with limits reset).
+/// A session held for the length of a request.
+///
+/// While one exists the entry cannot be evicted, so a turn in flight never has its session
+/// replaced underneath it. That would let a second turn of the same session run in parallel with
+/// its limits reset.
 pub struct SessionLease {
     session: Arc<tokio::sync::Mutex<Session>>,
     state: Arc<State>,

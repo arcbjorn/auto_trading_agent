@@ -180,10 +180,11 @@ impl Journal {
         Ok((book, replayed))
     }
 
-    /// The generation a retired journal belongs to, from the marker written beside it. A missing
-    /// or unreadable marker reads as `u64::MAX`, so the journal is replayed rather than dropped:
-    /// replaying a journal the snapshot already holds is caught by the generation check on the
-    /// next line, while dropping one it does not hold would lose state.
+    /// The generation a retired journal belongs to, from the marker written beside it.
+    ///
+    /// A missing or unreadable marker reads as `u64::MAX`, so the journal is replayed rather than
+    /// dropped. Replaying one the snapshot already holds is caught by the generation check on the
+    /// next line; dropping one it does not hold would lose state.
     fn retired_generation(retired: &Path) -> u64 {
         let mut marker = retired.as_os_str().to_owned();
         marker.push(".generation");

@@ -219,10 +219,12 @@ fn tracing_error(e: &std::io::Error) {
 /// Starts the matcher thread. `capacity` bounds the command queue (backpressure); `depth` is the
 /// number of levels per side kept in the published snapshot.
 ///
-/// Commands are applied in batches: the thread blocks for the first command, then drains whatever
-/// else is already queued (up to [`MAX_BATCH`]), publishes one snapshot, and only then sends the
-/// replies. Under load this amortises the snapshot over many commands instead of rebuilding it per
-/// command; publishing before replying means a client that reads the book after its own reply
+/// Commands are applied in batches. The thread blocks for the first command, drains whatever else
+/// is already queued (up to [`MAX_BATCH`]), publishes one snapshot, and only then sends the
+/// replies.
+///
+/// Under load this amortises the snapshot over many commands, rather than rebuilding it per
+/// command. Publishing before replying means a client that reads the book after its own reply
 /// always sees its own order.
 pub fn spawn(book: Book, capacity: usize, depth: usize) -> EngineHandle {
     spawn_with_journal(book, capacity, depth, None)

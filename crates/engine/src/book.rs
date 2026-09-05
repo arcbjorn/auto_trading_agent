@@ -205,9 +205,11 @@ pub struct Balances {
 }
 
 /// Per-account trading ledger: what went in and out, what was bought and sold, and the average
-/// cost of the ETH still held from purchases on this venue, so realised P&L is a number rather
-/// than a guess. ETH that arrived by deposit has no cost basis here: a sell beyond the venue
-/// inventory is counted in `sold_from_deposits_lots` and contributes no P&L.
+/// cost of the ETH still held from purchases on this venue. That average is what makes realised
+/// P&L a number rather than a guess.
+///
+/// ETH that arrived by deposit has no cost basis here. A sell beyond the venue inventory is
+/// counted in `sold_from_deposits_lots` and contributes no P&L.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ledger {
     pub deposits_usdc: u128,
@@ -959,11 +961,12 @@ impl Book {
         self.fill_ids.remove(&id);
     }
 
-    /// Structural audit for tests and soaks, returning the first violation: every kept level
-    /// matches its queue, every live order rests exactly once on its own side and price, the
-    /// book is not crossed, statuses agree with quantities, the account index is exact,
-    /// reservations back the live orders when balances are enforced, retained trade ids are
-    /// contiguous, and every retention bound holds.
+    /// Structural audit for tests and soaks. Returns the first violation found.
+    ///
+    /// Checks that every kept level matches its queue, that every live order rests exactly once
+    /// on its own side and price, and that the book is not crossed. Statuses agree with
+    /// quantities and the account index is exact. Reservations back the live orders when
+    /// balances are enforced. Retained trade ids are contiguous and every retention bound holds.
     pub fn check_invariants(&self) -> Result<(), String> {
         let mut resting: HashSet<OrderId> = HashSet::new();
         for (name, side, levels) in [("bids", Side::Buy, &self.bids), ("asks", Side::Sell, &self.asks)] {
@@ -1193,9 +1196,10 @@ impl Book {
         std::mem::take(&mut self.pending_events)
     }
 
-    /// The reply an order got when it was placed, rebuilt from its current record and its fills:
-    /// the same order fields, the remaining quantity after the placement fills, the status and
-    /// cancel reason as of then (a later user cancel is not part of the original reply).
+    /// The reply an order got when it was placed, rebuilt from its record and its fills.
+    ///
+    /// Carries the same order fields, the remaining quantity after the placement fills, and the
+    /// status and cancel reason as of then. A later user cancel is not part of that reply.
     fn original_reply(&self, id: OrderId) -> (Order, Vec<Trade>) {
         let stored = &self.orders[&id];
         // Fills that have left the trade window are no longer listed; the quantity is kept.

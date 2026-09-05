@@ -771,9 +771,11 @@ pub struct Executed {
     pub ok: bool,
 }
 
-/// Post-turn verifier: every executed action must be justified by the user's own words or by a
-/// confirmation of a pending action, and the numbers of a placed order must come from the request
-/// when the request contains numbers at all.
+/// Post-turn verifier.
+///
+/// Every executed action must be justified by the user's own words, or by a confirmation of a
+/// pending action. The numbers of a placed order must come from the request, whenever the request
+/// contains numbers at all.
 pub fn verify(user_text: &str, executed: &[Executed], confirmed_pending: bool) -> Vec<String> {
     let mut flags = Vec::new();
     let mentioned = numbers(user_text);

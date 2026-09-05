@@ -1,6 +1,8 @@
-//! The tool loop. One call to [`Agent::chat_turn`] is one user message: the model is called,
-//! its tool calls are gated and executed against the MCP server, results are fed back, and the
-//! loop ends when the model answers in text. Sessions hold the append-only message history.
+//! The tool loop. One call to [`Agent::chat_turn`] is one user message.
+//!
+//! The model is called, its tool calls are gated and executed against the MCP server, and the
+//! results are fed back. The loop ends when the model answers in text. Sessions hold the
+//! append-only message history.
 
 use crate::anthropic::ApiError;
 use crate::audit::Audit;

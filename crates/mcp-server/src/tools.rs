@@ -142,10 +142,13 @@ struct ListTradesArgs {
     limit: Option<i64>,
 }
 
-/// A price or quantity arriving from the engine. The proto carries them as `int64` and the
-/// engine only ever emits values inside its own caps, so this is total in practice; a negative
-/// could only come from a corrupted peer, and reading it as zero is the safe failure (an order
-/// shown as free is obviously wrong, one shown as astronomically large might be acted on).
+/// A price or quantity arriving from the engine.
+///
+/// The proto carries these as `int64`, but the engine only emits values inside its own caps, so
+/// the conversion is total in practice. A negative could only come from a corrupted peer.
+///
+/// Zero is the safe reading for that case: an order shown as free is obviously wrong, while one
+/// shown as astronomically large might be acted on.
 fn from_wire(v: i64) -> u64 {
     u64::try_from(v).unwrap_or(0)
 }
