@@ -39,14 +39,17 @@ pub struct EventRow {
 
 const KEPT_EVENTS: usize = 60;
 const SHOWN_EVENTS: usize = 10;
-const DEPTH: u32 = 10;
+const DEPTH: u32 = 8;
 
 pub fn section() -> String {
     let book = html::panel(
         "Order book",
         &format!("GetOrderBook, depth {DEPTH}"),
-        "Resting liquidity by price level, best first on each side: teal bids, orange asks, bars proportional to size. Prices are integer ticks (0.01 USDC) and quantities integer lots (0.0001 ETH); matching is price-time priority, a self-trade is prevented, and every level is backed by its account's balance.",
-        &html::live("book", "/ui/engine/book", "1s", "engine"),
+        "Resting liquidity by price level, best first on each side: teal bids, orange asks, bars proportional to size. Prices are integer ticks (0.01 USDC) and quantities integer lots (0.0001 ETH); matching is price-time priority, a self-trade is prevented, and every level is backed by its account's balance. Reset cancels every open order of every account this process funded and rests the demo levels again; balances stay.",
+        &format!(
+            "{}<div class=\"actions\"><button type=\"button\" class=\"small\" hx-post=\"/ui/engine/reset\" hx-target=\"#reset-result\">reset book</button><span id=\"reset-result\" class=\"muted small\"></span></div>",
+            html::live("book", "/ui/engine/book", "1s", "engine")
+        ),
     );
     let trades = html::panel(
         "Trades",
@@ -76,7 +79,7 @@ pub fn section() -> String {
   <button class="accent" type="submit">fire</button>
   <span id="load-ind" class="htmx-indicator">running</span>
 </form>
-<div id="load-result" class="result flow small"></div>"##,
+<div id="load-result" class="result flow scrollbox small"></div>"##,
     );
     let stats = format!(
         "<details class=\"panel\"><summary><h3><span class=\"t\">Engine statistics</span><span class=\"src\">GetStats, click to open</span></h3></summary>{}</details>",
@@ -86,8 +89,7 @@ pub fn section() -> String {
         r##"<div class="cols even">
   <div class="stack">{book}{trades}{events}</div>
   <div class="stack">{accounts}{load}{stats}</div>
-</div>
-<div class="actions note"><button type="button" hx-post="/ui/engine/reset" hx-target="#reset-result">reset book</button><span id="reset-result" class="muted small"></span></div>"##
+</div>"##
     );
     html::tab(
         "engine",
@@ -176,9 +178,15 @@ pub async fn book_depth(app: &App, depth: u32) -> anyhow::Result<Html> {
             eth(u(qty))
         )
     };
+    // A fixed number of slots a side: the ladder keeps its height whatever the book holds.
+    let slots = depth.clamp(1, 20) as usize;
+    let empty = "<tr class=\"empty\"><td class=\"num\">–</td><td></td><td></td><td></td></tr>";
     let mut out = String::from(
         "<table class=\"ladder\"><thead><tr><th>price USDC</th><th>ETH</th><th>orders</th><th></th></tr></thead><tbody>",
     );
+    for _ in b.asks.len()..slots {
+        out.push_str(empty);
+    }
     for l in b.asks.iter().rev() {
         out.push_str(&row("ask", l.price_ticks, l.quantity_lots, l.order_count));
     }
@@ -188,16 +196,17 @@ pub async fn book_depth(app: &App, depth: u32) -> anyhow::Result<Html> {
             usdc(u(ask.price_ticks).saturating_sub(u(bid.price_ticks))),
             mcp_server::units::mid(u(bid.price_ticks), u(ask.price_ticks))
         ),
+        (None, None) => "the book is empty: reset it, or place an order through the tools or the agent".to_string(),
         _ => "one side of the book is empty".to_string(),
     };
     out.push_str(&format!("<tr class=\"spread\"><td colspan=\"4\">{spread}</td></tr>"));
     for l in &b.bids {
         out.push_str(&row("bid", l.price_ticks, l.quantity_lots, l.order_count));
     }
-    out.push_str("</tbody></table>");
-    if b.bids.is_empty() && b.asks.is_empty() {
-        out.push_str("<p class=\"muted small\">The book is empty. Reset it below, or place an order through the MCP tools or the agent.</p>");
+    for _ in b.bids.len()..slots {
+        out.push_str(empty);
     }
+    out.push_str("</tbody></table>");
     Ok(html::html(out))
 }
 
@@ -215,12 +224,12 @@ pub async fn trades_limit(app: &App, limit: u32) -> anyhow::Result<Html> {
         })
         .await?
         .into_inner();
-    if t.trades.is_empty() {
-        return Ok(html::html("<p class=\"muted small\">No trades yet.</p>".into()));
-    }
     let mut out = String::from(
         "<table><thead><tr><th>seq</th><th>price</th><th>ETH</th><th class=\"l\">taker</th><th class=\"l\">maker</th></tr></thead><tbody>",
     );
+    if t.trades.is_empty() {
+        out.push_str("<tr class=\"empty\"><td colspan=\"5\" class=\"l muted\">no trades yet</td></tr>");
+    }
     for tr in &t.trades {
         let side = side_name(tr.taker_side);
         let class = if side == "buy" { "bid" } else { "ask" };
@@ -232,6 +241,10 @@ pub async fn trades_limit(app: &App, limit: u32) -> anyhow::Result<Html> {
             esc(&tr.taker_account),
             esc(&tr.maker_account)
         ));
+    }
+    // The tape keeps the height of a full page of trades.
+    for _ in t.trades.len().max(1)..limit.clamp(1, 50) as usize {
+        out.push_str("<tr class=\"empty\"><td class=\"num\">–</td><td></td><td></td><td></td><td></td></tr>");
     }
     out.push_str("</tbody></table>");
     Ok(html::html(out))

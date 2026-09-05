@@ -408,15 +408,10 @@ mod tests {
             .expect("job id in fragment")
             .to_string();
         for _ in 0..600 {
-            let body = http
-                .get(format!("{base}/ui/evals/job/{id}"))
-                .send()
-                .await
-                .unwrap()
-                .text()
-                .await
-                .unwrap();
-            if !body.contains("hx-trigger") {
+            let response = http.get(format!("{base}/ui/evals/job/{id}")).send().await.unwrap();
+            let done = response.status().as_u16() == 286;
+            let body = response.text().await.unwrap();
+            if done {
                 return body;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

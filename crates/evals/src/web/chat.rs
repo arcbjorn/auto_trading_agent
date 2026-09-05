@@ -124,7 +124,7 @@ pub fn home(app: &App, session_id: &str, hostile: &str, live: &str) -> String {
 <div class="group"><span class="lbl">ask</span>{ask}</div>
 <div class="group"><span class="lbl">trade</span>{trade}</div>
 <div class="group"><span class="lbl" title="each of these makes one guardrail act; the label names it">test a guardrail</span>{guardrails}</div>
-<div id="transcript" class="transcript"></div>
+<div id="transcript" class="transcript scrollbox"></div>
 <form hx-post="/ui/chat" hx-target="#transcript" hx-swap="beforeend" hx-indicator="#chat-ind" class="row">
   <input type="hidden" name="session_id" value="{sid}">
   <input type="text" id="message" name="message" placeholder="say something to the agent" autocomplete="off"{disabled}>

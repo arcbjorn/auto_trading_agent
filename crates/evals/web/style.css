@@ -59,6 +59,10 @@ html, body {
 ::selection { background: var(--accent); color: var(--bg); }
 * { scrollbar-width: none; }
 *::-webkit-scrollbar { display: none; }
+/* Scroll regions show a thin bar so the bound is visible; the page itself hides its bar. */
+.scrollbox { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.scrollbox::-webkit-scrollbar { display: block; width: 6px; }
+.scrollbox::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
 a { color: var(--fg); }
 code { font-size: var(--t1); }
 /* Resets: no element carries its own vertical margin; the rhythm rule below is the only source. */
@@ -134,6 +138,13 @@ section.tab > h2 small { color: var(--muted); font-weight: 400; font-size: var(-
 .panel > h3 .t, .panel > summary > h3 .t { color: var(--fg); }
 .panel > h3 .src, .panel > summary > h3 .src { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; text-align: right; }
 .result:empty { display: none; }
+.result { max-height: 60vh; }
+/* Live panels keep the height of their full content, so the page does not move as levels,
+   trades and audit lines come and go. */
+tr.empty td { color: var(--line); height: 1.5em; }
+#events { min-height: 240px; }
+#audit { min-height: 128px; }
+#session-info { min-height: 96px; }
 details.panel > summary { list-style: none; cursor: pointer; }
 details.panel > summary::-webkit-details-marker { display: none; }
 details.panel > summary > h3 { margin: 0; }
@@ -212,7 +223,7 @@ details summary:hover { color: var(--fg); }
 .progress span { display: block; height: 100%; background: var(--title); transition: width 0.3s; }
 
 /* Transcript: one block per turn. */
-.transcript { display: flex; flex-direction: column; gap: var(--s5); min-height: clamp(220px, 32vh, 360px); max-height: 52vh; overflow-y: auto; padding-right: var(--s1); }
+.transcript { display: flex; flex-direction: column; gap: var(--s5); height: clamp(300px, 46vh, 520px); padding-right: var(--s1); }
 .transcript:empty::before { content: 'The conversation appears here: your words, the tool calls the model made, what the service did with each, and the reply.'; color: var(--muted); font-size: var(--t0); align-self: center; margin: auto; max-width: 42ch; text-align: center; }
 .turn .you { font-weight: 600; }
 .turn .you::before { content: 'demo@desk $ '; color: var(--title); font-weight: 400; }

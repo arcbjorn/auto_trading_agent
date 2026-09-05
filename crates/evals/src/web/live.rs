@@ -81,7 +81,7 @@ pub fn panel(app: &App) -> String {
   <label class="inline">rounds <input type="text" name="rounds" value="8"></label>
   <button type="submit" class="accent">start</button>
 </form>
-<div id="live-result" class="result flow"></div>"##
+<div id="live-result" class="result flow scrollbox"></div>"##
         ),
     )
 }

@@ -33,6 +33,15 @@ pub fn html(body: String) -> Response<Full<Bytes>> {
     respond(StatusCode::OK, "text/html; charset=utf-8", body)
 }
 
+/// htmx stops an `every` poll when the server answers 286: the fragment of a finished run.
+pub fn html_done(body: String) -> Response<Full<Bytes>> {
+    respond(
+        StatusCode::from_u16(286).expect("286 is a valid status"),
+        "text/html; charset=utf-8",
+        body,
+    )
+}
+
 /// A fragment that also tells the page which panels to refresh (`hx-trigger="<event> from:body"`).
 pub fn html_trigger(body: String, event: &str) -> Response<Full<Bytes>> {
     let mut r = html(body);
@@ -103,7 +112,7 @@ pub fn panel(title: &str, source: &str, about: &str, body: &str) -> String {
 /// One tab under the hood: a heading, one sentence, an explanation behind the same `?`.
 pub fn tab(id: &str, title: &str, subtitle: &str, lead: &str, about: &str, body: &str, hidden: bool) -> String {
     format!(
-        "<section class=\"tab\" id=\"tab-{id}\"{h}><h2>{title} <small>{subtitle}</small><button type=\"button\" class=\"about-toggle\" aria-label=\"about this part\" title=\"about this part\">?</button></h2><p class=\"lead\">{lead}</p><p class=\"about\">{about}</p>{body}</section>",
+        "<section class=\"tab\" id=\"tab-{id}\"{h}><h2>{title} <small>{subtitle}</small><button type=\"button\" class=\"about-toggle\" aria-label=\"about this part\" title=\"about this part\">?</button></h2><p class=\"lead\">{lead}</p><p class=\"about\">{about}</p><div class=\"flow\">{body}</div></section>",
         h = if hidden { " hidden" } else { "" }
     )
 }

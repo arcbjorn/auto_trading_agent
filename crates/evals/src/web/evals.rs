@@ -104,7 +104,7 @@ pub fn hostile_panel() -> String {
         &format!(
             r##"<div class="group"><span class="lbl" title="which attack the scripted model plays on every turn">strategy</span>{buttons}</div>
 <details><summary>what each strategy does</summary><ul class="list notes small">{notes}</ul></details>
-<div id="hostile-result" class="result flow"></div>"##
+<div id="hostile-result" class="result flow scrollbox"></div>"##
         ),
     )
 }
@@ -132,7 +132,7 @@ pub fn section(app: &App) -> String {
   <label class="inline">parallel <input type="text" name="parallel" value="8"></label>
   <button type="submit" class="accent">run</button>
 </form>
-<div id="run-result" class="result flow"></div>"##,
+<div id="run-result" class="result flow scrollbox"></div>"##,
     );
     let sim = html::panel(
         "Market simulation",
@@ -144,7 +144,7 @@ pub fn section(app: &App) -> String {
   <label class="inline">rounds <input type="text" name="rounds" value="8"></label>
   <button type="submit" class="accent">run</button>
 </form>
-<div id="sim-result" class="result flow"></div>"##,
+<div id="sim-result" class="result flow scrollbox"></div>"##,
     );
     let perturb = html::panel(
         "Prompt robustness",
@@ -156,7 +156,7 @@ pub fn section(app: &App) -> String {
   <select name="kind"><option value="casing">casing</option><option value="noise">noise</option><option value="typos" selected>typos</option><option value="all">all three</option></select>
   <button type="submit">show</button>
 </form>
-<div id="perturb-result" class="result flow"></div>"##
+<div id="perturb-result" class="result flow scrollbox"></div>"##
         ),
     );
     let body = format!(
@@ -349,26 +349,38 @@ pub async fn simulate(app: &Arc<App>, form: &HashMap<String, String>) -> anyhow:
     Ok(job_fragment(&job))
 }
 
+/// One poll of a run: the inside of its wrapper, with 286 once the run has finished so the
+/// wrapper stops polling. The wrapper itself never changes, which keeps the page's scroll anchor.
 pub fn job(app: &App, id: &str) -> Html {
     match app.jobs.lock().expect("jobs lock").get(id) {
-        Some(job) => job_fragment(job),
+        Some(job) => {
+            let (body, finished, live) = job_body(job);
+            match (finished, live) {
+                (true, _) => html::html_done(body),
+                (false, true) => html::html_trigger(body, "engine"),
+                (false, false) => html::html(body),
+            }
+        }
         None => html::error("no such run (the process keeps the last twenty)"),
     }
 }
 
+/// The answer to starting a run: a wrapper that polls its own inside until the run is done.
 pub fn job_fragment(job: &Job) -> Html {
+    let (body, _, _) = job_body(job);
+    html::html(format!(
+        "<div id=\"job-{id}\" class=\"flow\" hx-get=\"/ui/evals/job/{id}\" hx-trigger=\"every 700ms\" hx-swap=\"innerHTML\">{body}</div>",
+        id = job.id
+    ))
+}
+
+/// The run as it stands: `(html, finished, moves the book)`.
+fn job_body(job: &Job) -> (String, bool, bool) {
     let done = job.done.load(Ordering::Relaxed);
     let finished = *job.finished.lock().expect("finished lock");
     let elapsed = finished.unwrap_or_else(|| job.started.elapsed());
     let percent = (100 * done).checked_div(job.total).unwrap_or(100);
-    let mut out = if finished.is_none() {
-        format!(
-            "<div id=\"job-{id}\" class=\"flow\" hx-get=\"/ui/evals/job/{id}\" hx-trigger=\"every 700ms\" hx-swap=\"outerHTML\">",
-            id = job.id
-        )
-    } else {
-        format!("<div id=\"job-{}\" class=\"flow\">", job.id)
-    };
+    let mut out = String::new();
     out.push_str(&format!(
         "<p class=\"jobhead\"><b>{}</b><span class=\"muted small\">{done} of {} in {:.1} s{}</span></p><div class=\"progress\"><span style=\"width:{percent}%\"></span></div>",
         esc(&job.title),
@@ -410,13 +422,7 @@ pub fn job_fragment(job: &Job) -> Html {
             }
         ));
     }
-    out.push_str("</div>");
-    // A live run moves the book; the engine panels follow every poll of its fragment.
-    if live {
-        html::html_trigger(out, "engine")
-    } else {
-        html::html(out)
-    }
+    (out, finished.is_some(), live)
 }
 
 fn cases_body(job: &Job, rows: &[Row], finished: bool) -> String {
