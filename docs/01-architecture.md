@@ -2,8 +2,7 @@
 
 ## The shape of the system
 
-Four components in a line. Only the engine holds state and enforces market rules; every layer
-above it translates.
+Four components in a line. Only the engine holds state and enforces market rules; every layer above it translates.
 
 ![Four components in a line: agent-service, mcp-server and engine-server, with the eval harness grading the engine's end state](assets/architecture.svg)
 
@@ -20,6 +19,12 @@ The model may only ever *request* an action. Validation, risk limits, identity a
 ## Data flow of one order
 
 1. The user writes "buy half an ETH at 3000".
+2. The service reads the words, not the model's intent: a trade verb and two figures mean this turn may place an order. It appends that permission to the conversation as a note.
+3. The model calls `place_limit_order` with `side`, `price_usdc` and `quantity_eth` as decimal strings.
+4. The gate checks the call against the user's own words. The figures match, so it proceeds. (Had the order been large, unpriced, or on the other side, it would come back as `needs_confirmation` with an exact summary and a token.)
+5. The MCP server converts the decimals to ticks and lots exactly, applies the risk policy, and calls `PlaceOrder` over gRPC with an idempotency key derived from the session and turn.
+6. The engine queues the command, the matcher applies it, publishes a snapshot, and replies with the order, its fills, and the top of book afterwards.
+7. The service audits the turn, checks every figure in the reply against the turn's inputs, and answers the user.
 2. The service sees a trade verb, appends a note after the user's message (a system-role message on Claude Opus 5) saying that placing is permitted on this turn and cancelling is not, and calls Claude with the same system prompt and tool list it uses on every turn.
 3. Claude calls `place_limit_order(side="buy", price_usdc="3000", quantity_eth="0.5")`. The service checks the permission, adds an idempotency key and, because 0.5 ETH is below the confirmation threshold, forwards the call.
 4. The MCP server parses the decimals exactly into 300000 ticks and 5000 lots, runs the risk policy (size, value, collar, open orders, rate, session cap, kill switch), and sends `PlaceOrder` over gRPC.

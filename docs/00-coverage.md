@@ -29,11 +29,11 @@ Each requirement of the task, the code that implements it and the test or run th
 | Requirement | Code | Proof |
 |---|---|---|
 | Execute a trade | [agent.rs::Agent::chat_turn](../crates/agent-service/src/agent.rs#L296-L601) | [agent.rs::explicit_buy_places_an_order_with_an_idempotency_key](../crates/agent-service/tests/agent.rs#L267-L294) |
-| Return pricing | [gate.rs::Permissions::for_turn](../crates/agent-service/src/gate.rs#L417-L429) | [agent.rs::read_only_question_permits_no_action_tools](../crates/agent-service/tests/agent.rs#L203-L264) |
+| Return pricing | [gate.rs::Permissions::for_turn](../crates/agent-service/src/gate.rs#L424-L436) | [agent.rs::read_only_question_permits_no_action_tools](../crates/agent-service/tests/agent.rs#L203-L264) |
 | Retrieve order history | [tools.rs::ToolSet::statement](../crates/mcp-server/src/tools.rs#L791-L835) | [book.rs::ledger_tracks_average_cost_realised_pnl_and_withdrawals](../crates/engine/src/book.rs#L1841-L1899) |
 | Guardrails: validation | [units.rs::parse_price](../crates/mcp-server/src/units.rs#L71-L73), [book.rs::MAX_PRICE](../crates/engine/src/book.rs#L34-L34) | [book.rs::hard_caps_reject_absurd_orders_before_anything_else](../crates/engine/src/book.rs#L1919-L1933) |
-| Guardrails: risk checks | [policy.rs::Policy::check_place](../crates/mcp-server/src/policy.rs#L143-L159), [gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L517-L742) | [agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L297-L359) |
-| Guardrails: prompt protections | [gate.rs::verify](../crates/agent-service/src/gate.rs#L770-L796), [audit.rs::Audit::append](../crates/agent-service/src/audit.rs#L118-L132) | [agent.rs::an_action_is_refused_when_its_audit_record_cannot_be_written](../crates/agent-service/tests/agent.rs#L764-L793) |
+| Guardrails: risk checks | [policy.rs::Policy::check_place](../crates/mcp-server/src/policy.rs#L143-L159), [gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L524-L749) | [agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L297-L359) |
+| Guardrails: prompt protections | [gate.rs::verify](../crates/agent-service/src/gate.rs#L777-L803), [audit.rs::Audit::append](../crates/agent-service/src/audit.rs#L124-L138) | [agent.rs::an_action_is_refused_when_its_audit_record_cannot_be_written](../crates/agent-service/tests/agent.rs#L764-L793) |
 
 **4. LLM Evaluation**
 

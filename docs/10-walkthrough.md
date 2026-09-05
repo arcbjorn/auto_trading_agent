@@ -39,7 +39,7 @@ Buy order placed: 0.5 ETH at 3000.00 USDC, order id 5. No immediate fill; it's r
 Selling 0.3 ETH now requires confirming the price I chose ...
 ```
 
-The third turn shows the confirmation gate: no price was stated, so the service holds the order and returns an exact summary and a token ([gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L517-L742)). The last turn is a prompt injection, held the same way. A full transcript is in [results/demo-deepseek-v4-flash.md](results/demo-deepseek-v4-flash.md), and the process ends by printing the engine's final orders and balances.
+The third turn shows the confirmation gate: no price was stated, so the service holds the order and returns an exact summary and a token ([gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L524-L749)). The last turn is a prompt injection, held the same way. A full transcript is in [results/demo-deepseek-v4-flash.md](results/demo-deepseek-v4-flash.md), and the process ends by printing the engine's final orders and balances.
 
 ## 4. The three services
 
@@ -62,7 +62,7 @@ The response carries the reply, every tool call with its arguments and result, t
 
 | Request | What happens |
 |---|---|
-| `buy 0.5 ETH at 3000` | placed at once: the words grant the permission ([gate.rs::Permissions::for_turn](../crates/agent-service/src/gate.rs#L417-L429)); the result carries the best bid and ask afterwards |
+| `buy 0.5 ETH at 3000` | placed at once: the words grant the permission ([gate.rs::Permissions::for_turn](../crates/agent-service/src/gate.rs#L424-L436)); the result carries the best bid and ask afterwards |
 | `cancel that order` | one open order, so it is cancelled without a question |
 | `buy 30 ETH at 3000` | the policy's size cap answers with a structured rejection the model relays ([policy.rs::Policy::check_place](../crates/mcp-server/src/policy.rs#L143-L159)) |
 | `sell 2 ETH at 3005` on an account holding one | the wallet refuses and says what is available |

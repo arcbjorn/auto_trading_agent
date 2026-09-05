@@ -1,9 +1,6 @@
 # 04 · The agent service
 
-`POST /chat` runs a model in a loop (Claude by default, DeepSeek V4 with `MODEL_PROVIDER=deepseek`): it reads the message, decides which tools to call, the
-service runs them against the MCP server and feeds the results back, and the loop ends when
-Claude answers in text. The service owns the conversation-level guardrails: per-turn tool
-permission, confirmation of large orders, idempotency keys, a post-turn verifier, an audit log.
+`POST /chat` runs a model in a loop (Claude by default, DeepSeek V4 with `MODEL_PROVIDER=deepseek`): it reads the message, decides which tools to call, the service runs them against the MCP server and feeds the results back, and the loop ends when Claude answers in text. The service owns the conversation-level guardrails: per-turn tool permission, confirmation of large orders, idempotency keys, a post-turn verifier, an audit log.
 
 ## Calling the model
 
@@ -42,9 +39,21 @@ Environment for the DeepSeek provider: `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` (def
 
 ## Why the tool list never changes
 
-Two facts about the current API decide this. Prompt caching is a prefix match over `tools`, then `system`, then `messages`: a tool list that differs between turns invalidates everything, every turn. And the newest models bind each thinking block to the exact conversation prefix that produced it; rebuilding `tools` or `system` between requests of one conversation invalidates those blocks (an error on organisations created after August 2026). So the service sends the same system prompt and the same eleven tools on every request of a session, and expresses "what this turn may do" inside `messages`, plus enforcement in code when a tool is called. The history is only ever appended to.
+Two facts about the API decide this.
 
-The note itself travels on the operator channel where the model has one: Claude Opus 5, Opus 4.8 and the Fable and Mythos models accept a `{"role": "system", ...}` message appended after the user's message, which the model cannot mistake for user text and which user text cannot forge. Other models get the same note as a second text block inside the user message (`[service] This turn permits: ...`). The channel is chosen from the model name (`NOTE_CHANNEL=system|user` overrides it), and if the API answers a system-role message with a 400 the service re-sends that turn on the user channel and stays there for the rest of the process. Either way the permission is enforced in code, so a forged note can only mislead the model, never the engine. The alternative of declaring action tools with `defer_loading` and surfacing them with `tool_addition` blocks is the cache-preserving form of per-turn tool lists; it is a beta and was left for later.
+Prompt caching is a prefix match over `tools`, then `system`, then `messages`. A tool list that differs between turns invalidates everything, every turn.
+
+And the newest models bind each thinking block to the exact conversation prefix that produced it. Rebuilding `tools` or `system` between requests of one conversation invalidates those blocks, which is an error on organisations created after August 2026.
+
+So the service sends the same system prompt and the same eleven tools on every request of a session. What a turn may do is expressed inside `messages`, and enforced in code when a tool is actually called. The history is only ever appended to.
+
+The note travels on the operator channel where the model has one. Claude Opus 5, Opus 4.8 and the Fable and Mythos models accept a `{"role": "system", ...}` message after the user's, which the model cannot mistake for user text and user text cannot forge. Other models get the same note as a second text block inside the user message (`[service] This turn permits: ...`).
+
+The channel is chosen from the model name, and `NOTE_CHANNEL=system|user` overrides it. If the API answers a system-role message with a 400, the service re-sends that turn on the user channel and stays there for the rest of the process.
+
+Either way the permission is enforced in code, so a forged note can mislead the model but never the engine.
+
+There is a third option we did not take: declaring action tools with `defer_loading` and surfacing them with `tool_addition` blocks, which is the cache-preserving form of per-turn tool lists. It is a beta, and was left for later.
 
 ## The loop
 
@@ -65,7 +74,11 @@ verifier -> flags (unjustified action, parameters not in the request, reply figu
 audit: a pre_action line before every action tool call (the call is refused if it cannot be written), a turn line at the end; every line hash-chained to the one before
 ```
 
-All tool results of one assistant turn go back in a single user message, as the API requires for parallel tool use. A tool the model calls outside the turn's permission is not refused; it is turned into a confirmation request (`needs_confirmation`, flagged `confirmation_requested:no_intent`) and held until the user says so in a turn of their own, so a misbehaving model call can never reach the engine on its own, and a request the keyword gate does not recognise ("compra medio ETH a 3000", "get me half an eth at 3000") still works after one question. The same token flow covers cancels: the token is bound to the tool and its arguments, and a pending cancel permits cancels, not placements, on the confirming turn.
+All tool results of one assistant turn go back in a single user message, as the API requires for parallel tool use.
+
+A tool called outside the turn's permission is not refused. It becomes a confirmation request (`needs_confirmation`, flagged `confirmation_requested:no_intent`) and waits for the user to say so in a turn of their own. So a misbehaving model call never reaches the engine by itself, and a request the keyword gate does not recognise ("compra medio ETH a 3000", "get me half an eth at 3000") still works after one question.
+
+The same flow covers cancels. The token is bound to the tool and its arguments, so a pending cancel permits cancels on the confirming turn, not placements.
 
 `GET /metrics` renders turns by outcome, tool calls by tool and outcome (ok, held, error), flag families, a model-latency histogram and live sessions, in the Prometheus text format.
 
@@ -77,7 +90,13 @@ On the turn in which the user confirms a pending action, the note changes shape:
 
 ## Sessions and the API
 
-Sessions are in-memory and bounded: an append-only message history, the turn counter, a pending confirmation if any, and the last order id. Each session has its own lock, held for the length of a turn, so a session's turns are serial while different sessions run at once; the store's own lock is held only to look a session up (a test runs 64 sessions with two turns each against a model that answers in 40 ms and finishes in under 200 ms). A client-supplied `session_id` must be 1 to 64 characters of letters, digits, `.`, `_` or `-`, because it becomes part of every idempotency key the engine echoes back in listings the model reads; anything else is a 400. When the store holds `MAX_SESSIONS`, sessions idle for longer than `SESSION_IDLE_SECS` are dropped, then the least recently used one. `POST /chat` takes `{"session_id": optional, "message": string}` and answers:
+Sessions are in-memory and bounded. Each holds an append-only message history, the turn counter, a pending confirmation if any, and the last order id.
+
+Each session has its own lock, held for the length of a turn, so one session's turns are serial while different sessions run at once. The store's own lock is held only to look a session up. (A test runs 64 sessions with two turns each against a model that answers in 40 ms, and finishes in under 200 ms.)
+
+A client-supplied `session_id` must be 1 to 64 characters of letters, digits, `.`, `_` or `-`, because it becomes part of every idempotency key the engine echoes back in listings the model reads. Anything else is a 400.
+
+When the store holds `MAX_SESSIONS`, sessions idle longer than `SESSION_IDLE_SECS` are dropped first, then the least recently used one that has no request in flight. `POST /chat` takes `{"session_id": optional, "message": string}` and answers:
 
 A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) makes a retried POST, from a client that lost the response to a network error, return the earlier answer instead of running the turn, and its actions, again; the last sixteen answers per session are kept. Each session may start twenty turns per minute (`TURNS_PER_MINUTE`); the twenty-first within a minute is answered 429 without touching the model. A session also ends after `MAX_TURNS` (200) with a 409, so no conversation, and no history sent to the model, grows without bound.
 
@@ -122,4 +141,6 @@ A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) m
 
 ## Testing without the model
 
-`crates/agent-service/tests/agent.rs` runs the real engine and MCP server in-process and replaces the model with a scripted mock of the Messages API. Every scenario asserts the engine's end state: a price question permits no action tools and the request still carries the full, name-sorted tool list with the cache breakpoints; an explicit buy places an order carrying an idempotency key; a 2 ETH buy needs a confirmation turn before it is placed and the tool list is identical across all three requests; an unrequested placement becomes a confirmation request when the gate is on and is cancelled by the verifier when the gate is off; a cancel in Spanish is held, confirmed with "sí" and executed with the token bound to that cancel; a refusal and the iteration cap are handled; context editing is requested when enabled; a DeepSeek-shaped mock (chat completions with `reasoning_content` and OpenAI-style `tool_calls`) drives a placement through the same loop and the second request replays the reasoning and answers the call by id; the permission note is a system-role message on supporting models and falls back to the user turn when a mock model rejects it with a 400; the session store evicts the least recently used session; the HTTP API round-trips and refuses a session id that could carry text. The mock also asserts the request shape: headers, `output_config`, `fallbacks`, the permission note, and that all tool results return in one message.
+`crates/agent-service/tests/agent.rs` runs the real engine and MCP server in-process and replaces the model with a scripted mock of the Messages API. Every scenario asserts the engine's end state, not the wording of a reply.
+
+What the scenarios cover: a price question permits no action tools, and the request still carries the full name-sorted tool list; an explicit buy places exactly one order with a derived idempotency key; an order over the threshold is held, then executes on the confirming turn with its token; an action nobody asked for becomes a confirmation request and, with the gate off, is compensated; a cancel phrased in Spanish is confirmed and then executed; a refusal and the iteration cap end the turn cleanly; the permission note travels on the system channel for models that take one and falls back to the user channel on a 400; DeepSeek round-trips tool calls and reasoning blocks; an action is refused when its audit record cannot be written; a token only executes on a turn the user confirmed, and only if its summary was shown; a reused `request_id` replays or conflicts; the session store evicts, rate-limits, caps turns and context, and never evicts a session in use.

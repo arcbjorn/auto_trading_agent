@@ -1,9 +1,6 @@
 # 03 · The MCP server
 
-MCP is how a host asks a server "what can you do?" and calls those things over JSON-RPC 2.0.
-This server is a thin translator: one gRPC client, eleven tools, three resources, one prompt. The
-design work is ergonomics for the model — say just enough, in its units, with the arithmetic
-already done, and make every error fixable in one retry.
+MCP is how a host asks a server "what can you do?" and calls those things over JSON-RPC 2.0. This server is a thin translator: one gRPC client, eleven tools, three resources, one prompt. The design work is ergonomics for the model — say just enough, in its units, with the arithmetic already done, and make every error fixable in one retry.
 
 ## Why the protocol layer is written by hand
 
@@ -56,12 +53,14 @@ Design rules applied throughout:
 * **The arithmetic is done here.** Quotes, notionals, average prices and the side of each trade are computed here so the model never sums seven price levels or works out which of two order ids was its own.
 * **Errors are instructions.** `price_usdc "3000.123" has more than 2 decimals; it must be a multiple of 0.01. Round it and retry`, or `NotFound: order 99 not found. Check the id with list_orders.`
 * **Identity is bound server-side.** The account comes from `ACCOUNT_ID`, never from a tool argument, so the model cannot act on another account's orders.
-* **A cancelled order says why.** `place_limit_order` and the listings carry `cancel_reason` (`user`, `ioc`, `fok`, `self_trade_prevention`), and a placement whose remainder was cancelled by the engine comes with a one-sentence `note` the model can relay, for example that the order would have traded against the account's own resting order and what to do about it. The demo conversation found this gap: a confirmed "sell now" came back cancelled and neither the tool result nor the model could explain it.
+* **A cancelled order says why.** `place_limit_order` and the listings carry `cancel_reason` (`user`, `ioc`, `fok`, `self_trade_prevention`, `exposure_limit`). When the engine cancelled a remainder itself, the result adds a one-sentence `note` the model can relay: what happened and what to do about it. The demo conversation found this gap. A confirmed "sell now" came back cancelled, and neither the tool result nor the model could explain why.
 * **A refused order says what is available.** An order the wallet cannot back comes back as a readable error with the needed and available amounts and a hint to report the balance, not to retry.
 * **Ids are not a text channel.** A `client_order_id` comes back in every listing the model reads, so it is limited to 128 characters of letters, digits, `.`, `_`, `:` and `-`; anything else is refused with a readable error. The engine enforces the length again.
 * **The collar always has a reference.** The fat-finger check measures the limit price against the midpoint when both sides of the book exist, else the last trade, else the one quoted side, so a one-sided or freshly traded-through book does not switch the check off. Only an empty market with no trade yet has no reference.
 * **The session cap counts what the engine took.** The per-session value cap is charged before the gRPC call and released again if the engine rejects the order, so a retry after a transient failure is not double-counted.
-* **The book after the action comes with the result.** `place_limit_order`, `cancel_order` and `cancel_all_orders` return the best bid and ask as they stood right after the command (the engine attaches them to its reply, from the same batch, so they are exact), and the system prompt tells the model to report the market from them. Measured on the DeepSeek suites: tool calls per turn fell from 2.00 to 1.83 on execution and from 2.00 to 1.47 on paraphrase, with every case still passing. The idea is borrowed from a sibling implementation of this exercise.
+* **The book after the action comes with the result.** `place_limit_order`, `cancel_order` and `cancel_all_orders` return the best bid and ask as they stood right after the command. The engine attaches them to its own reply, from the same batch, so they are exact rather than a second read. The system prompt tells the model to report the market from them.
+
+  Measured on the DeepSeek suites: tool calls per turn fell from 2.00 to 1.83 on execution and from 2.00 to 1.47 on paraphrase, with every case still passing. The idea is borrowed from a sibling implementation of this exercise.
 * **Annotations tell the truth.** `place_limit_order` is marked destructive and not idempotent: a placement commits funds and can fill at once, and it deduplicates only when the caller supplies `client_order_id`, which is optional. An external review found the earlier annotations promised more than the tool delivers.
 * **Bounded results.** A placement lists at most 50 fills and says so with `fills_truncated`; the totals above the list always cover every fill. Every call to the engine carries a deadline (`ENGINE_TIMEOUT_MS`, 2 s), so a stalled engine is a tool error the model can report, not a hung turn.
 * **Metrics.** `GET /metrics` on the HTTP transport renders tool calls by tool and outcome, policy rejections by code and HTTP outcomes in the Prometheus text format, and fetches the engine's counters over `GetStats` on each scrape.
@@ -85,7 +84,9 @@ Over stdio the server also pushes. A pump subscribes to the engine's event strea
 
 ## Interoperability
 
-`scripts/mcp_interop_check.py` drives the server with the official Python MCP client (`pip install mcp`) over both transports: initialize, `tools/list`, calls to every tool including an invalid one, `resources/list`, `resources/read` and `prompts/get`. The Python client validates every structured result against the advertised output schema, so a passing run also checks the schemas. The Rust integration tests in `crates/mcp-server/tests/protocol.rs` cover the same ground with raw JSON-RPC messages, plus the HTTP rules (405 on GET, 403 on a foreign origin, 400 on an unknown protocol version, 202 for notifications, 413 for oversized bodies), `cancel_all_orders`, `get_order`, client id validation, trade sides and roles, and the collar's reference fallback on a one-sided book. The CI workflow runs the Python interoperability check on every push, over both transports.
+`scripts/mcp_interop_check.py` drives the server with the official Python MCP client, over both transports, and checks the whole surface: the eleven tools with their input and output schemas, the resources and their templates, the prompt, and a placement round trip.
+
+It runs in CI against a freshly built server, so a change that breaks a real client fails the build rather than the demo. `scripts/mcp_stdio_notifications_check.py` covers the subscription path, which HTTP cannot carry.
 
 ## Connecting a desktop host
 
