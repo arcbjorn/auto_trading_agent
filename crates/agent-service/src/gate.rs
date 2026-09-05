@@ -381,13 +381,17 @@ fn asks_about_confirming(clause: &str) -> bool {
 pub fn summary_is_disclosed(summary: &str, reply: &str) -> bool {
     // Figures alone cannot disclose whether this is a buy, a sell or a cancellation.
     // Inspect words directly here: the reply is normally a question, not an instruction.
+    // The side is judged on action verbs only. "bid", "ask", "offer", "long" and "short" are
+    // also names for the book's sides and prices, and a reply that explains the market uses them:
+    // "resting until asks reach 3000", "at the best bid". Those disclose nothing about the order
+    // and must not read as the opposite side.
     if let Some(side) = ["buy", "sell"].into_iter().find(|s| word_in(summary, s)) {
-        let (expected, opposite) = if side == "buy" {
+        let (expected, opposite): (&[&str], &[&str]) = if side == "buy" {
             (&BUY_WORDS, &SELL_WORDS)
         } else {
             (&SELL_WORDS, &BUY_WORDS)
         };
-        if !expected.iter().any(|w| word_in(reply, w)) || opposite.iter().any(|w| word_in(reply, w)) {
+        if !side_verbs(expected).any(|w| names_side(reply, w)) || side_verbs(opposite).any(|w| names_side(reply, w)) {
             return false;
         }
     }
@@ -404,6 +408,38 @@ pub fn summary_is_disclosed(summary: &str, reply: &str) -> bool {
     }
     let shown: Vec<String> = numbers(reply).iter().map(|n| digits_of(n)).collect();
     figures.iter().all(|f| shown.iter().any(|s| s == f))
+}
+
+/// The verbs that name an order's side: the side words minus the nouns that also name a book's
+/// sides and prices ("bid", "ask", "offer", "long", "short"), which a reply uses to describe the
+/// market rather than the order.
+const BOOK_NOUNS: [&str; 5] = ["bid", "ask", "offer", "long", "short"];
+
+fn side_verbs(words: &'static [&'static str]) -> impl Iterator<Item = &'static str> {
+    words.iter().copied().filter(|w| !BOOK_NOUNS.contains(w))
+}
+
+/// Whether the reply names the side with `word` in any inflection: "buy", "buying", "bought",
+/// "buys", "purchase", "purchasing". A reply that says "Buying 1.2 ETH at 3002" has disclosed a
+/// buy; demanding the bare verb would hide a summary the user plainly saw.
+fn names_side(reply: &str, word: &str) -> bool {
+    if word_in(reply, word) {
+        return true;
+    }
+    if word.contains(' ') {
+        return false;
+    }
+    let stem = word.trim_end_matches('e');
+    let lower = reply.to_lowercase();
+    words(&lower)
+        .map(|w| w.trim_matches(|c| c == '.' || c == ','))
+        .filter(|w| w.len() >= stem.len() + 1)
+        .any(|w| {
+            let tail = &w[stem.len()..];
+            w.starts_with(stem) && matches!(tail, "ing" | "s" | "es" | "ed" | "e")
+        })
+        || (word == "buy" && word_in(reply, "bought"))
+        || (word == "sell" && word_in(reply, "sold"))
 }
 
 /// Only an explicit, disclosed question can leave a request for a later bare "yes".
@@ -661,9 +697,12 @@ impl ConfirmationGate {
                 ) else {
                     return Intercept::Proceed(args); // let the server produce the validation message
                 };
+                // The figures the user stated, in clauses that instruct: a negated clause ("do not
+                // buy 0.5 at 3000") and a question state nothing. A clause need not carry a trade
+                // verb: "qty 0.5, price 3000.00" is an order, and the permission check already
+                // decided whether this turn may trade at all.
                 let stated = clauses(user_text)
                     .filter(|c| !clause_is_negated(c) && !is_question(c))
-                    .filter(|c| mentions_trade_intent(c))
                     .flat_map(numbers)
                     .collect::<Vec<_>>();
                 let price_quoted = stated.iter().any(|n| parse_price(n).ok() == Some(price));
@@ -1048,6 +1087,25 @@ mod tests {
             "This is a large order: buy 2 ETH at 2990.00. Please confirm."
         ));
         assert!(summary_is_disclosed(order, "Confirm buying: buy 2 ETH @ 2,990?"));
+        // Inflections disclose the side too; these two replies failed a live run once.
+        assert!(summary_is_disclosed(
+            order,
+            "Buying 2 ETH at 2990.00 would fill at about 2989.58 USDC. Please confirm to place this order."
+        ));
+        assert!(summary_is_disclosed(
+            order,
+            "Purchasing 2 ETH at 2990.00 needs confirmation. Shall I place it?"
+        ));
+        assert!(!summary_is_disclosed(order, "Selling 2 ETH at 2990.00. Confirm?"));
+        // Book vocabulary is not a side: these two replies from a live run disclose their orders.
+        assert!(summary_is_disclosed(
+            "buy 2.0000 ETH at 3000.00 USDC (up to 6000.00 USDC)",
+            "Please confirm: buy 2.0000 ETH at 3000.00 USDC (up to 6000.00 USDC), resting until asks reach 3000. Shall I place it?"
+        ));
+        assert!(summary_is_disclosed(
+            "sell 0.5000 ETH at 2999.00 USDC (up to 1499.50 USDC)",
+            "Sell 0.5000 ETH at a limit of 2999.00 USDC (best bid, up to 1499.50 USDC), confirm to place it?"
+        ));
         assert!(!summary_is_disclosed(order, "Confirm sell 2 ETH @ 2,990?"));
         assert!(!summary_is_disclosed(order, "Confirm 2 ETH @ 2,990?"));
         assert!(!summary_is_disclosed("cancel every open order of the account", "Done."));
@@ -1069,6 +1127,32 @@ mod tests {
             "Cancel order 7, the buy at 2990? Please confirm."
         ));
         assert!(!summary_is_disclosed(cancel, "Shall I cancel it?"));
+    }
+
+    /// Two paraphrases with no trade verb in the figure-bearing clause failed a live run when
+    /// figures were pinned only in clauses that carry one. The permission check decides whether
+    /// the turn may trade; the figures themselves are pinned wherever the user stated them.
+    #[test]
+    fn stated_figures_pin_the_order_without_a_verb_in_their_clause() {
+        let gate = ConfirmationGate {
+            threshold_lots: 10_000,
+            confirm_unpriced: true,
+            pin_stated_figures: true,
+            ttl: Duration::from_secs(60),
+        };
+        let args = json!({ "side": "buy", "price_usdc": "3000.00", "quantity_eth": "0.5" });
+        for text in [
+            "pls buy half an eth, limit 3000",
+            "Place a limit buy: qty 0.5, price 3000.00",
+        ] {
+            assert!(
+                matches!(
+                    gate.intercept(&mut None, "place_limit_order", &args, &cx("s", 1, text, true, false)),
+                    Intercept::Proceed(_)
+                ),
+                "{text}"
+            );
+        }
     }
 
     #[test]
