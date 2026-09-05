@@ -45,7 +45,7 @@ pub struct Job {
     pub compact: bool,
 }
 
-const KEPT_JOBS: usize = 20;
+const KEPT_JOBS: usize = 50;
 
 pub fn register(app: &App, job: Arc<Job>) {
     let mut jobs = app.jobs.lock().expect("jobs lock");
@@ -361,7 +361,11 @@ pub fn job(app: &App, id: &str) -> Html {
                 (false, false) => html::html(body),
             }
         }
-        None => html::error("no such run (the process keeps the last twenty)"),
+        // Runs live in this process's memory: a restart forgets them. Answer with the stop code so
+        // the wrapper stops polling, and say what happened.
+        None => html::html_done(
+            "<p class=\"err\">This run is no longer known: the demo process was restarted, or more than fifty runs have started since. Start it again.</p>".into(),
+        ),
     }
 }
 

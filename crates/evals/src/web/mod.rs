@@ -603,6 +603,10 @@ mod tests {
             load.contains("USDC conserved across 8 accounts: holds") && load.contains("ETH conserved: holds"),
             "{load}"
         );
+        // A run this process does not know (a restart forgot it) stops the poll with 286 and says so.
+        let gone = http.get(format!("{base}/ui/evals/job/j999")).send().await.unwrap();
+        assert_eq!(gone.status().as_u16(), 286);
+        assert!(gone.text().await.unwrap().contains("no longer known"));
         // Results: the stored reports render as HTML; the index first, paths stay inside the directory.
         let index = get("/ui/results/README.md").await;
         assert!(index.contains("<table") && index.contains("class=\"md\""), "{index}");
