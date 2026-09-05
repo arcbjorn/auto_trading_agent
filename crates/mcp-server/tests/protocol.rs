@@ -702,6 +702,24 @@ async fn streamable_http_transport() {
     let (addr, http) = serve_http("127.0.0.1:0".parse().unwrap(), server).await.unwrap();
     let url = format!("http://{addr}/mcp");
     let client = reqwest::Client::new();
+    for (header, value) in [
+        ("Origin", "null"),
+        ("Origin", "http://localhost@evil.example"),
+        ("Host", "evil.example"),
+    ] {
+        let response = client
+            .post(&url)
+            .header(header, value)
+            .json(&req(
+                1,
+                "tools/call",
+                json!({ "name": "cancel_all_orders", "arguments": {} }),
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403, "{header}: {value}");
+    }
     let r = client
         .post(&url)
         .json(&req(1, "initialize", json!({ "protocolVersion": "2025-11-25" })))

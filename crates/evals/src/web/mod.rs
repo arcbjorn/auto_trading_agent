@@ -274,6 +274,12 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
 }
 
 async fn handle(req: Request<Incoming>, app: Arc<App>) -> Result<Response<Full<Bytes>>, Infallible> {
+    if !mcp_server::transport::http::local_request_allowed(req.headers()) {
+        return Ok(Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(Full::new(Bytes::from_static(b"host or origin not allowed")))
+            .expect("static response"));
+    }
     // HEAD is answered like GET; hyper drops the body.
     let method = match req.method() {
         &Method::HEAD => Method::GET,
@@ -502,6 +508,19 @@ mod tests {
             .expect("serve");
         let http = reqwest::Client::new();
         let base = format!("http://{addr}");
+        for (header, value) in [
+            ("Origin", "null"),
+            ("Origin", "https://evil.example"),
+            ("Host", "evil.example"),
+        ] {
+            let response = http
+                .post(format!("{base}/ui/chat/audit/tamper"))
+                .header(header, value)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 403, "{header}: {value}");
+        }
         let get = |path: &str| {
             let (http, url) = (http.clone(), format!("{base}{path}"));
             async move { http.get(url).send().await.expect("get").text().await.expect("body") }

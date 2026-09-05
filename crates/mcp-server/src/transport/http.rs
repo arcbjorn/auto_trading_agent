@@ -37,19 +37,52 @@ fn text(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
 }
 
 fn origin_is_local(origin: &str) -> bool {
-    let host = origin
-        .trim()
-        .trim_start_matches("http://")
-        .trim_start_matches("https://");
-    let host = host.split('/').next().unwrap_or("");
-    let host = host
-        .strip_prefix('[')
-        .map(|h| h.split(']').next().unwrap_or(""))
-        .unwrap_or_else(|| host.split(':').next().unwrap_or(""));
-    matches!(host, "localhost" | "127.0.0.1" | "::1" | "null") || host.ends_with(".localhost")
+    let Ok(uri) = origin.parse::<hyper::Uri>() else {
+        return false;
+    };
+    let (Some(scheme), Some(authority)) = (uri.scheme_str(), uri.authority()) else {
+        return false;
+    };
+    matches!(scheme, "http" | "https")
+        && origin == format!("{scheme}://{authority}")
+        && authority_is_local(authority.as_str())
+}
+
+fn authority_is_local(value: &str) -> bool {
+    let Ok(authority) = value.parse::<hyper::http::uri::Authority>() else {
+        return false;
+    };
+    if value.contains('@') || (authority.port().is_some() && authority.port_u16().is_none()) {
+        return false;
+    }
+    let exact = match authority.port() {
+        Some(port) => format!("{}:{port}", authority.host()),
+        None => authority.host().to_string(),
+    };
+    if value != exact {
+        return false;
+    }
+    let host = authority.host().trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Browser boundary shared by the local MCP, chat and demo servers. A local Host prevents DNS
+/// rebinding; a present Origin must be a single explicit loopback HTTP(S) origin. Opaque `null`
+/// origins (sandboxed remote pages) are untrusted. Origin-less CLI clients remain supported.
+pub fn local_request_allowed(headers: &hyper::HeaderMap) -> bool {
+    let mut hosts = headers.get_all(header::HOST).iter();
+    if !hosts.next().is_some_and(|h| h.to_str().is_ok_and(authority_is_local)) || hosts.next().is_some() {
+        return false;
+    }
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let allowed = origins.next().is_none_or(|o| o.to_str().is_ok_and(origin_is_local));
+    allowed && origins.next().is_none()
 }
 
 async fn handle(req: Request<Incoming>, server: Arc<McpServer>) -> Result<Response<Full<Bytes>>, Infallible> {
+    if !local_request_allowed(req.headers()) {
+        return Ok(text(StatusCode::FORBIDDEN, "host or origin not allowed"));
+    }
     let path = req.uri().path();
     if path == "/healthz" && req.method() == Method::GET {
         return Ok(text(StatusCode::OK, "ok"));
@@ -68,15 +101,10 @@ async fn handle(req: Request<Incoming>, server: Arc<McpServer>) -> Result<Respon
     if path != MCP_PATH {
         return Ok(text(StatusCode::NOT_FOUND, "not found"));
     }
-    if let Some(origin) = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
-        if !origin_is_local(origin) {
-            return Ok(text(StatusCode::FORBIDDEN, "origin not allowed"));
-        }
-    }
-    if let Some(v) = req.headers().get("mcp-protocol-version").and_then(|v| v.to_str().ok()) {
-        if !SUPPORTED_PROTOCOL_VERSIONS.contains(&v) {
-            return Ok(text(StatusCode::BAD_REQUEST, "unsupported MCP-Protocol-Version"));
-        }
+    if let Some(v) = req.headers().get("mcp-protocol-version").and_then(|v| v.to_str().ok())
+        && !SUPPORTED_PROTOCOL_VERSIONS.contains(&v)
+    {
+        return Ok(text(StatusCode::BAD_REQUEST, "unsupported MCP-Protocol-Version"));
     }
     match *req.method() {
         Method::POST => {}
@@ -95,23 +123,23 @@ async fn handle(req: Request<Incoming>, server: Arc<McpServer>) -> Result<Respon
     };
     // Stateless HTTP has no server-to-client stream, so a subscription could never be honoured:
     // say so instead of accepting it silently.
-    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) {
-        if v["method"] == "resources/subscribe" {
-            let id = v.get("id").cloned().unwrap_or(serde_json::Value::Null);
-            let err = crate::jsonrpc::failure(
-                id,
-                crate::jsonrpc::RpcError::invalid_params(
-                    "subscriptions need a server-to-client stream; this stateless HTTP transport has none, use stdio",
-                ),
-            );
-            return Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Full::new(Bytes::from(
-                    serde_json::to_vec(&err).expect("serialisable reply"),
-                )))
-                .expect("json response"));
-        }
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body)
+        && v["method"] == "resources/subscribe"
+    {
+        let id = v.get("id").cloned().unwrap_or(serde_json::Value::Null);
+        let err = crate::jsonrpc::failure(
+            id,
+            crate::jsonrpc::RpcError::invalid_params(
+                "subscriptions need a server-to-client stream; this stateless HTTP transport has none, use stdio",
+            ),
+        );
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(
+                serde_json::to_vec(&err).expect("serialisable reply"),
+            )))
+            .expect("json response"));
     }
     match server.handle_bytes(&body).await {
         Some(reply) => Ok(Response::builder()
@@ -183,8 +211,19 @@ mod tests {
         assert!(origin_is_local("http://localhost:3000"));
         assert!(origin_is_local("http://127.0.0.1"));
         assert!(origin_is_local("http://[::1]:8000"));
-        assert!(origin_is_local("null"));
+        assert!(!origin_is_local("null"));
         assert!(!origin_is_local("https://evil.example"));
         assert!(!origin_is_local("http://localhost.evil.example"));
+        for origin in [
+            "localhost",
+            "http://localhost@evil.example",
+            "http://localhost/evil",
+            "http://[::1]evil.example",
+            "http://localhost:99999",
+            "https://null",
+            "http://localhost https://evil.example",
+        ] {
+            assert!(!origin_is_local(origin), "{origin}");
+        }
     }
 }

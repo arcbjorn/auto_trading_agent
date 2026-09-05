@@ -205,6 +205,12 @@ fn respond(status: StatusCode, body: Value) -> Response<Full<Bytes>> {
 }
 
 async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Full<Bytes>>, Infallible> {
+    if !mcp_server::transport::http::local_request_allowed(req.headers()) {
+        return Ok(respond(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "host or origin not allowed" }),
+        ));
+    }
     let path = req.uri().path().to_string();
     match (req.method().clone(), path.as_str()) {
         (Method::GET, "/healthz") => Ok(respond(StatusCode::OK, json!({ "ok": true }))),
