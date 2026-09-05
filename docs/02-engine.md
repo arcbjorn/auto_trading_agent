@@ -76,7 +76,7 @@ The difference is large. One stream places 955k orders a second on the laptop, f
 
 **Hard caps.** No order may be priced above 1,000,000.00 USDC or be larger than 10,000 ETH (`MAX_PRICE`, `MAX_QTY`), whatever the wallet mode and whatever the layers above enforce. A rejected request leaves no trace: no id, no sequence number.
 
-**A structural audit.** `Book::check_invariants` walks the whole book and returns the first violation: every kept level matches its queue in quantity and live count, every live order rests exactly once on its own side and price, the book is not crossed, statuses agree with quantities, the account index is exact, reservations back the live orders when balances are enforced, retained trade ids are contiguous, and every retention bound holds. The property tests run it after every operation, the retention and recovery tests run it on their results.
+**A structural audit.** `Book::check_invariants` walks the whole book and returns the first violation. It checks that every kept level matches its queue in quantity and live count, that every live order rests exactly once on its own side and price, and that the book is not crossed. Statuses agree with quantities and the account index is exact. Reservations back the live orders when balances are enforced. Retained trade ids are contiguous and every retention bound holds. The property tests run it after every operation; the retention and recovery tests run it on their results.
 
 **Nothing grows without bound.** Live orders are kept for ever. Closed orders and trades are kept to a limit: the last 100,000 of each (`RETAINED_CLOSED_ORDERS`, `RETAINED_TRADES`), and anything older than a day (`ENGINE_RETAIN_HOURS`). Past that the oldest is archived.
 
@@ -110,7 +110,7 @@ The same input sequence always produces the same output, which makes the engine 
 * Order ids, trade ids and sequence numbers are counters.
 * Wall-clock timestamps are passed in by the caller (`now_ns`), recorded for reporting, and never used for ordering.
 
-Two property tests cover the book. The first generates random sequences of places (GTC, IOC, FOK) and cancels across four accounts, and after every step asserts: the book is never crossed, displayed depth equals the open quantity, every trade is at the maker's price and inside the taker's limit, no self-trade happens, sequence numbers are unique, and replaying the same sequence gives an identical event log.
+Two property tests cover the book. The first generates random sequences of places (GTC, IOC, FOK) and cancels across four accounts. After every step it asserts that the book is never crossed, that displayed depth equals the open quantity, that every trade is at the maker's price and inside the taker's limit, that no self-trade happens, that sequence numbers are unique, and that replaying the same sequence gives an identical event log.
 
 The second runs those same sequences through a deliberately naive matcher written in the test: resting orders in a vector, the best price and lowest id found by scanning on every fill, self-trade prevention and FOK availability spelled out the obvious way. After every operation the two must agree on the trades (same order, makers, takers, prices, quantities) and on the resting orders. The reference is slow and obviously right; the book is fast and now demonstrably matches it.
 
@@ -141,7 +141,7 @@ Everything else releases: a cancel, an IOC remainder, a self-trade-prevention ca
 
 Deposits carry a sequence number like any event, so a replayed journal restores wallets as well as orders. `ENGINE_FUND=demo:50000:10` credits accounts when the engine starts on an empty book. It is journaled like any deposit and skipped after a replay, so a restart never funds twice.
 
-The property test funds two buyers and two sellers, one of each tightly, runs random places and cancels, and checks after every step that no USDC or ETH was created or destroyed, that each account's reserved USDC equals price times remaining over its live buys and its reserved ETH equals the remaining of its live sells, and that nothing went negative (the unsigned arithmetic would panic). The market maker, the simulation bot and the benchmarks are funded with effectively unlimited balances so they measure matching, not funding; `ENGINE_BALANCES=0` turns the checks off entirely.
+The property test funds two buyers and two sellers, one of each tightly, then runs random places and cancels. After every step it checks that no USDC or ETH was created or destroyed, that each account's reserved USDC equals price times remaining over its live buys, that its reserved ETH equals the remaining of its live sells, and that nothing went negative (the unsigned arithmetic would panic). The market maker, the simulation bot and the benchmarks are funded with effectively unlimited balances, so they measure matching rather than funding; `ENGINE_BALANCES=0` turns the checks off entirely.
 
 The accounting costs about 10% of pure-book throughput (650k to 720k operations/s against 690k to 850k without it).
 
@@ -185,7 +185,11 @@ The snapshot holds the book's durable state: retained orders and trades, the fil
 
 A snapshot records whether balances were enforced and refuses to load under the other setting, since orders placed without reservations cannot be settled with them. The in-memory event log starts empty after a snapshot; the journal is the history.
 
-`crates/engine/src/journal.rs` has the replay test (2,000 random places and cancels, journaled, replayed into a fresh book, identical event log and snapshot) and the compaction test (snapshot plus tail recovers the same book as never restarting); `crates/engine/src/book.rs` round-trips the state through JSON and checks the rebuilt book produces identical fills; `crates/engine-server/tests/concurrency.rs` restarts a real server from its journal, then from a compacted snapshot plus tail, and checks orders, book, wallets, sequence and idempotency each time.
+The recovery tests live in three places.
+
+* `crates/engine/src/journal.rs` has the replay test (2,000 random places and cancels, journaled, replayed into a fresh book, identical event log and snapshot) and the compaction test (snapshot plus tail recovers the same book as never restarting).
+* `crates/engine/src/book.rs` round-trips the state through JSON and checks the rebuilt book produces identical fills.
+* `crates/engine-server/tests/concurrency.rs` restarts a real server from its journal, then from a compacted snapshot plus tail, checking orders, book, wallets, sequence and idempotency each time.
 
 ## gRPC contract
 

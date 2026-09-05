@@ -40,7 +40,7 @@ The book starts empty and unfunded. `make run-engine` funds the demo account (50
 
 ## Demo conversation
 
-`make demo` (or `cargo run --release -p evals -- demo`) starts the engine, the MCP server and the agent in one process, funds the demo account with 50,000 USDC and 10 ETH, seeds two levels on each side, and runs an eight-turn scripted conversation through the configured model: balances and price, a resting buy, "sell now" with its confirmation, open orders, cancel all, trade history, and an injection attempt. Every turn prints the tool calls with their outcome, the reply, latency and tokens, and the engine's final state follows. It needs a model: `MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=...` or `ANTHROPIC_API_KEY=...`. A recorded transcript is in `docs/results/demo-deepseek-v4-flash.md`.
+`make demo` (or `cargo run --release -p evals -- demo`) starts the engine, the MCP server and the agent in one process. It funds the demo account with 50,000 USDC and 10 ETH, seeds two levels on each side, and runs an eight-turn scripted conversation through the configured model: balances and price, a resting buy, "sell now" with its confirmation, open orders, cancel all, trade history, and an injection attempt. Every turn prints the tool calls with their outcome, the reply, latency and tokens, and the engine's final state follows. It needs a model: `MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=...` or `ANTHROPIC_API_KEY=...`. A recorded transcript is in `docs/results/demo-deepseek-v4-flash.md`.
 
 ## Environment variables
 

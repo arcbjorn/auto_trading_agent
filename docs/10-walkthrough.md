@@ -9,7 +9,7 @@ cargo build --workspace --release
 cargo test --workspace
 ```
 
-77 tests: unit and property tests in the engine ([book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2473-L2509) checks every trade against a naive reference matcher), the gRPC server under concurrency ([concurrency.rs::sixteen_tasks_place_orders_concurrently](../crates/engine-server/tests/concurrency.rs#L23-L110)), the MCP protocol against a real engine ([protocol.rs::tools_against_a_real_engine](../crates/mcp-server/tests/protocol.rs#L260-L639)), and the agent loop against a scripted model ([agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L297-L359)).
+77 tests: unit and property tests in the engine ([book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2477-L2513) checks every trade against a naive reference matcher), the gRPC server under concurrency ([concurrency.rs::sixteen_tasks_place_orders_concurrently](../crates/engine-server/tests/concurrency.rs#L23-L110)), the MCP protocol against a real engine ([protocol.rs::tools_against_a_real_engine](../crates/mcp-server/tests/protocol.rs#L260-L639)), and the agent loop against a scripted model ([agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L297-L359)).
 
 ## 2. The harness without a model
 

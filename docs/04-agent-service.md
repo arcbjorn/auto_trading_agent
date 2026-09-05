@@ -84,7 +84,7 @@ The same flow covers cancels. The token is bound to the tool and its arguments, 
 
 A bare confirmation ("yes", "ok, confirm", "sí") when nothing is pending stands for the previous user message: the gate evaluates permission and the stated figures over both, and an order matching them needs no token, since the user has just confirmed it in words. The flag `permission_carried_over` marks such turns.
 
-Permission comes from the user's words: a trade verb (buy, sell, bid, offer, go long, grab, dump, and so on) or the shape of an order (the asset plus at least two numbers, as in "0.5 ETH @ 3000"), a cancel verb for `cancel_order` and `cancel_all_orders`, or a confirmation word while an order is pending. These are heuristics, and the paraphrase suite is where they are measured; the verifier applies the same rules after the fact and additionally flags a placed order whose price and quantity both fail to appear in a message that did contain numbers (`params_not_in_request`).
+Permission comes from the user's words. It is granted by a trade verb (buy, sell, bid, offer, go long, grab, dump, and so on), by the shape of an order (the asset plus at least two numbers, as in "0.5 ETH @ 3000"), by a cancel verb for `cancel_order` and `cancel_all_orders`, or by a confirmation word while an order is pending. These are heuristics, and the paraphrase suite is where they are measured. The verifier applies the same rules after the fact, and additionally flags a placed order whose price and quantity both fail to appear in a message that did contain numbers (`params_not_in_request`).
 
 On the turn in which the user confirms a pending action, the note changes shape: it names the action and its token ("The user confirmed the pending action (cancel order 5). Call cancel_order now with the same arguments plus confirmation_token ..."). The first live runs showed a model occasionally asking a second time instead of completing the flow; the explicit note removes that ambiguity without changing what is enforced.
 
@@ -143,4 +143,17 @@ A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) m
 
 `crates/agent-service/tests/agent.rs` runs the real engine and MCP server in-process and replaces the model with a scripted mock of the Messages API. Every scenario asserts the engine's end state, not the wording of a reply.
 
-What the scenarios cover: a price question permits no action tools, and the request still carries the full name-sorted tool list; an explicit buy places exactly one order with a derived idempotency key; an order over the threshold is held, then executes on the confirming turn with its token; an action nobody asked for becomes a confirmation request and, with the gate off, is compensated; a cancel phrased in Spanish is confirmed and then executed; a refusal and the iteration cap end the turn cleanly; the permission note travels on the system channel for models that take one and falls back to the user channel on a 400; DeepSeek round-trips tool calls and reasoning blocks; an action is refused when its audit record cannot be written; a token only executes on a turn the user confirmed, and only if its summary was shown; a reused `request_id` replays or conflicts; the session store evicts, rate-limits, caps turns and context, and never evicts a session in use.
+What the scenarios cover:
+
+* A price question permits no action tools, and the request still carries the full name-sorted tool list.
+* An explicit buy places exactly one order with a derived idempotency key.
+* An order over the threshold is held, then executes on the confirming turn with its token.
+* An action nobody asked for becomes a confirmation request. With the gate off, it is compensated.
+* A cancel phrased in Spanish is confirmed and then executed.
+* A refusal and the iteration cap both end the turn cleanly.
+* The permission note travels on the system channel for models that take one, and falls back to the user channel on a 400.
+* DeepSeek round-trips tool calls and reasoning blocks.
+* An action is refused when its audit record cannot be written.
+* A token only executes on a turn the user confirmed, and only if its summary was shown.
+* A reused `request_id` replays or conflicts.
+* The session store evicts, rate-limits, caps turns and context, and never evicts a session in use.
