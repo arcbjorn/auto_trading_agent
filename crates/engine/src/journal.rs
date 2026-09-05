@@ -10,7 +10,7 @@
 //! commands; `fsync` per batch is optional (crash durability at a latency cost, see the README).
 
 use crate::book::{
-    Book, BookBuilder, BookState, ExposureLimits, OrderId, PlaceRequest, Qty, SnapshotHeader, SnapshotLine,
+    Book, BookBuilder, BookState, ExposureLimits, OrderId, PlaceRequest, Qty, Retention, SnapshotHeader, SnapshotLine,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -106,6 +106,17 @@ impl Journal {
     /// Rebuilds a book from the snapshot (if any) and the journal tail after it. Returns the book
     /// and how many journal records were replayed on top of the snapshot.
     pub fn recover(journal: &Path, enforce_balances: bool, limits: ExposureLimits) -> std::io::Result<(Book, u64)> {
+        Self::recover_with_retention(journal, enforce_balances, limits, Retention::default())
+    }
+
+    /// Recover with the same retention that was used live. Retention changes when an archived
+    /// client id becomes reusable, so it must apply during replay, not only afterwards.
+    pub fn recover_with_retention(
+        journal: &Path,
+        enforce_balances: bool,
+        limits: ExposureLimits,
+        retention: Retention,
+    ) -> std::io::Result<(Book, u64)> {
         let snapshot = Self::snapshot_path(journal);
         let mut book = match File::open(&snapshot) {
             Ok(f) => {
@@ -119,6 +130,15 @@ impl Journal {
                             snapshot.display(),
                             if state.enforce_balances { "on" } else { "off" },
                             if enforce_balances { "on" } else { "off" }
+                        ),
+                    ));
+                }
+                if state.retention != retention {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "snapshot {} was taken with different retention; keep the original retention for replay",
+                            snapshot.display()
                         ),
                     ));
                 }
@@ -141,7 +161,7 @@ impl Journal {
                 } else {
                     Book::new()
                 };
-                book.with_exposure_limits(limits)
+                book.with_exposure_limits(limits).with_retention(retention)
             }
             Err(e) => return Err(e),
         };
@@ -154,94 +174,136 @@ impl Journal {
         let retired = Self::retired_path(journal);
         let mut replayed = 0;
         if retired.exists() {
-            let retired_generation = Self::retired_generation(&retired);
+            let retired_generation = match Self::retired_generation(&retired)? {
+                Some(generation) => generation,
+                None if book.generation() == 0 && !snapshot.exists() => {
+                    // Legacy unmarked retirement is unambiguous only without a snapshot.
+                    Self::write_generation(journal, 1)?;
+                    1
+                }
+                None => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "retired journal has no generation marker; cannot safely decide whether to replay it",
+                    ));
+                }
+            };
             if book.generation() >= retired_generation {
                 eprintln!(
                     "engine journal: a compaction was interrupted after its snapshot was written; the snapshot (generation {}) already contains the retired journal (generation {retired_generation}) at {}",
                     book.generation(),
                     retired.display()
                 );
-                let _ = std::fs::remove_file(&retired);
+                Self::remove_retired(journal)?;
             } else {
                 eprintln!(
                     "engine journal: a compaction was interrupted before its snapshot was written; replaying the retired journal ({}) and finishing the compaction",
                     retired.display()
                 );
+                // Finish the retired input alone. Moving the active journal over it here
+                // would destroy the only durable copy before publishing the recovered snapshot.
+                if book.generation().checked_add(1) != Some(retired_generation) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "retired journal generation is not the next snapshot",
+                    ));
+                }
                 replayed += Self::replay(&retired, &mut book)?;
-                replayed += Self::replay(journal, &mut book)?;
-                // Finish what the crash interrupted: publish the recovered state, then drop the
-                // retired file and empty the journal. Until the snapshot is renamed into place,
-                // both inputs are still on disk, so another crash here loses nothing.
-                Self::compact(journal, &mut book)?;
-                return Ok((book, replayed));
+                book.set_generation(retired_generation);
+                Self::publish_snapshot(journal, &book)?;
+                Self::remove_retired(journal)?;
             }
         }
         replayed += Self::replay(journal, &mut book)?;
         Ok((book, replayed))
     }
 
-    /// The generation a retired journal belongs to, from the marker written beside it.
-    ///
-    /// A missing or unreadable marker reads as `u64::MAX`, so the journal is replayed rather than
-    /// dropped. Replaying one the snapshot already holds is caught by the generation check on the
-    /// next line; dropping one it does not hold would lose state.
-    fn retired_generation(retired: &Path) -> u64 {
-        let mut marker = retired.as_os_str().to_owned();
+    fn generation_path(journal: &Path) -> std::path::PathBuf {
+        let mut marker = Self::retired_path(journal).into_os_string();
         marker.push(".generation");
-        std::fs::read_to_string(std::path::PathBuf::from(marker))
-            .ok()
-            .and_then(|t| t.trim().parse().ok())
-            .unwrap_or(u64::MAX)
+        marker.into()
     }
 
-    /// Writes the book's state as the snapshot (atomically: a temporary file renamed into place)
-    /// and empties the journal, so recovery is the snapshot plus whatever is appended afterwards.
-    /// Call before opening the journal for appending.
-    pub fn compact(journal: &Path, book: &mut Book) -> std::io::Result<()> {
-        let snapshot = Self::snapshot_path(journal);
-        let retired = Self::retired_path(journal);
-        // The snapshot about to be written belongs to the next generation; the retired journal is
-        // stamped with it, so recovery can tell whether the snapshot contains it.
-        let generation = book.next_generation();
+    fn retired_generation(retired: &Path) -> std::io::Result<Option<u64>> {
         let mut marker = retired.as_os_str().to_owned();
         marker.push(".generation");
-        let marker = std::path::PathBuf::from(marker);
-        let mut tmp = snapshot.as_os_str().to_owned();
+        match std::fs::read_to_string(std::path::PathBuf::from(marker)) {
+            Ok(text) => text
+                .trim()
+                .parse()
+                .map(Some)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Publish the generation before retiring the journal. The marker itself is atomically
+    /// replaced, so a crash never leaves a truncated marker attached to a retired input.
+    fn write_generation(journal: &Path, generation: u64) -> std::io::Result<()> {
+        let marker = Self::generation_path(journal);
+        let mut tmp = marker.clone().into_os_string();
         tmp.push(".tmp");
         let tmp = std::path::PathBuf::from(tmp);
-        // Three steps, each survivable in either order of a crash:
-        //   1. move the journal aside. A crash here leaves the old snapshot and the retired
-        //      journal, which recovery replays exactly as it would have replayed the journal.
-        //   2. publish the new snapshot by rename, which is atomic. A crash here leaves the new
-        //      snapshot and the retired journal, whose effects it already contains; recovery
-        //      deletes the retired file without replaying it, because the snapshot is newer.
-        //   3. delete the retired journal. A crash here is step 2's state.
-        // The directory is synced after each rename so the entries themselves are durable.
-        match std::fs::rename(journal, &retired) {
+        let mut f = File::create(&tmp)?;
+        f.write_all(generation.to_string().as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(tmp, marker)?;
+        sync_dir(journal)
+    }
+
+    fn publish_snapshot(journal: &Path, book: &Book) -> std::io::Result<()> {
+        let snapshot = Self::snapshot_path(journal);
+        let mut tmp = snapshot.clone().into_os_string();
+        tmp.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp);
+        let mut w = BufWriter::new(File::create(&tmp)?);
+        book.write_snapshot(&mut w)?;
+        w.flush()?;
+        w.get_ref().sync_all()?;
+        std::fs::rename(tmp, snapshot)?;
+        sync_dir(journal)
+    }
+
+    fn remove_retired(journal: &Path) -> std::io::Result<()> {
+        let remove = |path| match std::fs::remove_file(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        };
+        remove(Self::retired_path(journal))?;
+        // The retired file must be durably gone before its generation can disappear.
+        sync_dir(journal)?;
+        remove(Self::generation_path(journal))?;
+        sync_dir(journal)
+    }
+
+    /// Writes a snapshot and retires the journal. Call only after recovery, with no appender
+    /// open. Each durable input stays in place until the snapshot containing it is published.
+    pub fn compact(journal: &Path, book: &mut Book) -> std::io::Result<()> {
+        let retired = Self::retired_path(journal);
+        if retired.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "recover the retired journal before compaction",
+            ));
+        }
+        let generation = book
+            .generation()
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "snapshot generation exhausted"))?;
+        Self::write_generation(journal, generation)?;
+        match std::fs::rename(journal, retired) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        {
-            let mut f = File::create(&marker)?;
-            f.write_all(generation.to_string().as_bytes())?;
-            f.sync_all()?;
-        }
         sync_dir(journal)?;
-        {
-            let mut w = BufWriter::new(File::create(&tmp)?);
-            book.write_snapshot(&mut w)?;
-            w.flush()?;
-            w.get_ref().sync_all()?;
-        }
-        std::fs::rename(&tmp, &snapshot)?;
-        sync_dir(journal)?;
-        let _ = std::fs::remove_file(&retired);
-        let _ = std::fs::remove_file(&marker);
+        book.set_generation(generation);
+        Self::publish_snapshot(journal, book)?;
+        Self::remove_retired(journal)?;
         let empty = File::create(journal)?;
         empty.sync_all()?;
-        sync_dir(journal)?;
-        Ok(())
+        sync_dir(journal)
     }
 
     /// Where a journal waits during compaction. Its presence means a crash interrupted one.
@@ -289,6 +351,7 @@ impl Journal {
                     next_seq: state.next_seq,
                     enforce_balances: state.enforce_balances,
                     exposure_limits: state.exposure_limits,
+                    retention: state.retention,
                 };
                 Ok((header, Book::from_state(state)))
             }
@@ -356,6 +419,106 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         std::env::temp_dir().join(format!("clob-journal-{name}-{}-{nanos}.jsonl", std::process::id()))
+    }
+
+    #[test]
+    fn retention_is_applied_during_replay_and_bound_to_the_snapshot() {
+        let path = temp_path("retention");
+        let retention = Retention {
+            closed_orders: 0,
+            trades: 0,
+            max_age_ns: 0,
+        };
+        let mut live = Book::new().with_retention(retention);
+        let req = PlaceRequest {
+            account: "a".into(),
+            client_order_id: "reuse".into(),
+            side: Side::Buy,
+            price: 100,
+            qty: 1,
+            tif: Tif::Ioc,
+        };
+        let mut journal = Journal::open(&path, true).unwrap();
+        for t in 1..=2 {
+            journal.append(&Record::Place { t, req: req.clone() }).unwrap();
+            live.place(req.clone(), t).unwrap();
+        }
+        journal.commit().unwrap();
+        drop(journal);
+        let (mut recovered, _) =
+            Journal::recover_with_retention(&path, false, ExposureLimits::default(), retention).unwrap();
+        assert_eq!(
+            recovered.seq(),
+            live.seq(),
+            "both uses execute because the id was archived"
+        );
+        Journal::compact(&path, &mut recovered).unwrap();
+        assert!(Journal::recover(&path, false, ExposureLimits::default()).is_err());
+        let (again, _) = Journal::recover_with_retention(&path, false, ExposureLimits::default(), retention).unwrap();
+        assert_eq!(again.seq(), live.seq());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(Journal::snapshot_path(&path));
+    }
+
+    #[test]
+    fn recovery_preserves_both_retired_and_active_journals() {
+        let path = temp_path("two-inputs");
+        let retired = Journal::retired_path(&path);
+        for (p, amount) in [(&retired, 1_000), (&path, 2_000)] {
+            let mut j = Journal::open(p, true).unwrap();
+            j.append(&Record::Deposit {
+                t: 1,
+                account: "a".into(),
+                usdc: amount,
+                eth: 0,
+            })
+            .unwrap();
+            j.commit().unwrap();
+        }
+        Journal::write_generation(&path, 1).unwrap();
+        // Recovery previously renamed the active input over the retired input. Compaction
+        // must refuse that state, leaving both files intact for recovery.
+        assert!(Journal::compact(&path, &mut Book::with_balances()).is_err());
+        assert!(retired.exists() && path.exists());
+        let retired_bytes = std::fs::read(&retired).unwrap();
+        let active_bytes = std::fs::read(&path).unwrap();
+        let mut blocked_snapshot = Journal::snapshot_path(&path).into_os_string();
+        blocked_snapshot.push(".tmp");
+        let blocked_snapshot = std::path::PathBuf::from(blocked_snapshot);
+        std::fs::create_dir(&blocked_snapshot).unwrap();
+        assert!(Journal::recover(&path, true, ExposureLimits::default()).is_err());
+        assert_eq!(std::fs::read(&retired).unwrap(), retired_bytes);
+        assert_eq!(std::fs::read(&path).unwrap(), active_bytes);
+        std::fs::remove_dir(blocked_snapshot).unwrap();
+        for _ in 0..2 {
+            let (book, _) = Journal::recover(&path, true, ExposureLimits::default()).unwrap();
+            assert_eq!(book.balances("a").usdc_available, 3_000);
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(Journal::snapshot_path(&path));
+    }
+
+    #[test]
+    fn an_ambiguous_retired_journal_is_never_guessed_at() {
+        let path = temp_path("ambiguous");
+        let mut book = Book::with_balances();
+        book.deposit("a", 1_000, 0).unwrap();
+        Journal::compact(&path, &mut book).unwrap();
+        let mut retired = Journal::open(&Journal::retired_path(&path), true).unwrap();
+        retired
+            .append(&Record::Deposit {
+                t: 1,
+                account: "a".into(),
+                usdc: 1_000,
+                eth: 0,
+            })
+            .unwrap();
+        retired.commit().unwrap();
+        assert!(Journal::recover(&path, true, ExposureLimits::default()).is_err());
+        assert!(Journal::retired_path(&path).exists(), "retain evidence for recovery");
+        for p in [&path, &Journal::retired_path(&path), &Journal::snapshot_path(&path)] {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     #[test]

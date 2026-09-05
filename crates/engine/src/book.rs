@@ -42,7 +42,7 @@ pub const RETAINED_CLOSED_ORDERS: usize = 100_000;
 pub const RETAINED_TRADES: usize = 100_000;
 
 /// How much closed history the book keeps; see [`Book::with_retention`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Retention {
     pub closed_orders: usize,
     pub trades: usize,
@@ -572,6 +572,8 @@ pub struct SnapshotHeader {
     pub enforce_balances: bool,
     #[serde(default)]
     pub exposure_limits: ExposureLimits,
+    #[serde(default)]
+    pub retention: Retention,
 }
 
 /// Builds a book one record at a time, the way a streamed snapshot arrives. [`Book::from_state`]
@@ -587,6 +589,7 @@ impl BookBuilder {
             book: Book {
                 enforce_balances: h.enforce_balances,
                 exposure_limits: h.exposure_limits,
+                retention: h.retention,
                 generation: h.generation,
                 last_trade_price: h.last_trade_price,
                 next_order: h.next_order,
@@ -706,6 +709,8 @@ pub struct BookState {
     /// The limits in force when the state was written; replay under other limits would differ.
     #[serde(default)]
     pub exposure_limits: ExposureLimits,
+    #[serde(default)]
+    pub retention: Retention,
     /// See [`SnapshotHeader::generation`].
     #[serde(default)]
     pub generation: u64,
@@ -744,6 +749,7 @@ impl Book {
             next_seq: self.next_seq,
             enforce_balances: self.enforce_balances,
             exposure_limits: self.exposure_limits,
+            retention: self.retention,
             generation: self.generation,
         }
     }
@@ -759,6 +765,7 @@ impl Book {
             next_seq: state.next_seq,
             enforce_balances: state.enforce_balances,
             exposure_limits: state.exposure_limits,
+            retention: state.retention,
             generation: state.generation,
         });
         for (account, bal) in state.balances {
@@ -792,6 +799,7 @@ impl Book {
             next_seq: self.next_seq,
             enforce_balances: self.enforce_balances,
             exposure_limits: self.exposure_limits,
+            retention: self.retention,
         }
     }
 

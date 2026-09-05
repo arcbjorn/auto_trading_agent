@@ -700,8 +700,9 @@ pub async fn serve(addr: SocketAddr, cfg: EngineConfig) -> anyhow::Result<(Socke
     let bound = listener.local_addr()?;
     let (mut book, mut journal) = match &cfg.journal_path {
         Some(path) => {
-            let (book, replayed) = Journal::recover(path, cfg.enforce_balances, cfg.exposure_limits)
-                .map_err(|e| anyhow::anyhow!("cannot recover journal {}: {e}", path.display()))?;
+            let (book, replayed) =
+                Journal::recover_with_retention(path, cfg.enforce_balances, cfg.exposure_limits, cfg.retention)
+                    .map_err(|e| anyhow::anyhow!("cannot recover journal {}: {e}", path.display()))?;
             let mut book = book.with_retention(cfg.retention);
             tracing::info!(journal = %path.display(), replayed, seq = book.seq(), "journal recovered");
             let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
