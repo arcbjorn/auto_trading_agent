@@ -120,8 +120,22 @@ pub async fn market(app: &App) -> anyhow::Result<Html> {
     let cell = |k: &str, v: String, class: &str| {
         format!("<span><span class=\"k\">{k}</span><b class=\"num {class}\">{v}</b></span>")
     };
+    // Reserved amounts back live orders; they are shown only while there are some.
+    let reserved = match (w.usdc_reserved_micro, w.eth_reserved_lots) {
+        (0, 0) => String::new(),
+        (usdc_r, 0) => format!(
+            " <span class=\"muted\">({} USDC reserved)</span>",
+            usdc_from_micro(u128::from(usdc_r))
+        ),
+        (0, eth_r) => format!(" <span class=\"muted\">({} ETH reserved)</span>", eth(eth_r)),
+        (usdc_r, eth_r) => format!(
+            " <span class=\"muted\">({} USDC, {} ETH reserved)</span>",
+            usdc_from_micro(u128::from(usdc_r)),
+            eth(eth_r)
+        ),
+    };
     Ok(html::html(format!(
-        "<span><span class=\"k\">ETH/USDC</span></span>{}{}{}{}{}{}<span class=\"wallet\"><span class=\"k\">{ACCOUNT} wallet</span><b class=\"num\">{} USDC</b> · <b class=\"num\">{} ETH</b><span class=\"muted\"> ({} / {} reserved)</span></span>",
+        "{}{}{}{}{}{}<span class=\"wallet\"><span class=\"k\">{ACCOUNT} wallet</span><b class=\"num\">{} USDC</b> · <b class=\"num\">{} ETH</b>{reserved}</span>",
         cell("best bid", price(bid), "bid"),
         cell("best ask", price(ask), "ask"),
         cell("spread", spread, ""),
@@ -130,8 +144,6 @@ pub async fn market(app: &App) -> anyhow::Result<Html> {
         cell("sequence", thousands(m.sequence), ""),
         usdc_from_micro(u128::from(w.usdc_available_micro)),
         eth(w.eth_available_lots),
-        usdc_from_micro(u128::from(w.usdc_reserved_micro)),
-        eth(w.eth_reserved_lots),
     )))
 }
 

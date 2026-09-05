@@ -87,7 +87,7 @@ pub fn home(app: &App, session_id: &str, hostile: &str, live: &str) -> String {
             let provider = model.split(' ').next().unwrap_or("");
             (
                 format!(
-                    "<p class=\"muted small\">model <b title=\"{}\">{}</b> via {}; every turn is one <code>POST /chat</code> to the agent-service in this process, with the raw request and response under it.</p>",
+                    "<p class=\"muted small\">model <b title=\"{}\">{}</b> via {} · each turn is one <code>POST /chat</code>; the raw request and response sit under every reply</p>",
                     esc(model),
                     esc(id),
                     esc(provider)
@@ -283,20 +283,21 @@ pub async fn turn(app: &App, form: &HashMap<String, String>) -> anyhow::Result<H
             .map(|a| a.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
         let usage = &v["usage"];
+        let n = |key: &str| html::thousands(usage[key].as_u64().unwrap_or(0));
         out.push_str(&format!(
-            "<div class=\"meta\">permitted this turn: {} · {} ms, {} in the model · {} model call{} · tokens {} in, {} cached, {} out</div>",
+            "<div class=\"meta\">permitted: {} · {} ms ({} in the model) · {} model call{} · tokens {} in / {} cached / {} out</div>",
             if permitted.is_empty() {
                 "no action tools".to_string()
             } else {
                 esc(&permitted.join(", "))
             },
-            v["latency_ms"].as_u64().unwrap_or(0),
-            v["model_latency_ms"].as_u64().unwrap_or(0),
+            html::thousands(v["latency_ms"].as_u64().unwrap_or(0)),
+            html::thousands(v["model_latency_ms"].as_u64().unwrap_or(0)),
             v["iterations"].as_u64().unwrap_or(0),
             if v["iterations"].as_u64() == Some(1) { "" } else { "s" },
-            usage["input_tokens"].as_u64().unwrap_or(0),
-            usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
-            usage["output_tokens"].as_u64().unwrap_or(0),
+            n("input_tokens"),
+            n("cache_read_input_tokens"),
+            n("output_tokens"),
         ));
         out.push_str(&format!(
             "<details><summary>raw request and response</summary><pre>POST /chat\n{}</pre><pre>{}</pre></details>",

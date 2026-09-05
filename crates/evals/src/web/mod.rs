@@ -666,7 +666,7 @@ mod tests {
             turn.contains("hx-swap-oob") && turn.contains("the next message decides"),
             "{turn}"
         );
-        assert!(turn.contains("permitted this turn: no action tools"), "{turn}");
+        assert!(turn.contains("permitted: no action tools"), "{turn}");
         let audit = http
             .get(format!("{base}/ui/chat/audit"))
             .send()

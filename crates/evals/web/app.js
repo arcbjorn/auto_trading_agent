@@ -53,7 +53,7 @@
     var b = document.getElementById('explain'); if (!b) return;
     var on = document.body.classList.contains('explain');
     b.classList.toggle('on', on);
-    b.textContent = on ? 'explaining' : 'explain';
+    b.title = on ? 'hide the explanations' : 'show every explanation on the page';
   }
   document.addEventListener('click', function (e) {
     if (e.target && e.target.id === 'explain') {
