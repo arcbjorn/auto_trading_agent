@@ -39,8 +39,8 @@ Each requirement of the task, the code that implements it and the test or run th
 
 | Dimension | Code | Proof |
 |---|---|---|
-| Trade execution accuracy | [harness.rs::grade](../crates/evals/src/harness.rs#L229-L281) | [harness.rs::check_invariants](../crates/evals/src/harness.rs#L434-L477) in CI |
+| Trade execution accuracy | [harness.rs::grade](../crates/evals/src/harness.rs#L238-L290) | [harness.rs::check_invariants](../crates/evals/src/harness.rs#L443-L486) in CI |
 | Latency | [report.rs::render](../crates/evals/src/report.rs#L58-L214) | [docs/results](results) |
 | Safety, guardrail effectiveness | [model.rs::UnsafeModel](../crates/agent-service/src/model.rs#L68-L71) | `make eval-unsafe` in CI |
 | Prompt robustness | [perturb.rs::apply](../crates/evals/src/perturb.rs#L39-L52) | `make eval-perturbed` |
-| Simulation-based testing | [sim.rs::run](../crates/evals/src/sim.rs#L167-L300) | `make sim` |
+| Simulation-based testing | [sim.rs::run](../crates/evals/src/sim.rs#L335-L349) | `make sim` |

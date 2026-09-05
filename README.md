@@ -13,9 +13,10 @@ Infrastructure for autonomous AI agents trading on a market, in Rust. Four parts
 
 ```
 cargo build --workspace --release
-cargo test --workspace                          # 77 tests
+cargo test --workspace                          # 104 tests
 cp .env.example .env                            # add ANTHROPIC_API_KEY or DEEPSEEK_API_KEY; make loads it
 make demo                                       # whole stack in one process, eight turns
+make demo-web                                   # the same stack behind a browser page on 127.0.0.1:8080
 make run-engine  /  make run-mcp  /  make run-agent      # the three services, then POST /chat on :8080
 ```
 

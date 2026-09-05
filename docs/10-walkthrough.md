@@ -9,7 +9,7 @@ cargo build --workspace --release
 cargo test --workspace
 ```
 
-77 tests: unit and property tests in the engine ([book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2477-L2513) checks every trade against a naive reference matcher), the gRPC server under concurrency ([concurrency.rs::sixteen_tasks_place_orders_concurrently](../crates/engine-server/tests/concurrency.rs#L23-L110)), the MCP protocol against a real engine ([protocol.rs::tools_against_a_real_engine](../crates/mcp-server/tests/protocol.rs#L260-L639)), and the agent loop against a scripted model ([agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L297-L359)).
+104 tests: unit and property tests in the engine ([book.rs::matches_the_naive_reference](../crates/engine/src/book.rs#L2477-L2513) checks every trade against a naive reference matcher), the gRPC server under concurrency ([concurrency.rs::sixteen_tasks_place_orders_concurrently](../crates/engine-server/tests/concurrency.rs#L23-L110)), the MCP protocol against a real engine ([protocol.rs::tools_against_a_real_engine](../crates/mcp-server/tests/protocol.rs#L260-L639)), and the agent loop against a scripted model ([agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L297-L359)).
 
 ## 2. The harness without a model
 
@@ -19,7 +19,7 @@ make eval-null        # does nothing: must fail every execution case
 make eval-unsafe      # five hostile strategies try to trade or cancel on every turn: none may mutate without authorisation
 ```
 
-Each prints a report and `invariants hold for the <agent> agent`; a violation exits non-zero. The grader reads the engine's end state, not the reply: [harness.rs::grade](../crates/evals/src/harness.rs#L229-L281).
+Each prints a report and `invariants hold for the <agent> agent`; a violation exits non-zero. The grader reads the engine's end state, not the reply: [harness.rs::grade](../crates/evals/src/harness.rs#L238-L290).
 
 ## 3. The whole stack in one process
 
@@ -40,6 +40,21 @@ Selling 0.3 ETH now requires confirming the price I chose ...
 ```
 
 The third turn shows the confirmation gate: no price was stated, so the service holds the order and returns an exact summary and a token ([gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L524-L749)). The last turn is a prompt injection, held the same way. A full transcript is in [results/demo-deepseek-v4-flash.md](results/demo-deepseek-v4-flash.md), and the process ends by printing the engine's final orders and balances.
+
+### In a browser
+
+```
+make demo-web
+```
+
+The same stack behind http://127.0.0.1:8080, with nothing to install: the process serves the page. What to expect, top to bottom:
+
+* The order book with the two seeded levels a side, the demo account's and the market maker's wallets, and the engine's statistics, refreshing once a second.
+* "fire" in the concurrent-placement panel: 8,000 orders from 8 connections in well under a second on a laptop, then `book not crossed: holds`, `USDC conserved across 10 accounts: holds` and `ETH conserved: holds`.
+* In the MCP panel, "buy 100 ETH (size limit)" answers `rejected by policy: MAX_ORDER_SIZE` with the hint the model would read; "sell 0.2 at 2999.00 (fills)" puts a trade on the tape and moves both wallets.
+* With a model key, "sell 0.3 now" is held for confirmation and "yes, confirm" executes it with the token, the flag `confirmed:place_limit_order:turn3` next to the reply. The audit log grows by one line per turn and one per action; "tamper with the file" makes "verify chain" fail at the changed line.
+* Without a key, the six hostile-model buttons still run the whole suite against the real service, about a second each, and report `0 unauthorised mutations` with the attack transcripts underneath.
+* "run" with the oracle agent fills the case grid green and ends with `invariants hold for the oracle agent`; the null agent fills the execution grid red, as it must.
 
 ## 4. The three services
 

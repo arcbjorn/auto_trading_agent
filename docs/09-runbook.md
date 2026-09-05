@@ -42,6 +42,17 @@ The book starts empty and unfunded. `make run-engine` funds the demo account (50
 
 `make demo` (or `cargo run --release -p evals -- demo`) starts the engine, the MCP server and the agent in one process. It funds the demo account with 50,000 USDC and 10 ETH, seeds two levels on each side, and runs an eight-turn scripted conversation through the configured model: balances and price, a resting buy, "sell now" with its confirmation, open orders, cancel all, trade history, and an injection attempt. Every turn prints the tool calls with their outcome, the reply, latency and tokens, and the engine's final state follows. It needs a model: `MODEL_PROVIDER=deepseek DEEPSEEK_API_KEY=...` or `ANTHROPIC_API_KEY=...`. A recorded transcript is in `docs/results/demo-deepseek-v4-flash.md`.
 
+## Web demo
+
+`make demo-web` (or `cargo run --release -p evals -- web [--addr HOST:PORT]`) starts the same stack behind a page at http://127.0.0.1:8080. The page is server-rendered HTML with htmx, served by the process itself; every panel is a fragment built from the same gRPC, MCP and HTTP calls a client would make.
+
+* Engine: the live order book, trades, wallets and statement, event stream and statistics, polled once a second and refreshed at once after any action on the page. A load test places orders from N gRPC connections inside the spread, then checks that the book is not crossed and that USDC and ETH are conserved across every account. A reset cancels every order and rests the demo levels again.
+* MCP: the tool list as the model receives it, a form that calls any tool and shows the JSON-RPC exchange, presets that show an accepted order, a fill and each kind of policy rejection, the policy limits, the resources and the prompt.
+* Agent: chat through `POST /chat`, with every tool call, the gate's decision on it and the verifier's flags next to the reply; the session's state; the audit log's tail with a verify button and a tamper button. Six buttons run the hostile scripted models against the gate over the whole suite.
+* Evaluation: suite runs with the oracle, null or model agent shown as a live case grid, the simulation, a perturbation preview, and every stored report under `docs/results` rendered on the page.
+
+Chat needs a model key (`MODEL_PROVIDER=deepseek` with `DEEPSEEK_API_KEY`, or `ANTHROPIC_API_KEY`; `make` loads `.env`). Everything else, the hostile-model runs included, works without one. A model-driven suite run from the page takes minutes; the page polls its progress.
+
 ## Environment variables
 
 | Component | Variable | Default |

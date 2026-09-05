@@ -38,6 +38,10 @@ Download counts are from crates.io on 2026-09-03; "since" is the first release.
 | tracing, tracing-subscriber | 0.1, 0.3 | 2017 | 816M | 180M | structured logging |
 | proptest (dev) | 1.11 | 2017 | 180M | 45M | property-based tests |
 
+## Vendored browser asset
+
+The web demo (`evals web`) serves one third-party file: htmx 2.0.10 (`crates/evals/web/htmx.min.js`, 51 KB, BSD Zero Clause licence), so the page has no build step and works offline. The page's own stylesheet and script are a few hundred lines, and every panel is an HTML fragment rendered by the server. The only other runtime fetch is the IBM Plex Mono font from Google Fonts, with a system monospace fallback when offline.
+
 ## What was deliberately left out
 
 | Crate | Why not |
@@ -49,6 +53,8 @@ Download counts are from crates.io on 2026-09-03; "since" is the first release.
 | criterion | Two small benchmark binaries with `std::time::Instant` avoid a heavy dev dependency |
 | governor | The per-account rate limit is a sliding window in `policy.rs` |
 | rand | The benchmarks and the simulation use a seeded xorshift generator |
+| askama, maud | The web demo renders its fragments with `format!` and one escape function |
+| pulldown-cmark | The result reports use headings, paragraphs, lists and tables; a small renderer in `markdown.rs` covers them |
 | protox | A pure-Rust protobuf compiler; the real protoc is vendored instead |
 
 ## gRPC in Rust, for the record
