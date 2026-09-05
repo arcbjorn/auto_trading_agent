@@ -82,7 +82,7 @@ pub fn section(app: &App) -> String {
     let cfg = app.policy.config();
     format!(
         r##"<section class="tab" id="tab-mcp" hidden>
-<h2>2 · MCP server <small>eleven tools, three resources and a prompt over Streamable HTTP</small></h2>
+<h2>MCP server <small>eleven tools, three resources and a prompt over Streamable HTTP</small></h2>
 <div class="lead"><p>The model perceives and acts only through these tools, and a deterministic policy checks every action before it reaches the engine.</p><details><summary>more</summary><p>Arguments and results are in human units (USDC with two decimals, ETH with four). A refusal comes back as an ordinary result marked <code>rejected</code>, with a code and a hint that tell the model what to do instead; tool errors are kept for bad arguments and outages. The same server speaks stdio for Claude Desktop and Claude Code, and is checked against the official MCP client in CI.</p></details></div>
 <div class="cols even">
   <div class="stack">

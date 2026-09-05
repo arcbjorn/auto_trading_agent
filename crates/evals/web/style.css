@@ -46,14 +46,17 @@ html, body {
 * { scrollbar-width: none; }
 *::-webkit-scrollbar { display: none; }
 
-.wrap { max-width: 1180px; margin: 0 auto; padding: 0 1.5rem 5rem; }
+.wrap { max-width: 1320px; margin: 0 auto; padding: 0 1.5rem 5rem; }
 
 /* Header: logo left, nav with the sliding underline, status right. */
 header.top { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem 1.5rem; padding: 1.75rem 0 1.25rem; }
 .logo { font-weight: 700; font-size: 1.15rem; }
 .logo .at { color: var(--title); }
 /* Tabs: text buttons with the site's sliding underline; the active one is bold and underlined. */
-nav.tabs { display: flex; gap: 1.5rem; }
+.tagline { color: var(--muted); font-size: 12px; }
+nav.tabs { display: flex; gap: 1.5rem; align-items: baseline; }
+nav.tabs.under { margin: 1.6rem 0 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--line); }
+nav.tabs .lbl { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; margin-right: 0.5rem; }
 nav.tabs button { border: 0; background: transparent; padding: 0.2rem 0; color: var(--muted); position: relative; font-size: 14px; border-radius: 0; }
 nav.tabs button i { font-style: normal; color: var(--title); margin-right: 0.15rem; }
 nav.tabs button::after {
@@ -86,7 +89,7 @@ section.tab > h2 small { color: var(--muted); font-weight: 400; font-size: 12px;
 .lead details p { margin: 0.2rem 0 0; }
 .cols { display: grid; gap: 1.1rem; align-items: start; }
 .cols.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.cols.wide-left { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+.cols.wide-left { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); }
 .cols.narrow-left { grid-template-columns: minmax(240px, 1fr) minmax(0, 2.6fr); }
 .stack > * + * { margin-top: 1.1rem; }
 @media (max-width: 900px) { .cols.even, .cols.wide-left, .cols.narrow-left { grid-template-columns: 1fr; } }
@@ -168,7 +171,7 @@ details summary:hover { color: var(--fg); }
 .list li span:last-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* Transcript. */
-.transcript { display: flex; flex-direction: column; gap: 0.9rem; min-height: 34vh; max-height: 54vh; overflow-y: auto; padding-right: 0.25rem; }
+.transcript { display: flex; flex-direction: column; gap: 0.9rem; min-height: 32vh; max-height: 52vh; overflow-y: auto; padding-right: 0.25rem; }
 .transcript:empty::before { content: 'The conversation appears here: your words, the tool calls the model made, what the service did with each, and the reply.'; color: var(--muted); font-size: 12px; align-self: center; margin: auto; max-width: 42ch; text-align: center; }
 #report-list li { display: block; white-space: normal; }
 .turn .you { font-weight: 600; }

@@ -44,7 +44,7 @@ const DEPTH: u32 = 10;
 pub fn section() -> String {
     format!(
         r##"<section class="tab" id="tab-engine">
-<h2>1 · Matching engine <small>deterministic ETH/USDC limit order book behind gRPC</small></h2>
+<h2>Matching engine <small>deterministic ETH/USDC limit order book behind gRPC</small></h2>
 <div class="lead"><p>One thread owns the book, commands arrive over a bounded channel and are applied in batches, and every event carries a sequence number.</p><details><summary>more</summary><p>Prices are integer ticks (0.01 USDC), quantities integer lots (0.0001 ETH). Wallets back every order and self-trades are prevented inside the matcher. A write-ahead journal with snapshot compaction makes a restart replay to the same state. These panels poll the gRPC API once a second and refresh at once after any action on this page.</p></details></div>
 <div class="cols even">
   <div class="stack">
@@ -167,12 +167,16 @@ pub async fn book_depth(app: &App, depth: u32) -> anyhow::Result<Html> {
 }
 
 pub async fn trades(app: &App) -> anyhow::Result<Html> {
+    trades_limit(app, 10).await
+}
+
+pub async fn trades_limit(app: &App, limit: u32) -> anyhow::Result<Html> {
     let t = app
         .engine
         .clone()
         .list_trades(ListTradesRequest {
             account_id: String::new(),
-            limit: 10,
+            limit: limit.clamp(1, 50),
         })
         .await?
         .into_inner();

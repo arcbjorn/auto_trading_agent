@@ -42,7 +42,9 @@ pub fn audit_path(app: &App) -> PathBuf {
     app.out_dir.join("web-audit.jsonl")
 }
 
-pub fn section(app: &App, session_id: &str, hostile: &str) -> String {
+/// The cockpit: the chat, with the things a message changes beside it, and the hostile-model
+/// panel under it. Shown on every view; the tabs below it are the parts under the hood.
+pub fn home(app: &App, session_id: &str, hostile: &str) -> String {
     let (notice, disabled) = match &app.model {
         Ok(model) => (
             format!(
@@ -53,7 +55,7 @@ pub fn section(app: &App, session_id: &str, hostile: &str) -> String {
         ),
         Err(why) => (
             format!(
-                "<p class=\"err\">Chat is off: {}. Set <code>MODEL_PROVIDER=deepseek</code> with <code>DEEPSEEK_API_KEY</code>, or <code>ANTHROPIC_API_KEY</code>, and start again (<code>make demo-web</code> loads <code>.env</code>). The hostile-model runs below need no key.</p>",
+                "<p class=\"err\">Chat is off: {}. Set <code>MODEL_PROVIDER=deepseek</code> with <code>DEEPSEEK_API_KEY</code>, or <code>ANTHROPIC_API_KEY</code>, and start again (<code>make demo-web</code> loads <code>.env</code>). Everything else on this page works without a key, the hostile-model runs below included.</p>",
                 esc(why)
             ),
             " disabled",
@@ -72,10 +74,8 @@ pub fn section(app: &App, session_id: &str, hostile: &str) -> String {
             .collect()
     };
     format!(
-        r##"<section class="tab" id="tab-agent" hidden>
-<h2>3 · Natural-language agent <small>Claude or DeepSeek in a tool loop over the MCP tools, behind a gate</small></h2>
-<div class="lead"><p>The model may only request an action; the service decides from the user's own words what may execute.</p><details><summary>more</summary><p>Permission for a turn comes from the user's words. A large or unpriced order is held until the user confirms the exact summary in their next message. A verifier checks every executed action against the request afterwards. Each action is written to a hash-chained audit log before it runs, and is refused if that write fails. Every turn below shows what the model asked for and what the service did with it.</p></details></div>
-<div class="cols wide-left">
+        r##"<div class="lead"><p>Talk to the agent and watch the book, the wallet and the audit log move. The model may only request an action; the service decides from your own words what may execute.</p><details><summary>more</summary><p>Permission for a turn comes from the user's words. A large or unpriced order is held until the user confirms the exact summary in their next message. A verifier checks every executed action against the request afterwards. Each action is written to a hash-chained audit log before it runs, and is refused if that write fails. Every turn shows what the model asked for and what the service did with it.</p></details></div>
+<div class="cols wide-left" id="cockpit">
   <div class="panel"><h3>Chat <span class="right muted">POST /chat</span></h3>
     {notice}
     <div class="group"><span class="lbl">the story</span>{story}</div>
@@ -90,23 +90,24 @@ pub fn section(app: &App, session_id: &str, hostile: &str) -> String {
     <span id="chat-ind" class="htmx-indicator">the model is thinking</span>
   </div>
   <div class="stack">
-    <div class="panel"><h3>Order book <span class="right muted">live, so an order shows up here</span></h3>{book}</div>
+    <div class="panel"><h3>Order book <span class="right muted">live</span></h3>{book}</div>
+    <div class="panel"><h3>Last trades <span class="right muted">live</span></h3>{trades}</div>
     <div class="panel"><h3>Session <span class="right muted">GET /sessions/{{id}}</span></h3>
       <div id="session-info"><p class="muted small">session <code>{sid}</code>, no turns yet</p></div>
     </div>
-    <div class="panel"><h3>Audit log <span class="right muted">this run's web-audit.jsonl</span></h3>
+    <div class="panel"><h3>Audit log <span class="right muted">hash-chained</span></h3>
       {audit}
       <div class="actions"><button type="button" class="small" hx-post="/ui/chat/audit/verify" hx-target="#audit-verify">verify chain</button><button type="button" class="small" hx-post="/ui/chat/audit/tamper" hx-target="#audit-verify">tamper with the file</button><span id="audit-verify"></span></div>
       <details><summary>how the chain works</summary><p class="muted small">Each line hashes the previous line's hash and its own entry (keyed with <code>AUDIT_KEY</code> when set). Changing any byte breaks every hash after it, which is what the verify button checks.</p></details>
     </div>
   </div>
 </div>
-{hostile}
-</section>"##,
+{hostile}"##,
         sid = esc(session_id),
         story = buttons(0..7),
         gate = buttons(7..CANNED.len()),
         book = html::live("book-mini", "/ui/engine/book/5", "1s", "engine"),
+        trades = html::live("trades-mini", "/ui/engine/trades/5", "1s", "engine"),
         audit = html::live("audit", "/ui/chat/audit", "5s", "chat"),
     )
 }
@@ -277,7 +278,7 @@ pub fn audit(app: &App) -> anyhow::Result<Html> {
         ));
     }
     let mut out = String::from("<ul class=\"list\">");
-    for (i, line) in lines.iter().enumerate().rev().take(6) {
+    for (i, line) in lines.iter().enumerate().rev().take(4) {
         let v: Value = serde_json::from_str(line).unwrap_or_default();
         let e = &v["entry"];
         let what = match e["event"].as_str() {

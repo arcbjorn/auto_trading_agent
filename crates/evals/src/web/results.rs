@@ -53,7 +53,7 @@ pub fn section(app: &App) -> String {
     let first = reports(app).first().map(|(n, _)| n.clone()).unwrap_or_default();
     format!(
         r##"<section class="tab" id="tab-results" hidden>
-<h2>5 · Results <small>every measurement and the report behind it, from docs/results</small></h2>
+<h2>Results <small>every measurement and the report behind it, from docs/results</small></h2>
 <div class="lead"><p>The recorded runs against real models, kept in the repository so every number in the README traces to a report written by the tools on this page.</p></div>
 <div class="cols narrow-left">
   <div class="panel"><h3>Reports</h3><ul class="list small" id="report-list" style="display:block">{list}</ul></div>

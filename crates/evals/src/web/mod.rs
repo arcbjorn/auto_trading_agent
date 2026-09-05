@@ -266,6 +266,9 @@ async fn route(
             engine::book_depth(app, p.trim_start_matches("/ui/engine/book/").parse().unwrap_or(5)).await?
         }
         (Method::GET, "/ui/engine/trades") => engine::trades(app).await?,
+        (Method::GET, p) if p.starts_with("/ui/engine/trades/") => {
+            engine::trades_limit(app, p.trim_start_matches("/ui/engine/trades/").parse().unwrap_or(5)).await?
+        }
         (Method::GET, "/ui/engine/accounts") => engine::accounts(app).await?,
         (Method::GET, "/ui/engine/stats") => engine::stats(app).await?,
         (Method::GET, "/ui/engine/events") => engine::events(app),
@@ -312,15 +315,15 @@ fn page(app: &App) -> String {
             .map(|d| d.as_millis())
             .unwrap_or(0)
     );
+    let home = chat::home(app, &session_id, &evals::hostile_panel());
     let sections = format!(
-        "{}{}{}{}{}",
+        "{}{}{}{}",
         engine::section(),
         mcp::section(app),
-        chat::section(app, &session_id, &evals::hostile_panel()),
         evals::section(app),
         results::section(app)
     );
-    html::page(&status, &sections)
+    html::page(&status, &home, &sections)
 }
 
 /// `application/x-www-form-urlencoded`, which is what htmx sends.

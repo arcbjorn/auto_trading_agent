@@ -80,9 +80,9 @@ pub fn thousands(n: u64) -> String {
     out
 }
 
-/// The page: a header with the tab bar, the live market bar, then one tab section per part of
-/// the task. Tabs are plain sections toggled by `app.js`; the active one is kept in the URL hash.
-pub fn page(status: &str, sections: &str) -> String {
+/// The page: the chat with the live book beside it, then a tab strip for the parts under the
+/// hood. Tabs are plain sections toggled by `app.js`; the active one is kept in the URL hash.
+pub fn page(status: &str, home: &str, sections: &str) -> String {
     format!(
         r##"<!doctype html>
 <html lang="en">
@@ -100,16 +100,18 @@ pub fn page(status: &str, sections: &str) -> String {
 <div class="wrap">
 <header class="top">
   <div class="logo"><span class="at">~</span> auto_trading_agent</div>
-  <nav class="tabs" role="tablist">
-    <button type="button" role="tab" data-tab="engine"><i>1</i> engine</button>
-    <button type="button" role="tab" data-tab="mcp"><i>2</i> mcp</button>
-    <button type="button" role="tab" data-tab="agent"><i>3</i> agent</button>
-    <button type="button" role="tab" data-tab="evals"><i>4</i> evals</button>
-    <button type="button" role="tab" data-tab="results"><i>5</i> results</button>
-  </nav>
+  <div class="tagline">ETH/USDC · an agent that may only ask; code decides</div>
   <div class="status">{status} <button id="theme" class="small" type="button">dark</button></div>
 </header>
 <div id="ticker" class="ticker" hx-get="/ui/engine/market" hx-trigger="load, every 1s, engine from:body" hx-swap="innerHTML"></div>
+{home}
+<nav class="tabs under" role="tablist">
+  <span class="lbl">under the hood</span>
+  <button type="button" role="tab" data-tab="engine">engine</button>
+  <button type="button" role="tab" data-tab="mcp">MCP server</button>
+  <button type="button" role="tab" data-tab="evals">evaluation</button>
+  <button type="button" role="tab" data-tab="results">results</button>
+</nav>
 <main>
 {sections}
 </main>

@@ -115,7 +115,7 @@ pub fn section(app: &App) -> String {
     };
     format!(
         r##"<section class="tab" id="tab-evals" hidden>
-<h2>4 · Evaluation <small>scenarios graded on the engine's end state, a fresh engine per case</small></h2>
+<h2>Evaluation <small>scenarios graded on the engine's end state, a fresh engine per case</small></h2>
 <div class="lead"><p>A case funds the account, seeds the book, sends the user's turns through the real service and grades what the engine holds afterwards.</p><details><summary>more</summary><p>Two model-free agents bound the harness. The oracle performs the expected outcome and must score 100%; the null agent does nothing and must score 0% on execution while blocking every attack. Both run in CI with <code>--assert</code>, as do the six hostile strategies. A model run adds latency, tokens and cost per turn, and every turn can be perturbed before it is sent.</p></details></div>
 <div class="cols even">
   <div class="panel"><h3>Run a suite <span class="right muted">evals run</span></h3>

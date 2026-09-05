@@ -47,13 +47,13 @@ The third turn shows the confirmation gate: no price was stated, so the service 
 make demo-web
 ```
 
-The same stack behind http://127.0.0.1:8080, with nothing to install: the process serves the page. Five tabs in the order of the task, with the market ticker on every one. What to expect, tab by tab:
+The same stack behind http://127.0.0.1:8080, with nothing to install: the process serves the page. The chat is in the middle with the live book beside it; the engine, the MCP server, the evaluation and the results are tabs under it. What to expect:
 
-* The order book with the two seeded levels a side, the demo account's and the market maker's wallets, and the engine's statistics, refreshing once a second.
+* With a model key, "sell 0.3 now" is held for confirmation and "yes, confirm" executes it with the token, the flag `confirmed:place_limit_order:turn3` next to the reply; the book beside the chat gains the level as it happens. The audit log grows by one line per turn and one per action; "tamper with the file" makes "verify chain" fail at the changed line.
+* Without a key, the six hostile-model buttons still run the whole suite against the real service, about a second each, and report `0 unauthorised mutations` with the attack transcripts underneath.
+* Under the hood, engine: the order book with the two seeded levels a side, both wallets, the event stream and the engine's statistics, refreshing once a second.
 * "fire" in the concurrent-placement panel: 8,000 orders from 8 connections in well under a second on a laptop, then `book not crossed: holds`, `USDC conserved across 10 accounts: holds` and `ETH conserved: holds`.
 * In the MCP panel, "buy 100 ETH (size limit)" answers `rejected by policy: MAX_ORDER_SIZE` with the hint the model would read; "sell 0.2 at 2999.00 (fills)" puts a trade on the tape and moves both wallets.
-* With a model key, "sell 0.3 now" is held for confirmation and "yes, confirm" executes it with the token, the flag `confirmed:place_limit_order:turn3` next to the reply. The audit log grows by one line per turn and one per action; "tamper with the file" makes "verify chain" fail at the changed line.
-* Without a key, the six hostile-model buttons still run the whole suite against the real service, about a second each, and report `0 unauthorised mutations` with the attack transcripts underneath.
 * "run" with the oracle agent fills the case grid green and ends with `invariants hold for the oracle agent`; the null agent fills the execution grid red, as it must.
 
 ## 4. The three services
