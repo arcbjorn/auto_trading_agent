@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 300" width="940" height="300" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="Four components in a line: user or eval harness posts to agent-service, which calls mcp-server over MCP, which calls engine-server over gRPC. The harness grades the engine's end state directly.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 440" width="960" height="440" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="A browser page and the evaluation harness drive the agent-service, which calls the mcp-server over MCP, which calls the engine-server over gRPC; the harness grades the engine's end state; the model may only ask, code decides.">
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 10 5 0 10z" fill="#8b949e"/>
@@ -6,42 +6,72 @@
     <marker id="ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 10 5 0 10z" fill="#bc8cff"/>
     </marker>
+    <marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#d29922"/>
+    </marker>
   </defs>
 
-  <rect x="14" y="70" width="150" height="72" rx="8" fill="#6e7681" fill-opacity="0.16" stroke="#8b949e" stroke-width="1.5"/>
-  <text x="89" y="100" text-anchor="middle" font-size="14" font-weight="600" fill="#8b949e">User or</text>
-  <text x="89" y="120" text-anchor="middle" font-size="14" font-weight="600" fill="#8b949e">eval harness</text>
+  <!-- Row 1: the browser page, then the three services, left to right -->
+  <rect x="14" y="40" width="168" height="120" rx="8" fill="#6e7681" fill-opacity="0.16" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="98" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#8b949e">browser page</text>
+  <text x="98" y="88" text-anchor="middle" font-size="11.5" fill="#8b949e">make demo-web</text>
+  <text x="98" y="106" text-anchor="middle" font-size="11.5" fill="#8b949e">chat · live book · audit</text>
+  <text x="98" y="124" text-anchor="middle" font-size="11.5" fill="#8b949e">engine · MCP · evals tabs</text>
+  <text x="98" y="142" text-anchor="middle" font-size="11.5" fill="#8b949e">htmx, one process</text>
 
-  <rect x="238" y="52" width="196" height="108" rx="8" fill="#1f6feb" fill-opacity="0.16" stroke="#4493f8" stroke-width="1.5"/>
-  <text x="336" y="78" text-anchor="middle" font-size="14" font-weight="700" fill="#4493f8">agent-service</text>
-  <text x="336" y="100" text-anchor="middle" font-size="11.5" fill="#8b949e">Claude tool loop</text>
-  <text x="336" y="118" text-anchor="middle" font-size="11.5" fill="#8b949e">per-turn permissions</text>
-  <text x="336" y="136" text-anchor="middle" font-size="11.5" fill="#8b949e">confirm · verify · audit</text>
+  <rect x="248" y="40" width="200" height="120" rx="8" fill="#1f6feb" fill-opacity="0.16" stroke="#4493f8" stroke-width="1.5"/>
+  <text x="348" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#4493f8">agent-service</text>
+  <text x="348" y="88" text-anchor="middle" font-size="11.5" fill="#8b949e">Claude or DeepSeek tool loop</text>
+  <text x="348" y="106" text-anchor="middle" font-size="11.5" fill="#8b949e">permission from the user's words</text>
+  <text x="348" y="124" text-anchor="middle" font-size="11.5" fill="#8b949e">confirm · verify · ground</text>
+  <text x="348" y="142" text-anchor="middle" font-size="11.5" fill="#8b949e">hash-chained audit, fail closed</text>
 
-  <rect x="508" y="52" width="184" height="108" rx="8" fill="#8957e5" fill-opacity="0.16" stroke="#bc8cff" stroke-width="1.5"/>
-  <text x="600" y="78" text-anchor="middle" font-size="14" font-weight="700" fill="#bc8cff">mcp-server</text>
-  <text x="600" y="100" text-anchor="middle" font-size="11.5" fill="#8b949e">9 tools · 3 resources</text>
-  <text x="600" y="118" text-anchor="middle" font-size="11.5" fill="#8b949e">risk policy</text>
-  <text x="600" y="136" text-anchor="middle" font-size="11.5" fill="#8b949e">unit conversion</text>
+  <rect x="514" y="40" width="192" height="120" rx="8" fill="#8957e5" fill-opacity="0.16" stroke="#bc8cff" stroke-width="1.5"/>
+  <text x="610" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#bc8cff">mcp-server</text>
+  <text x="610" y="88" text-anchor="middle" font-size="11.5" fill="#8b949e">11 tools · 3 resources · prompt</text>
+  <text x="610" y="106" text-anchor="middle" font-size="11.5" fill="#8b949e">risk policy before every action</text>
+  <text x="610" y="124" text-anchor="middle" font-size="11.5" fill="#8b949e">human units in and out</text>
+  <text x="610" y="142" text-anchor="middle" font-size="11.5" fill="#8b949e">stdio and Streamable HTTP</text>
 
-  <rect x="766" y="52" width="160" height="108" rx="8" fill="#238636" fill-opacity="0.18" stroke="#3fb950" stroke-width="1.5"/>
-  <text x="846" y="78" text-anchor="middle" font-size="14" font-weight="700" fill="#3fb950">engine-server</text>
-  <text x="846" y="100" text-anchor="middle" font-size="11.5" fill="#8b949e">matcher thread</text>
-  <text x="846" y="118" text-anchor="middle" font-size="11.5" fill="#8b949e">Book · event log</text>
-  <text x="846" y="138" text-anchor="middle" font-size="11.5" font-weight="600" fill="#8b949e">the only state</text>
+  <rect x="772" y="40" width="174" height="120" rx="8" fill="#238636" fill-opacity="0.18" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="859" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#3fb950">engine-server</text>
+  <text x="859" y="88" text-anchor="middle" font-size="11.5" fill="#8b949e">one matcher thread</text>
+  <text x="859" y="106" text-anchor="middle" font-size="11.5" fill="#8b949e">integer ticks and lots</text>
+  <text x="859" y="124" text-anchor="middle" font-size="11.5" fill="#8b949e">wallets · journal · replay</text>
+  <text x="859" y="142" text-anchor="middle" font-size="11.5" font-weight="600" fill="#8b949e">the only state</text>
 
-  <line x1="164" y1="106" x2="230" y2="106" stroke="#8b949e" stroke-width="1.6" marker-end="url(#a)"/>
-  <text x="197" y="98" text-anchor="middle" font-size="11" fill="#8b949e">POST</text>
-  <text x="197" y="126" text-anchor="middle" font-size="11" fill="#8b949e">/chat</text>
+  <line x1="182" y1="100" x2="240" y2="100" stroke="#8b949e" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="211" y="92" text-anchor="middle" font-size="11" fill="#8b949e">POST</text>
+  <text x="211" y="120" text-anchor="middle" font-size="11" fill="#8b949e">/chat</text>
 
-  <line x1="434" y1="106" x2="500" y2="106" stroke="#8b949e" stroke-width="1.6" marker-end="url(#a)"/>
-  <text x="467" y="98" text-anchor="middle" font-size="11" fill="#8b949e">MCP</text>
-  <text x="467" y="126" text-anchor="middle" font-size="11" fill="#8b949e">JSON-RPC</text>
+  <line x1="448" y1="100" x2="506" y2="100" stroke="#8b949e" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="477" y="92" text-anchor="middle" font-size="11" fill="#8b949e">MCP</text>
+  <text x="477" y="120" text-anchor="middle" font-size="11" fill="#8b949e">JSON-RPC</text>
 
-  <line x1="692" y1="106" x2="758" y2="106" stroke="#8b949e" stroke-width="1.6" marker-end="url(#a)"/>
-  <text x="725" y="98" text-anchor="middle" font-size="11" fill="#8b949e">gRPC</text>
-  <text x="725" y="126" text-anchor="middle" font-size="11" fill="#8b949e">protobuf</text>
+  <line x1="706" y1="100" x2="764" y2="100" stroke="#8b949e" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="735" y="92" text-anchor="middle" font-size="11" fill="#8b949e">gRPC</text>
+  <text x="735" y="120" text-anchor="middle" font-size="11" fill="#8b949e">protobuf</text>
 
-  <path d="M846 160 V236 H89 V150" fill="none" stroke="#bc8cff" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#ad)"/>
-  <text x="467" y="256" text-anchor="middle" font-size="11.5" fill="#bc8cff">the harness grades the engine's end state over gRPC</text>
+  <!-- The page also reads the engine and the MCP server directly, for its live panels -->
+  <path d="M98 160 V196 H859 V160" fill="none" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="3 4" marker-end="url(#a)"/>
+  <text x="478" y="212" text-anchor="middle" font-size="11" fill="#8b949e">the page's live panels read the book, trades and wallets over gRPC, and call the MCP tools directly</text>
+
+  <!-- Row 2: the evaluation harness -->
+  <rect x="196" y="250" width="574" height="112" rx="8" fill="#8957e5" fill-opacity="0.10" stroke="#bc8cff" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="483" y="276" text-anchor="middle" font-size="14" font-weight="700" fill="#bc8cff">evaluation harness</text>
+  <text x="483" y="298" text-anchor="middle" font-size="11.5" fill="#8b949e">57 cases, a fresh engine per case, graded on the engine's end state</text>
+  <text x="483" y="316" text-anchor="middle" font-size="11.5" fill="#8b949e">oracle and null bound it · six hostile models attack the gate · every turn can be perturbed</text>
+  <text x="483" y="334" text-anchor="middle" font-size="11.5" fill="#8b949e">a second-model judge scores replies · a market simulation scores P&amp;L from the wallet</text>
+  <text x="483" y="352" text-anchor="middle" font-size="11" fill="#8b949e">make eval-oracle · eval-null · eval-unsafe · eval-model · eval-perturbed · sim</text>
+
+  <!-- The harness drives the agent and reads the engine -->
+  <path d="M348 250 V160" fill="none" stroke="#bc8cff" stroke-width="1.6" marker-end="url(#ad)"/>
+  <text x="358" y="236" text-anchor="start" font-size="11" fill="#bc8cff">drives the agent</text>
+  <path d="M770 306 H859 V160" fill="none" stroke="#bc8cff" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#ad)"/>
+  <text x="866" y="236" text-anchor="start" font-size="11" fill="#bc8cff">grades the</text>
+  <text x="866" y="250" text-anchor="start" font-size="11" fill="#bc8cff">end state</text>
+
+  <!-- The one rule -->
+  <rect x="14" y="386" width="932" height="40" rx="8" fill="#d29922" fill-opacity="0.10" stroke="#d29922" stroke-width="1.5"/>
+  <text x="480" y="411" text-anchor="middle" font-size="13" font-weight="600" fill="#d29922">the model may only request an action: funds, limits, identity, ordering and confirmation are enforced in code beneath it</text>
 </svg>

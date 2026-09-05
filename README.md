@@ -48,7 +48,7 @@ Without a key, everything works except the chat itself: the MCP tools, the load 
 ```sh
 make demo                         # the same eight-turn conversation in the terminal; needs a key
 make eval-oracle                  # the evaluation harness with a scripted agent; no key needed
-cargo test --workspace --locked   # 118 unit, property and integration tests
+cargo test --workspace --locked   # 119 unit, property and integration tests
 ```
 
 The three services can also run separately (`make run-engine`, `make run-mcp`, `make run-agent`); the [runbook](docs/09-runbook.md) covers configuration, ports and troubleshooting.

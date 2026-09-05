@@ -4,7 +4,7 @@
 
 The engine owns market state and matching rules. The MCP server applies risk policy, the agent service manages conversations, and the evaluation harness checks outcomes.
 
-![Four components in a line: agent-service, mcp-server and engine-server, with the eval harness grading the engine's end state](assets/architecture.svg)
+![The browser page and the evaluation harness drive agent-service, mcp-server and engine-server; the harness grades the engine's end state; the model may only ask, code decides](assets/architecture.svg)
 
 * **engine** (library) is the pure order book: no I/O, no threads, no clocks.
 * **engine-server** wraps it in tonic. Every handler task sends a command to the one matcher thread and awaits the reply.
