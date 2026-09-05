@@ -44,11 +44,12 @@ pub struct Session {
     pub messages: Vec<Value>,
     pub turns: u32,
     pub pending: Option<PendingConfirmation>,
+    /// An unexecuted request the previous reply explicitly asked the user to confirm.
+    pub confirmation_request: Option<String>,
     pub last_order_id: Option<String>,
-    /// Recent `(request_id, response)` pairs, so a retried `POST /chat` returns the same answer
-    /// instead of running the turn (and its actions) again.
-    /// Each entry is the request id, a hash of the message it carried, and the response.
-    pub responses: Vec<(String, u64, Value)>,
+    /// Recent request outcomes, so a retried `POST /chat` does not rerun its actions.
+    /// Each entry is the request id, exact message, HTTP status and response.
+    pub responses: Vec<(String, String, u16, Value)>,
     /// Start times of recent turns, for the per-session rate limit.
     pub turn_times: std::collections::VecDeque<Instant>,
     /// Prompt tokens of the last model call (uncached, cache reads and cache writes): the size
@@ -375,6 +376,7 @@ impl Agent {
         let mut model_latency = Duration::ZERO;
         let mut flags = Vec::new();
         let mut executed: Vec<Executed> = Vec::new();
+        let mut actions_attempted = 0;
         let mut placed_ids: Vec<String> = Vec::new();
         let mut stop_reason: String;
         let mut reply: String;
@@ -450,7 +452,7 @@ impl Agent {
                                 permitted,
                                 carried: carried.is_some(),
                                 confirming_turn: confirmation_turn,
-                                actions_taken: executed.len(),
+                                actions_taken: actions_attempted,
                             };
                             match confirm.intercept(&mut session.pending, &name, &args, &cx) {
                                 Intercept::Reply(v) => {
@@ -484,32 +486,39 @@ impl Agent {
                                                 false,
                                             )
                                         }
-                                        Ok(()) => match self.mcp.call_tool(&name, &clean).await {
-                                            Ok(r) => {
-                                                let ok = !r.is_error
-                                                    && r.structured.as_ref().is_none_or(|s| s["rejected"] != true);
-                                                if ACTION_TOOLS.contains(&name.as_str()) {
-                                                    executed.push(Executed {
-                                                        tool: name.clone(),
-                                                        args: clean.clone(),
-                                                        ok,
-                                                    });
-                                                }
-                                                if name == "place_limit_order" && ok {
-                                                    if let Some(oid) =
-                                                        r.structured.as_ref().and_then(|s| s["order_id"].as_str())
+                                        Ok(()) => {
+                                            // A lost response is not proof that no order executed.
+                                            // Spend this turn's action before crossing the network.
+                                            if ACTION_TOOLS.contains(&name.as_str()) {
+                                                actions_attempted += 1;
+                                            }
+                                            match self.mcp.call_tool(&name, &clean).await {
+                                                Ok(r) => {
+                                                    let ok = !r.is_error
+                                                        && r.structured.as_ref().is_none_or(|s| s["rejected"] != true);
+                                                    if ACTION_TOOLS.contains(&name.as_str()) {
+                                                        executed.push(Executed {
+                                                            tool: name.clone(),
+                                                            args: clean.clone(),
+                                                            ok,
+                                                        });
+                                                    }
+                                                    if name == "place_limit_order"
+                                                        && ok
+                                                        && let Some(oid) =
+                                                            r.structured.as_ref().and_then(|s| s["order_id"].as_str())
                                                     {
                                                         placed_ids.push(oid.to_string());
                                                         session.last_order_id = Some(oid.to_string());
                                                     }
+                                                    (r.text, r.is_error, false)
                                                 }
-                                                (r.text, r.is_error, false)
+                                                Err(e) => {
+                                                    flags.push(format!("mcp_error:{name}"));
+                                                    (format!("tool call failed: {e}"), true, false)
+                                                }
                                             }
-                                            Err(e) => {
-                                                flags.push(format!("mcp_error:{name}"));
-                                                (format!("tool call failed: {e}"), true, false)
-                                            }
-                                        },
+                                        }
                                     }
                                 }
                             }

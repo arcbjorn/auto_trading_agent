@@ -63,8 +63,6 @@ struct Entry {
 /// its limits reset.
 pub struct SessionLease {
     session: Arc<tokio::sync::Mutex<Session>>,
-    state: Arc<State>,
-    id: String,
 }
 
 impl SessionLease {
@@ -73,24 +71,10 @@ impl SessionLease {
     }
 }
 
-impl Drop for SessionLease {
-    fn drop(&mut self) {
-        let mut leases = self.state.leases.lock().expect("leases lock");
-        if let Some(n) = leases.get_mut(&self.id) {
-            *n -= 1;
-            if *n == 0 {
-                leases.remove(&self.id);
-            }
-        }
-    }
-}
-
 pub struct State {
     pub agent: Agent,
     limits: SessionLimits,
     sessions: Mutex<HashMap<String, Entry>>,
-    /// Sessions with a request in flight, by count: an entry here is never evicted.
-    leases: Mutex<HashMap<String, usize>>,
     pub metrics: crate::metrics::Metrics,
 }
 
@@ -104,7 +88,6 @@ impl State {
             agent,
             limits,
             sessions: Mutex::new(HashMap::new()),
-            leases: Mutex::new(HashMap::new()),
             metrics: crate::metrics::Metrics::default(),
         }
     }
@@ -122,21 +105,7 @@ impl State {
             e.last_seen = Instant::now();
             Arc::clone(&e.session)
         };
-        Some(self.lease(id, session))
-    }
-
-    fn lease(self: &Arc<Self>, id: &str, session: Arc<tokio::sync::Mutex<Session>>) -> SessionLease {
-        *self
-            .leases
-            .lock()
-            .expect("leases lock")
-            .entry(id.to_string())
-            .or_insert(0) += 1;
-        SessionLease {
-            session,
-            state: Arc::clone(self),
-            id: id.to_string(),
-        }
+        Some(SessionLease { session })
     }
 
     /// Returns the session, creating it if needed, and holds it for the caller's lifetime. When
@@ -153,12 +122,11 @@ impl State {
             } else {
                 if map.len() >= self.limits.max_sessions.max(1) {
                     let ttl = self.limits.idle_ttl;
-                    let busy = self.leases.lock().expect("leases lock");
-                    map.retain(|k, e| now.duration_since(e.last_seen) < ttl || busy.contains_key(k));
+                    map.retain(|_, e| now.duration_since(e.last_seen) < ttl || Arc::strong_count(&e.session) > 1);
                     if map.len() >= self.limits.max_sessions.max(1) {
                         let oldest = map
                             .iter()
-                            .filter(|(k, _)| !busy.contains_key(*k))
+                            .filter(|(_, e)| Arc::strong_count(&e.session) == 1)
                             .min_by_key(|(_, e)| e.last_seen)
                             .map(|(k, _)| k.clone());
                         match oldest {
@@ -185,15 +153,8 @@ impl State {
                 session
             }
         };
-        Ok(self.lease(id, session))
+        Ok(SessionLease { session })
     }
-}
-
-fn message_hash(message: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    message.hash(&mut h);
-    h.finish()
 }
 
 fn respond(status: StatusCode, body: Value) -> Response<Full<Bytes>> {
@@ -265,9 +226,9 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     json!({ "error": "message is too long (max 4000 bytes)" }),
                 ));
             }
-            let session_id = match input["session_id"].as_str() {
-                None => new_session_id(),
-                Some(id) if valid_session_id(id) => id.to_string(),
+            let session_id = match input.get("session_id") {
+                None | Some(Value::Null) => new_session_id(),
+                Some(Value::String(id)) if valid_session_id(id) => id.to_string(),
                 Some(_) => {
                     return Ok(respond(
                         StatusCode::BAD_REQUEST,
@@ -275,9 +236,9 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                     ));
                 }
             };
-            let request_id = match input["request_id"].as_str() {
-                None => None,
-                Some(id) if valid_session_id(id) => Some(id.to_string()),
+            let request_id = match input.get("request_id") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(id)) if valid_session_id(id) => Some(id.to_string()),
                 Some(_) => {
                     return Ok(respond(
                         StatusCode::BAD_REQUEST,
@@ -293,18 +254,21 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 }
             };
             let mut s = lease.lock().await;
-            if let Some(id) = &request_id {
-                if let Some((_, earlier_message, earlier)) = s.responses.iter().find(|(r, _, _)| r == id) {
-                    // The same id with the same message replays; with a different message it is
-                    // a client bug, and answering the old question would mislead.
-                    if *earlier_message == message_hash(message) {
-                        return Ok(respond(StatusCode::OK, earlier.clone()));
-                    }
+            if let Some(id) = &request_id
+                && let Some((_, earlier_message, status, earlier)) = s.responses.iter().find(|(r, _, _, _)| r == id)
+            {
+                // The same id with the same message replays; with a different message it is
+                // a client bug, and answering the old question would mislead.
+                if earlier_message == message {
                     return Ok(respond(
-                        StatusCode::CONFLICT,
-                        json!({ "error": "request_id was already used with a different message", "session_id": session_id }),
+                        StatusCode::from_u16(*status).expect("stored status"),
+                        earlier.clone(),
                     ));
                 }
+                return Ok(respond(
+                    StatusCode::CONFLICT,
+                    json!({ "error": "request_id was already used with a different message", "session_id": session_id }),
+                ));
             }
             if s.context_tokens >= state.limits.max_context_tokens {
                 state.metrics.turn_refused("context_full");
@@ -335,27 +299,41 @@ async fn handle(req: Request<Incoming>, state: Arc<State>) -> Result<Response<Fu
                 ));
             }
             s.turn_times.push_back(now);
-            match state.agent.chat_turn(&mut s, message).await {
+            // Reserve before awaiting: even cancellation of this HTTP handler must not turn a
+            // retry into a second order after an uncertain first attempt.
+            if let Some(id) = &request_id {
+                if s.responses.len() >= REMEMBERED_RESPONSES {
+                    s.responses.remove(0);
+                }
+                s.responses.push((id.clone(), message.to_string(), 409, json!({
+                    "error": "request outcome is unknown; inspect the session and engine before submitting another action",
+                    "session_id": session_id
+                })));
+            }
+            let (status, body) = match state.agent.chat_turn(&mut s, message).await {
                 Ok(turn) => {
                     state.metrics.turn(&turn);
-                    let body = serde_json::to_value(turn).unwrap_or_default();
-                    if let Some(id) = request_id {
-                        if s.responses.len() >= REMEMBERED_RESPONSES {
-                            s.responses.remove(0);
-                        }
-                        s.responses.push((id, message_hash(message), body.clone()));
-                    }
-                    Ok(respond(StatusCode::OK, body))
+                    (StatusCode::OK, serde_json::to_value(turn).expect("serializable turn"))
                 }
                 Err(e) => {
                     state.metrics.turn_refused("error");
                     tracing::error!(error = %e, session = %session_id, "turn failed");
-                    Ok(respond(
+                    (
                         StatusCode::BAD_GATEWAY,
                         json!({ "error": e.to_string(), "session_id": session_id }),
-                    ))
+                    )
                 }
+            };
+            if let Some(id) = &request_id {
+                let entry = s
+                    .responses
+                    .iter_mut()
+                    .find(|(r, _, _, _)| r == id)
+                    .expect("reserved request");
+                entry.2 = status.as_u16();
+                entry.3 = body.clone();
             }
+            Ok(respond(status, body))
         }
         _ => Ok(respond(StatusCode::NOT_FOUND, json!({ "error": "not found" }))),
     }
