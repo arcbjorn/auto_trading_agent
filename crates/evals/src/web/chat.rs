@@ -172,7 +172,7 @@ pub fn home(app: &App, session_id: &str, hostile: &str, live: &str) -> String {
     );
     format!(
         r##"<section class="home">
-<p class="lead home">Talk to the agent and watch the book, the wallet and the audit log move. The model may only request an action; the service decides from your own words what may execute. <button type="button" class="about-toggle" aria-label="about this page" title="about this page">?</button></p>
+<p class="lead home">Talk to the agent; the book, the wallet and the audit log move as it acts. The model may only ask, the service decides what executes. <button type="button" class="about-toggle" aria-label="about this page" title="about this page">?</button></p>
 <p class="about">The task is infrastructure for autonomous trading agents: a deterministic order book behind gRPC, an MCP server the model perceives and acts through, a natural-language service with guardrails, and an evaluation harness. One typed sentence exercises all four: the model reads it, calls MCP tools, the policy checks, the engine matches, the gate decides, and the harness under the hood is what proves the chain holds at scale. Every number on this page arrived over gRPC, MCP or the chat API.</p>
 <div class="cols wide-left" id="cockpit">
   {chat}

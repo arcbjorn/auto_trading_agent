@@ -70,7 +70,7 @@ pub fn section(app: &App) -> String {
         "results",
         "Results",
         "every measurement and the report behind it",
-        "The recorded runs against real models, kept in the repository so every number in the README traces to a report written by the tools on this page.",
+        "Recorded runs against real models, kept in the repository so every number in the README traces to a report.",
         "Throughput and soak numbers come from the benchmark binaries; accuracy, safety, robustness and the judge from the harness; P&amp;L from the simulation. Apple M1 Pro, release builds, loopback.",
         &format!("<div class=\"cols narrow-left\">{list_panel}{report_panel}</div>"),
         true,
