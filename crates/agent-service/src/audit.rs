@@ -42,6 +42,8 @@ struct Chain {
     prev: [u8; 32],
     /// `AUDIT_KEY`, when set: the chain is then keyed, so a rewrite needs the key.
     key: Option<Vec<u8>>,
+    /// A failed append may have written a partial line. Only a verified reopen can resume.
+    failed: bool,
 }
 
 impl Audit {
@@ -65,7 +67,12 @@ impl Audit {
         };
         let prev = Self::verify_with(&path, key.as_deref())?;
         Ok(Self {
-            inner: Some(Arc::new(Mutex::new(Chain { path, prev, key }))),
+            inner: Some(Arc::new(Mutex::new(Chain {
+                path,
+                prev,
+                key,
+                failed: false,
+            }))),
         })
     }
 
@@ -94,6 +101,12 @@ impl Audit {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok([0; 32]),
             Err(e) => return Err(e),
         };
+        if !text.is_empty() && !text.ends_with('\n') {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "audit log has an unterminated final record",
+            ));
+        }
         let mut prev = [0u8; 32];
         for (i, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
@@ -124,15 +137,26 @@ impl Audit {
     pub fn append(&self, entry: &Value) -> std::io::Result<()> {
         let Some(inner) = &self.inner else { return Ok(()) };
         let mut c = inner.lock().expect("audit lock");
+        if c.failed {
+            return Err(std::io::Error::other(
+                "audit log stopped after an append failure; verify and reopen before resuming",
+            ));
+        }
         let key = c.key.clone();
         let key = key.as_deref();
         let bytes = serde_json::to_vec(entry)?;
         let hash = chain(c.prev, &bytes, key);
         let mut line = serde_json::to_vec(&json!({ "prev": hex(&c.prev), "hash": hex(&hash), "entry": entry }))?;
         line.push(b'\n');
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&c.path)?;
-        f.write_all(&line)?;
-        f.sync_data()?;
+        let written = (|| {
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&c.path)?;
+            f.write_all(&line)?;
+            f.sync_data()
+        })();
+        if let Err(e) = written {
+            c.failed = true;
+            return Err(e);
+        }
         c.prev = hash;
         Ok(())
     }
@@ -145,11 +169,10 @@ impl Audit {
     }
 }
 
-/// One link: SHA-256 over the previous hash, the entry, and the key when one is set.
+/// One link: SHA-256 over an optional length-prefixed key, the previous hash and the entry.
 ///
-/// With a key this is a keyed chain, so a line cannot be rewritten without it. The construction is
-/// HMAC-style over a fixed-length prefix, and is not length-extendable here because every input is
-/// fixed length or terminal.
+/// This legacy secret-prefix construction is not HMAC. Keep its format for existing logs;
+/// use an authenticated external log sink when cryptographic evidence is required.
 fn chain(prev: [u8; 32], entry: &[u8], key: Option<&[u8]>) -> [u8; 32] {
     let mut h = Sha256::new();
     if let Some(k) = key {
@@ -175,6 +198,22 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         std::env::temp_dir().join(format!("audit-{name}-{}-{nanos}.jsonl", std::process::id()))
+    }
+
+    #[test]
+    fn a_failed_append_stops_the_chain_and_partial_records_refuse_reopen() {
+        let path = temp("failed");
+        let audit = Audit::with_key(Some(path.clone()), None).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(audit.append(&json!({ "event": "pre_action" })).is_err());
+        std::fs::remove_dir(&path).unwrap();
+        assert!(audit.append(&json!({ "event": "pre_action" })).is_err());
+        let reopened = Audit::with_key(Some(path.clone()), None).unwrap();
+        reopened.append(&json!({ "event": "pre_action" })).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.trim_end()).unwrap();
+        assert!(Audit::with_key(Some(path.clone()), None).is_err());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
