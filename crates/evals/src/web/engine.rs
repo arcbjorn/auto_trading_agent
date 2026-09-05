@@ -42,38 +42,61 @@ const SHOWN_EVENTS: usize = 10;
 const DEPTH: u32 = 10;
 
 pub fn section() -> String {
-    format!(
-        r##"<section class="tab" id="tab-engine">
-<h2>Matching engine <small>deterministic ETH/USDC limit order book behind gRPC</small></h2>
-<div class="lead"><p>One thread owns the book, commands arrive over a bounded channel and are applied in batches, and every event carries a sequence number.</p><details><summary>more</summary><p>Prices are integer ticks (0.01 USDC), quantities integer lots (0.0001 ETH). Wallets back every order and self-trades are prevented inside the matcher. A write-ahead journal with snapshot compaction makes a restart replay to the same state. These panels poll the gRPC API once a second and refresh at once after any action on this page.</p></details></div>
-<div class="cols even">
-  <div class="stack">
-    <div class="panel"><h3>Order book <span class="right muted">GetOrderBook, depth {DEPTH}</span></h3>{book}</div>
-    <div class="panel"><h3>Trades <span class="right muted">ListTrades, newest first</span></h3>{trades}</div>
-    <div class="panel"><h3>Event stream <span class="right muted">Subscribe</span></h3>{events}</div>
-  </div>
-  <div class="stack">
-    <div class="panel"><h3>Wallets and statement <span class="right muted">GetBalances, GetStatement</span></h3>{accounts}</div>
-    <div class="panel"><h3>Concurrent placement <span class="right muted">PlaceOrder from N connections</span></h3>
-      <form hx-post="/ui/engine/load" hx-target="#load-result" hx-indicator="#load-ind" class="actions" style="margin-top:0">
-        <label class="inline">clients <input type="text" name="clients" value="8"></label>
-        <label class="inline">orders each <input type="text" name="per" value="1000"></label>
-        <button class="accent" type="submit">fire</button>
-        <span id="load-ind" class="htmx-indicator">running</span>
-      </form>
-      <div id="load-result" class="small"></div>
-      <details><summary>what is checked</summary><p class="muted small">Each client is its own gRPC connection placing GTC orders inside the current spread, so they trade with each other and leave the demo levels alone; their leftovers are cancelled afterwards. Then the book must not be crossed, and USDC and ETH must be conserved across every account.</p></details>
-    </div>
-    <details class="panel"><summary><h3>Engine statistics <span class="right muted">GetStats, click to open</span></h3></summary>{stats}</details>
-  </div>
+    let book = html::panel(
+        "Order book",
+        &format!("GetOrderBook, depth {DEPTH}"),
+        "Resting liquidity by price level, best first on each side: teal bids, orange asks, bars proportional to size. Prices are integer ticks (0.01 USDC) and quantities integer lots (0.0001 ETH); matching is price-time priority, a self-trade is prevented, and every level is backed by its account's balance.",
+        &html::live("book", "/ui/engine/book", "1s", "engine"),
+    );
+    let trades = html::panel(
+        "Trades",
+        "ListTrades, newest first",
+        "Every fill with its sequence number, the taker's side and both accounts. A trade prints at the maker's price, whatever the taker's limit was.",
+        &html::live("trades", "/ui/engine/trades", "1s", "engine"),
+    );
+    let events = html::panel(
+        "Event stream",
+        "Subscribe",
+        "The engine's event stream as a client receives it: accepted, trade, cancelled, rejected, deposit and withdrawal, each with the sequence number that replaying the journal reproduces. The newest few dozen are kept.",
+        &html::live("events", "/ui/engine/events", "1s", "engine"),
+    );
+    let accounts = html::panel(
+        "Wallets and statement",
+        "GetBalances, GetStatement",
+        "Available and reserved USDC and ETH per account. Reserved backs the account's live orders and is released on a cancel or a fill. The statement is the demo account's ledger on this venue: what was bought and sold, the average cost of the inventory bought here, and the realised P&amp;L.",
+        &html::live("accounts", "/ui/engine/accounts", "1s", "engine"),
+    );
+    let load = html::panel(
+        "Concurrent placement",
+        "PlaceOrder from N connections",
+        "Each client is its own gRPC connection placing GTC orders inside the current spread, so they trade with each other and leave the demo levels alone; their leftovers are cancelled afterwards. Then the book must not be crossed, and USDC and ETH must be conserved across every account: the sum of the wallets equals the sum of the deposits.",
+        r##"<form hx-post="/ui/engine/load" hx-target="#load-result" hx-indicator="#load-ind" class="actions">
+  <label class="inline">clients <input type="text" name="clients" value="8"></label>
+  <label class="inline">orders each <input type="text" name="per" value="1000"></label>
+  <button class="accent" type="submit">fire</button>
+  <span id="load-ind" class="htmx-indicator">running</span>
+</form>
+<div id="load-result" class="result small"></div>"##,
+    );
+    let stats = format!(
+        "<details class=\"panel\"><summary><h3><span class=\"t\">Engine statistics</span><span class=\"src\">GetStats, click to open</span></h3></summary>{}</details>",
+        html::live("stats", "/ui/engine/stats", "1s", "engine")
+    );
+    let body = format!(
+        r##"<div class="cols even">
+  <div class="stack">{book}{trades}{events}</div>
+  <div class="stack">{accounts}{load}{stats}</div>
 </div>
-<div class="actions"><button type="button" hx-post="/ui/engine/reset" hx-target="#reset-result">reset book</button><span id="reset-result" class="muted small"></span></div>
-</section>"##,
-        book = html::live("book", "/ui/engine/book", "1s", "engine"),
-        trades = html::live("trades", "/ui/engine/trades", "1s", "engine"),
-        accounts = html::live("accounts", "/ui/engine/accounts", "1s", "engine"),
-        events = html::live("events", "/ui/engine/events", "1s", "engine"),
-        stats = html::live("stats", "/ui/engine/stats", "1s", "engine"),
+<div class="actions note"><button type="button" hx-post="/ui/engine/reset" hx-target="#reset-result">reset book</button><span id="reset-result" class="muted small"></span></div>"##
+    );
+    html::tab(
+        "engine",
+        "Matching engine",
+        "deterministic ETH/USDC limit order book behind gRPC",
+        "One thread owns the book, commands arrive over a bounded channel and are applied in batches, and every event carries a sequence number.",
+        "Wallets back every order and self-trades are prevented inside the matcher. A write-ahead journal with snapshot compaction makes a restart replay to the same state, and the sequence numbers are what that replay reproduces. These panels poll the gRPC API once a second and refresh at once after any action on this page.",
+        &body,
+        false,
     )
 }
 
@@ -236,7 +259,7 @@ pub async fn accounts(app: &App) -> anyhow::Result<Html> {
         "none bought here".to_string()
     };
     out.push_str(&format!(
-        r#"<p class="muted small" style="margin:.7rem 0 .2rem">statement for <b>{ACCOUNT}</b></p><dl class="kv">
+        r#"<p class="muted small note">statement for <b>{ACCOUNT}</b></p><dl class="kv">
 <dt>trades</dt><dd class="num">{}</dd>
 <dt>bought / sold</dt><dd class="num">{} / {} ETH</dd>
 <dt>USDC paid / received</dt><dd class="num">{} / {}</dd>

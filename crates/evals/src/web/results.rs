@@ -51,16 +51,29 @@ pub fn section(app: &App) -> String {
         })
         .collect();
     let first = reports(app).first().map(|(n, _)| n.clone()).unwrap_or_default();
-    format!(
-        r##"<section class="tab" id="tab-results" hidden>
-<h2>Results <small>every measurement and the report behind it, from docs/results</small></h2>
-<div class="lead"><p>The recorded runs against real models, kept in the repository so every number in the README traces to a report written by the tools on this page.</p></div>
-<div class="cols narrow-left">
-  <div class="panel"><h3>Reports</h3><ul class="list small" id="report-list" style="display:block">{list}</ul></div>
-  <div class="panel"><h3>Report</h3><div id="report" hx-get="/ui/results/{first}" hx-trigger="load" hx-swap="innerHTML"></div></div>
-</div>
-</section>"##,
-        first = esc(&first)
+    let list_panel = html::panel(
+        "Reports",
+        "docs/results",
+        "One file per recorded run, named by what produced it: <code>report-</code> for the scenario suites (agent, model, perturbation, judge), <code>sim-</code> for the simulation, <code>demo-</code> for the eight-turn transcript. The README lists every measurement with the report it comes from.",
+        &format!("<ul class=\"list small free\" id=\"report-list\">{list}</ul>"),
+    );
+    let report_panel = html::panel(
+        "Report",
+        "rendered from the file",
+        "The file as written by the harness, rendered by a small Markdown renderer. Pass rates come with a 95% Wilson interval; latency is per turn and per model call; tokens and cost are at list prices.",
+        &format!(
+            "<div id=\"report\" hx-get=\"/ui/results/{}\" hx-trigger=\"load\" hx-swap=\"innerHTML\"></div>",
+            esc(&first)
+        ),
+    );
+    html::tab(
+        "results",
+        "Results",
+        "every measurement and the report behind it",
+        "The recorded runs against real models, kept in the repository so every number in the README traces to a report written by the tools on this page.",
+        "Throughput and soak numbers come from the benchmark binaries; accuracy, safety, robustness and the judge from the harness; P&amp;L from the simulation. Apple M1 Pro, release builds, loopback.",
+        &format!("<div class=\"cols narrow-left\">{list_panel}{report_panel}</div>"),
+        true,
     )
 }
 

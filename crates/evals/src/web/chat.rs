@@ -48,14 +48,14 @@ pub fn home(app: &App, session_id: &str, hostile: &str, live: &str) -> String {
     let (notice, disabled) = match &app.model {
         Ok(model) => (
             format!(
-                "<p class=\"muted small\" style=\"margin:0 0 .4rem\">model <b>{}</b>; every turn is one <code>POST /chat</code> to the agent-service in this process, with the raw request and response under it.</p>",
+                "<p class=\"muted small\">model <b>{}</b>; every turn is one <code>POST /chat</code> to the agent-service in this process, with the raw request and response under it.</p>",
                 esc(model)
             ),
             "",
         ),
         Err(why) => (
             format!(
-                "<p class=\"err\">Chat is off: {}. Set <code>MODEL_PROVIDER=deepseek</code> with <code>DEEPSEEK_API_KEY</code>, or <code>ANTHROPIC_API_KEY</code>, and start again (<code>make demo-web</code> loads <code>.env</code>). Everything else on this page works without a key, the hostile-model runs below included.</p>",
+                "<p class=\"err\">Chat is off: {}. Set <code>MODEL_PROVIDER=deepseek</code> with <code>DEEPSEEK_API_KEY</code>, or <code>ANTHROPIC_API_KEY</code>, and start again (<code>make demo-web</code> loads <code>.env</code>). Everything else on this page works without a key, the hostile-model runs included.</p>",
                 esc(why)
             ),
             " disabled",
@@ -73,42 +73,68 @@ pub fn home(app: &App, session_id: &str, hostile: &str, live: &str) -> String {
             })
             .collect()
     };
+    let chat = html::panel(
+        "Chat",
+        "POST /chat",
+        "Permission for a turn comes from your own words: a trade verb or the shape of an order permits placing, a cancel verb permits cancelling, and a read-only question permits nothing. A large or unpriced order is held until you confirm the exact summary in your next message, and a token binds that confirmation to that order. A verifier checks every executed action against the request afterwards, and an action nobody asked for is cancelled. Each action is written to the audit log before it runs, and refused if that write fails. Under each turn: the tool calls the model made, whether the service ran, held or refused each, the verifier's flags, the permitted tools, latency and tokens, and the raw JSON.",
+        &format!(
+            r##"{notice}
+<div class="group"><span class="lbl">the story</span>{story}</div>
+<div class="group"><span class="lbl">the gate</span>{gate}</div>
+<div id="transcript" class="transcript"></div>
+<form hx-post="/ui/chat" hx-target="#transcript" hx-swap="beforeend" hx-indicator="#chat-ind" class="row">
+  <input type="hidden" name="session_id" value="{sid}">
+  <input type="text" id="message" name="message" placeholder="say something to the agent" autocomplete="off"{disabled}>
+  <button type="submit" class="accent"{disabled}>send</button>
+  <button type="button" class="small" onclick="location.reload()">new session</button>
+</form>
+<span id="chat-ind" class="htmx-indicator">the model is thinking</span>"##,
+            sid = esc(session_id),
+            story = buttons(0..7),
+            gate = buttons(7..CANNED.len()),
+        ),
+    );
+    let book = html::panel(
+        "Order book",
+        "live",
+        "Five levels a side over gRPC, refreshed every second and at once after any action on this page. An order placed by the chat, a tool call or the goal run shows up here; a fill moves the trades below and the wallet in the ticker.",
+        &html::live("book-mini", "/ui/engine/book/5", "1s", "engine"),
+    );
+    let trades = html::panel(
+        "Last trades",
+        "live",
+        "The newest fills on the venue, with the taker's side and both accounts. The demo account is the one the chat trades for; <code>mm</code> is the market maker that seeds the book.",
+        &html::live("trades-mini", "/ui/engine/trades/5", "1s", "engine"),
+    );
+    let session = html::panel(
+        "Session",
+        "GET /sessions/{id}",
+        "What the service holds for this conversation: the turn count, the messages kept for the model, and whether a confirmation is pending. A pending confirmation is decided by the next message and expires after ten minutes. Sessions are in-memory, bounded and rate-limited per session.",
+        &format!(
+            "<div id=\"session-info\"><p class=\"muted small\">session <code>{}</code>, no turns yet</p></div>",
+            esc(session_id)
+        ),
+    );
+    let audit = html::panel(
+        "Audit log",
+        "hash-chained",
+        "This run's <code>web-audit.jsonl</code>. Each line hashes the previous line's hash and its own entry (keyed with <code>AUDIT_KEY</code> when set), so changing any byte breaks every hash after it, which is what the verify button checks. An action writes a pre-action line before it runs and is refused if that write fails; a turn writes a line when it ends.",
+        &format!(
+            r##"{}
+<div class="actions note"><button type="button" class="small" hx-post="/ui/chat/audit/verify" hx-target="#audit-verify">verify chain</button><button type="button" class="small" hx-post="/ui/chat/audit/tamper" hx-target="#audit-verify">tamper with the file</button><span id="audit-verify"></span></div>"##,
+            html::live("audit", "/ui/chat/audit", "5s", "chat")
+        ),
+    );
     format!(
-        r##"<div class="lead"><p>Talk to the agent and watch the book, the wallet and the audit log move. The model may only request an action; the service decides from your own words what may execute.</p><details><summary>more</summary><p>Permission for a turn comes from the user's words. A large or unpriced order is held until the user confirms the exact summary in their next message. A verifier checks every executed action against the request afterwards. Each action is written to a hash-chained audit log before it runs, and is refused if that write fails. Every turn shows what the model asked for and what the service did with it.</p></details></div>
+        r##"<section class="home">
+<p class="lead home">Talk to the agent and watch the book, the wallet and the audit log move. The model may only request an action; the service decides from your own words what may execute. <button type="button" class="about-toggle" aria-label="about this page" title="about this page">?</button></p>
+<p class="about">The task is infrastructure for autonomous trading agents: a deterministic order book behind gRPC, an MCP server the model perceives and acts through, a natural-language service with guardrails, and an evaluation harness. One typed sentence exercises all four: the model reads it, calls MCP tools, the policy checks, the engine matches, the gate decides, and the harness under the hood is what proves the chain holds at scale. Every number on this page arrived over gRPC, MCP or the chat API.</p>
 <div class="cols wide-left" id="cockpit">
-  <div class="panel"><h3>Chat <span class="right muted">POST /chat</span></h3>
-    {notice}
-    <div class="group"><span class="lbl">the story</span>{story}</div>
-    <div class="group"><span class="lbl">the gate</span>{gate}</div>
-    <div id="transcript" class="transcript"></div>
-    <form hx-post="/ui/chat" hx-target="#transcript" hx-swap="beforeend" hx-indicator="#chat-ind" class="row" style="margin-top:.6rem">
-      <input type="hidden" name="session_id" value="{sid}">
-      <input type="text" id="message" name="message" placeholder="say something to the agent" autocomplete="off"{disabled}>
-      <button type="submit" class="accent"{disabled}>send</button>
-      <button type="button" class="small" onclick="location.reload()">new session</button>
-    </form>
-    <span id="chat-ind" class="htmx-indicator">the model is thinking</span>
-  </div>
-  <div class="stack">
-    <div class="panel"><h3>Order book <span class="right muted">live</span></h3>{book}</div>
-    <div class="panel"><h3>Last trades <span class="right muted">live</span></h3>{trades}</div>
-    <div class="panel"><h3>Session <span class="right muted">GET /sessions/{{id}}</span></h3>
-      <div id="session-info"><p class="muted small">session <code>{sid}</code>, no turns yet</p></div>
-    </div>
-    <div class="panel"><h3>Audit log <span class="right muted">hash-chained</span></h3>
-      {audit}
-      <div class="actions"><button type="button" class="small" hx-post="/ui/chat/audit/verify" hx-target="#audit-verify">verify chain</button><button type="button" class="small" hx-post="/ui/chat/audit/tamper" hx-target="#audit-verify">tamper with the file</button><span id="audit-verify"></span></div>
-      <details><summary>how the chain works</summary><p class="muted small">Each line hashes the previous line's hash and its own entry (keyed with <code>AUDIT_KEY</code> when set). Changing any byte breaks every hash after it, which is what the verify button checks.</p></details>
-    </div>
-  </div>
+  {chat}
+  <div class="stack">{book}{trades}{session}{audit}</div>
 </div>
-<div class="cols even" style="margin-top:1.1rem">{live}{hostile}</div>"##,
-        sid = esc(session_id),
-        story = buttons(0..7),
-        gate = buttons(7..CANNED.len()),
-        book = html::live("book-mini", "/ui/engine/book/5", "1s", "engine"),
-        trades = html::live("trades-mini", "/ui/engine/trades/5", "1s", "engine"),
-        audit = html::live("audit", "/ui/chat/audit", "5s", "chat"),
+<div class="cols even">{live}{hostile}</div>
+</section>"##
     )
 }
 

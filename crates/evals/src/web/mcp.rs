@@ -80,59 +80,79 @@ fn preset_group(group: &str) -> String {
 
 pub fn section(app: &App) -> String {
     let cfg = app.policy.config();
-    format!(
-        r##"<section class="tab" id="tab-mcp" hidden>
-<h2>MCP server <small>eleven tools, three resources and a prompt over Streamable HTTP</small></h2>
-<div class="lead"><p>The model perceives and acts only through these tools, and a deterministic policy checks every action before it reaches the engine.</p><details><summary>more</summary><p>Arguments and results are in human units (USDC with two decimals, ETH with four). A refusal comes back as an ordinary result marked <code>rejected</code>, with a code and a hint that tell the model what to do instead; tool errors are kept for bad arguments and outages. The same server speaks stdio for Claude Desktop and Claude Code, and is checked against the official MCP client in CI.</p></details></div>
-<div class="cols even">
-  <div class="stack">
-    <div class="panel"><h3>Tools <span class="right muted">tools/list, as the model receives it</span></h3>{tools}</div>
-    <div class="panel"><h3>Policy <span class="right muted">policy.rs, before the engine</span></h3>
-      <dl class="kv">
-        <dt>largest order</dt><dd class="num">{max_eth} ETH</dd>
-        <dt>largest order value</dt><dd class="num">{max_usdc} USDC</dd>
-        <dt>price collar</dt><dd class="num">{collar} bps from mid</dd>
-        <dt>open orders per account</dt><dd class="num">{max_open}</dd>
-        <dt>actions per minute</dt><dd class="num">{rate}</dd>
-        <dt>session notional cap</dt><dd class="num">{cap} USDC</dd>
-        <dt>trading halted</dt><dd>{halted}</dd>
-      </dl>
-      <details><summary>the codes</summary><p class="muted small">MAX_ORDER_SIZE, MAX_ORDER_VALUE, PRICE_COLLAR, MAX_OPEN_ORDERS, RATE_LIMIT, SESSION_CAP, HALTED, each with a hint. The engine adds its own checks underneath: balances back every order, and self-trades are prevented.</p></details>
-    </div>
-  </div>
-  <div class="stack">
-    <div class="panel"><h3>Call a tool <span class="right muted">tools/call over JSON-RPC</span></h3>
-      {reads}{actions}{refusals}
-      <form hx-post="/ui/mcp/call" hx-target="#mcp-result" hx-indicator="#mcp-ind">
-        <div class="actions" style="margin-top:.5rem"><input type="text" id="tool" name="tool" value="get_market_summary" style="flex:1" spellcheck="false"><button type="submit" class="accent">call</button><span id="mcp-ind" class="htmx-indicator">calling</span></div>
-        <textarea id="args" name="args" spellcheck="false" style="min-height:3.6rem">{{}}</textarea>
-      </form>
-      <div id="mcp-result"></div>
-    </div>
-    <div class="panel"><h3>Resources and prompt <span class="right muted">resources/read, prompts/get</span></h3>{resources}
-      <div id="resource-result"></div>
-      {prompt}
-    </div>
-  </div>
-</div>
-</section>"##,
-        tools = html::live("mcp-tools", "/ui/mcp/tools", "30s", "never"),
-        resources = html::live("mcp-resources", "/ui/mcp/resources", "30s", "never"),
-        prompt = html::live("mcp-prompt", "/ui/mcp/prompt", "300s", "never"),
-        reads = preset_group("reads"),
-        actions = preset_group("actions"),
-        refusals = preset_group("refusals"),
-        max_eth = eth(cfg.max_order_lots),
-        max_usdc = usdc_from_micro(cfg.max_order_notional_micro),
-        collar = cfg.collar_bps,
-        max_open = cfg.max_open_orders,
-        rate = cfg.actions_per_minute,
-        cap = usdc_from_micro(cfg.session_notional_cap_micro),
-        halted = if cfg.halted {
-            chip("bad", "yes")
-        } else {
-            chip("ok", "no")
-        },
+    let tools = html::panel(
+        "Tools",
+        "tools/list, as the model receives it",
+        "The eleven tools with the name, description and JSON schema the model reads. Arguments and results are in human units, USDC with two decimals and ETH with four, as strings. Click a name to load it into the form with example arguments; the full description is shown on hover.",
+        &html::live("mcp-tools", "/ui/mcp/tools", "30s", "never"),
+    );
+    let call = html::panel(
+        "Call a tool",
+        "tools/call over JSON-RPC",
+        "One JSON-RPC 2.0 request on the Streamable HTTP endpoint, as a client sends it. A refusal by the policy comes back as an ordinary result marked <code>rejected</code>, with a code and a hint that tell the model what to do instead; tool errors are kept for bad arguments and outages. Every call moves the panels on this page as it would move the model's view.",
+        &format!(
+            r##"{reads}{actions}{refusals}
+<form hx-post="/ui/mcp/call" hx-target="#mcp-result" hx-indicator="#mcp-ind" class="note">
+  <div class="actions"><input type="text" id="tool" name="tool" value="get_market_summary" class="grow" spellcheck="false"><button type="submit" class="accent">call</button><span id="mcp-ind" class="htmx-indicator">calling</span></div>
+  <textarea id="args" name="args" spellcheck="false" class="short">{{}}</textarea>
+</form>
+<div id="mcp-result" class="result"></div>"##,
+            reads = preset_group("reads"),
+            actions = preset_group("actions"),
+            refusals = preset_group("refusals"),
+        ),
+    );
+    let policy = html::panel(
+        "Policy",
+        "policy.rs, before the engine",
+        "Deterministic rules applied to every action before it reaches the engine, each answered with a code and a hint: MAX_ORDER_SIZE, MAX_ORDER_VALUE, PRICE_COLLAR, MAX_OPEN_ORDERS, RATE_LIMIT, SESSION_CAP and HALTED. The engine adds its own checks underneath: balances back every order, and self-trades are prevented.",
+        &format!(
+            r##"<dl class="kv">
+  <dt>largest order</dt><dd class="num">{max_eth} ETH</dd>
+  <dt>largest order value</dt><dd class="num">{max_usdc} USDC</dd>
+  <dt>price collar</dt><dd class="num">{collar} bps from mid</dd>
+  <dt>open orders per account</dt><dd class="num">{max_open}</dd>
+  <dt>actions per minute</dt><dd class="num">{rate}</dd>
+  <dt>session notional cap</dt><dd class="num">{cap} USDC</dd>
+  <dt>trading halted</dt><dd>{halted}</dd>
+</dl>"##,
+            max_eth = eth(cfg.max_order_lots),
+            max_usdc = usdc_from_micro(cfg.max_order_notional_micro),
+            collar = cfg.collar_bps,
+            max_open = cfg.max_open_orders,
+            rate = cfg.actions_per_minute,
+            cap = usdc_from_micro(cfg.session_notional_cap_micro),
+            halted = if cfg.halted {
+                chip("bad", "yes")
+            } else {
+                chip("ok", "no")
+            },
+        ),
+    );
+    let resources = html::panel(
+        "Resources and prompt",
+        "resources/read, prompts/get",
+        "Three resources, a template that takes a depth, and the standing instructions a client may load as a prompt. Clients may subscribe to a resource; the stdio transport pushes <code>notifications/resources/updated</code> when the engine's events touch it.",
+        &format!(
+            "{}<div id=\"resource-result\" class=\"result\"></div>{}",
+            html::live("mcp-resources", "/ui/mcp/resources", "30s", "never"),
+            html::live("mcp-prompt", "/ui/mcp/prompt", "300s", "never")
+        ),
+    );
+    let body = format!(
+        r##"<div class="cols even">
+  <div class="stack">{tools}{policy}</div>
+  <div class="stack">{call}{resources}</div>
+</div>"##
+    );
+    html::tab(
+        "mcp",
+        "MCP server",
+        "eleven tools, three resources and a prompt over Streamable HTTP",
+        "The model perceives and acts only through these tools, and a deterministic policy checks every action before it reaches the engine.",
+        "The same server speaks stdio for Claude Desktop and Claude Code, and is checked against the official MCP client in CI. The protocol layer is written by hand on top of serde_json: JSON-RPC 2.0 with a small set of methods.",
+        &body,
+        true,
     )
 }
 
@@ -148,7 +168,7 @@ pub async fn tools(app: &App) -> anyhow::Result<Html> {
             .map(|a| a.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
         out.push_str(&format!(
-            "<li><span class=\"k\" style=\"min-width:11.5rem\"><a href=\"#mcp\" data-tool=\"{n}\" data-args=\"{a}\" style=\"color:var(--title)\">{n}</a></span><span title=\"{d}\">{s}{r}</span></li>",
+            "<li><span class=\"k\"><a href=\"#mcp\" data-tool=\"{n}\" data-args=\"{a}\">{n}</a></span><span title=\"{d}\">{s}{r}</span></li>",
             n = esc(name),
             a = esc(example_args(name)),
             d = esc(desc),
@@ -246,14 +266,14 @@ pub async fn resources(app: &App) -> anyhow::Result<Html> {
     for r in listed["resources"].as_array().into_iter().flatten() {
         let uri = r["uri"].as_str().unwrap_or("");
         out.push_str(&format!(
-            "<li><span class=\"k\" style=\"min-width:9rem\">{}</span><span><code>{}</code> <button type=\"button\" class=\"small\" hx-post=\"/ui/mcp/read\" hx-vals='{{\"uri\": \"{}\"}}' hx-target=\"#resource-result\">read</button></span></li>",
+            "<li><span class=\"k\">{}</span><span><code>{}</code> <button type=\"button\" class=\"small\" hx-post=\"/ui/mcp/read\" hx-vals='{{\"uri\": \"{}\"}}' hx-target=\"#resource-result\">read</button></span></li>",
             esc(r["name"].as_str().unwrap_or("")),
             esc(uri),
             esc(uri)
         ));
     }
     out.push_str(
-        "<li><span class=\"k\" style=\"min-width:9rem\">order_book_depth</span><span><code>market://ETH-USDC/book/{depth}</code> <button type=\"button\" class=\"small\" hx-post=\"/ui/mcp/read\" hx-vals='{\"uri\": \"market://ETH-USDC/book/10\"}' hx-target=\"#resource-result\">read depth 10</button></span></li></ul><p class=\"muted small\">Clients may subscribe to a resource; the stdio transport pushes <code>notifications/resources/updated</code> when the engine's events touch it.</p>",
+        "<li><span class=\"k\">order_book_depth</span><span><code>market://ETH-USDC/book/{depth}</code> <button type=\"button\" class=\"small\" hx-post=\"/ui/mcp/read\" hx-vals='{\"uri\": \"market://ETH-USDC/book/10\"}' hx-target=\"#resource-result\">read depth 10</button></span></li></ul><p class=\"muted small\">Clients may subscribe to a resource; the stdio transport pushes <code>notifications/resources/updated</code> when the engine's events touch it.</p>",
     );
     Ok(html::html(out))
 }
@@ -290,7 +310,7 @@ pub async fn prompt(app: &App) -> anyhow::Result<Html> {
         .await?;
     let text = r["messages"][0]["content"]["text"].as_str().unwrap_or("");
     Ok(html::html(format!(
-        "<details><summary>prompt <code>trading_assistant</code>: the standing instructions a client may load ({} words)</summary><pre style=\"white-space:pre-wrap\">{}</pre></details>",
+        "<details><summary>prompt <code>trading_assistant</code>: the standing instructions a client may load ({} words)</summary><pre class=\"prewrap\">{}</pre></details>",
         text.split_whitespace().count(),
         esc(text)
     )))

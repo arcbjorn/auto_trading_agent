@@ -80,6 +80,23 @@ pub fn thousands(n: u64) -> String {
     out
 }
 
+/// One panel: title, the interface it reads from, a `?` that shows the explanation, the body.
+/// `title` and `source` may carry HTML; `about` is a paragraph shown by the `?` or the explain
+/// switch in the header.
+pub fn panel(title: &str, source: &str, about: &str, body: &str) -> String {
+    format!(
+        "<div class=\"panel\"><h3><span class=\"t\">{title}</span><span class=\"src\">{source}</span><button type=\"button\" class=\"about-toggle\" aria-label=\"about this panel\" title=\"about this panel\">?</button></h3><p class=\"about\">{about}</p>{body}</div>"
+    )
+}
+
+/// One tab under the hood: a heading, one sentence, an explanation behind the same `?`.
+pub fn tab(id: &str, title: &str, subtitle: &str, lead: &str, about: &str, body: &str, hidden: bool) -> String {
+    format!(
+        "<section class=\"tab\" id=\"tab-{id}\"{h}><h2>{title} <small>{subtitle}</small><button type=\"button\" class=\"about-toggle\" aria-label=\"about this part\" title=\"about this part\">?</button></h2><p class=\"lead\">{lead}</p><p class=\"about\">{about}</p>{body}</section>",
+        h = if hidden { " hidden" } else { "" }
+    )
+}
+
 /// The page: the chat with the live book beside it, then a tab strip for the parts under the
 /// hood. Tabs are plain sections toggled by `app.js`; the active one is kept in the URL hash.
 pub fn page(status: &str, home: &str, sections: &str) -> String {
@@ -101,11 +118,11 @@ pub fn page(status: &str, home: &str, sections: &str) -> String {
 <header class="top">
   <div class="logo"><span class="at">~</span> auto_trading_agent</div>
   <div class="tagline">ETH/USDC · an agent that may only ask; code decides</div>
-  <div class="status">{status} <button id="theme" class="small" type="button">dark</button></div>
+  <div class="status">{status}<span class="switch"><button id="explain" class="small" type="button" title="show every explanation on the page">explain</button><button id="theme" class="small" type="button">dark</button></span></div>
 </header>
 <div id="ticker" class="ticker" hx-get="/ui/engine/market" hx-trigger="load, every 1s, engine from:body" hx-swap="innerHTML"></div>
 {home}
-<nav class="tabs under" role="tablist">
+<nav class="tabs" role="tablist">
   <span class="lbl">under the hood</span>
   <button type="button" role="tab" data-tab="engine">engine</button>
   <button type="button" role="tab" data-tab="mcp">MCP server</button>
@@ -115,7 +132,7 @@ pub fn page(status: &str, home: &str, sections: &str) -> String {
 <main>
 {sections}
 </main>
-<footer class="muted small">One process: the engine, the MCP server, the agent and the harness. Every number on this page arrived over gRPC, MCP or the chat API.</footer>
+<footer class="muted small">One process: the engine, the MCP server, the agent and the harness. Every number on this page arrived over gRPC, MCP or the chat API. The <b>?</b> on a panel explains it; <b>explain</b> in the header opens every explanation at once.</footer>
 </div>
 </body>
 </html>"##

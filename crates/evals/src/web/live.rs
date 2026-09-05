@@ -71,16 +71,19 @@ pub fn panel(app: &App) -> String {
             " selected",
         ),
     };
-    format!(
-        r##"<div class="panel"><h3>Give the agent a goal <span class="chip warn" style="margin-left:.4rem">experimental</span><span class="right muted">autonomous rounds on this book</span></h3>
-<form hx-post="/ui/live/run" hx-target="#live-result" class="actions" style="margin-top:0">
-  <select name="agent" style="width:auto">{model_option}<option value="baseline"{baseline_selected}>baseline: bid at the best bid</option></select>
-  <label class="inline">rounds <input type="text" name="rounds" value="8" style="width:3.5rem"></label>
+    html::panel(
+        "Give the agent a goal <span class=\"chip warn\">experimental</span>",
+        "autonomous rounds on this book",
+        "The goal: accumulate 2 ETH at or below 3050.00 with limit bids, never more than 0.5% above the best bid. Each round a market-maker bot moves this book and a taker hits the bids; the agent reads the goal and the market and decides alone, under <code>AgentConfig::autonomous</code>: no intent gate and no confirmations, while the policy, the balances and the audit log still apply. Rule breaks are counted against the book as it was before each turn, P&amp;L is the wallet's change over the run marked at the final mid, and the maker's seed levels are restored afterwards if the market ate them.",
+        &format!(
+            r##"<p class="muted small">Beyond the brief: the supervised chat above is the product; this is an experiment in letting the model act on a goal.</p>
+<form hx-post="/ui/live/run" hx-target="#live-result" class="actions">
+  <select name="agent">{model_option}<option value="baseline"{baseline_selected}>baseline: bid at the best bid</option></select>
+  <label class="inline">rounds <input type="text" name="rounds" value="8"></label>
   <button type="submit" class="accent">start</button>
 </form>
-<p class="muted small">Beyond the brief: the supervised chat above is the product, this is an experiment in letting the model act on a goal. The goal: accumulate 2 ETH at or below 3050.00 with limit bids, never more than 0.5% above the best bid. Each round a market-maker bot moves this book and a taker hits the bids; the agent reads the goal and the market and decides alone. Watch the book beside the chat. Rule breaks are counted, every action lands in the audit log, and the maker's seed levels are restored afterwards if the market ate them.</p>
-<div id="live-result"></div>
-</div>"##
+<div id="live-result" class="result"></div>"##
+        ),
     )
 }
 
@@ -347,11 +350,11 @@ fn average(cost_micro: u128, lots: u64) -> String {
 
 pub fn body(job: &Job, live: &Live) -> String {
     let mut out = String::from(
-        "<table style=\"margin-top:.4rem\"><thead><tr><th>round</th><th class=\"l\">the agent</th><th>holds</th><th>avg cost</th><th>mid</th><th>breaks</th></tr></thead><tbody>",
+        "<table><thead><tr><th>round</th><th class=\"l\">the agent</th><th>holds</th><th>avg cost</th><th>mid</th><th>breaks</th></tr></thead><tbody>",
     );
     for r in &live.rounds {
         out.push_str(&format!(
-            "<tr><td class=\"num\">{}</td><td class=\"l\" style=\"white-space:normal;max-width:36ch\">{}{}</td><td class=\"num\">{} ETH</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+            "<tr><td class=\"num\">{}</td><td class=\"l wrap\">{}{}</td><td class=\"num\">{} ETH</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
             r.round,
             esc(&r.action),
             if r.tool_calls > 0 {
@@ -373,7 +376,7 @@ pub fn body(job: &Job, live: &Live) -> String {
     out.push_str("</tbody></table>");
     if let Some(s) = &live.summary {
         out.push_str(&format!(
-            "<p style=\"margin:.6rem 0 .2rem\"><b>{} ETH</b> bought at <b>{}</b> average; the mid ended at {}; P&amp;L <b>{} USDC</b> marked at the final mid; {} tool calls; the bot's {} leftover quotes were cancelled.</p>",
+            "<p class=\"note\"><b>{} ETH</b> bought at <b>{}</b> average; the mid ended at {}; P&amp;L <b>{} USDC</b> marked at the final mid; {} tool calls; the bot's {} leftover quotes were cancelled.</p>",
             esc(&s.filled_eth),
             esc(&s.avg_cost),
             esc(&s.final_mid),

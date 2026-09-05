@@ -46,6 +46,28 @@
     var form = box.form; if (form && window.htmx) htmx.trigger(form, 'submit');
   });
   label();
+  // Explanations: the ? on a panel or a tab opens its own; the header switch opens them all.
+  try { if (localStorage.getItem('explain') === '1') document.body.classList.add('explain'); } catch (e) {}
+  if (/[?&]explain=1\b/.test(location.search)) document.body.classList.add('explain');
+  function explainLabel() {
+    var b = document.getElementById('explain'); if (!b) return;
+    var on = document.body.classList.contains('explain');
+    b.classList.toggle('on', on);
+    b.textContent = on ? 'explaining' : 'explain';
+  }
+  document.addEventListener('click', function (e) {
+    if (e.target && e.target.id === 'explain') {
+      var on = document.body.classList.toggle('explain');
+      try { localStorage.setItem('explain', on ? '1' : '0'); } catch (err) {}
+      explainLabel();
+      return;
+    }
+    var t = e.target.closest ? e.target.closest('.about-toggle') : null;
+    if (!t) return;
+    var host = t.closest('.panel') || t.closest('section.tab');
+    if (host) host.classList.toggle('about-open');
+  });
+  explainLabel();
   // Tabs: one section at a time; the active one lives in the URL hash so a reload keeps it.
   function showTab(name) {
     var found = false;
