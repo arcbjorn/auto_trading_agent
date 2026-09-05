@@ -169,11 +169,7 @@ pub struct Agent {
     system_channel_rejected: AtomicBool,
 }
 
-/// An MCP tool definition has exactly what a Messages API tool needs: name, description, schema.
-/// The list is sorted by name so it is byte-identical on every request (it is the cache prefix),
-/// and the action tools gain the service's `confirmation_token` field once, here.
-/// The text of the last user turn in the history, without the service's note and without tool
-/// results.
+/// The text of the last user turn, without the service's note and without tool results.
 fn previous_user_text(messages: &[Value]) -> Option<String> {
     messages.iter().rev().filter(|m| m["role"] == "user").find_map(|m| {
         let text = match &m["content"] {
@@ -191,6 +187,10 @@ fn previous_user_text(messages: &[Value]) -> Option<String> {
     })
 }
 
+/// The MCP tool list as the Messages API wants it: name, description, schema.
+///
+/// Sorted by name so the list is byte-identical on every request, since it is the cache prefix.
+/// The action tools gain the service's own `confirmation_token` field here, once.
 pub fn api_tools(mcp_tools: &[Value]) -> Vec<Value> {
     let mut tools: Vec<Value> = mcp_tools
         .iter()

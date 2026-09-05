@@ -266,12 +266,12 @@ fn status_to_pb(s: engine::Status) -> pb::OrderStatus {
     }
 }
 
-/// A price or quantity on the wire. The proto carries them as `int64` while the engine holds
-/// `u64`, so every conversion crosses a signedness boundary. `MAX_PRICE` and `MAX_QTY` keep every
-/// accepted value far below `i64::MAX` (their product is a thousandth of it), which the assertion
-/// below pins: a future change to either cap that broke this would fail the build's tests rather
-/// than wrap a price negative on the wire. A value that somehow arrived above the cap saturates
-/// instead of wrapping.
+/// A price or quantity on its way out to the wire.
+///
+/// The proto carries them as `int64`, the engine holds `u64`, so every conversion crosses a
+/// signedness boundary. `MAX_PRICE` and `MAX_QTY` keep accepted values far below `i64::MAX`, and
+/// `the_caps_keep_every_value_inside_the_wire_types` pins that: raising a cap past it fails the
+/// build rather than a price. Anything above the cap saturates instead of wrapping.
 fn wire(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }

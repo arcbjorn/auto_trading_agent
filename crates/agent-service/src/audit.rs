@@ -1,24 +1,30 @@
 //! Append-only, hash-chained JSON-lines audit log.
 //!
-//! Every line is `{"prev": <hex>, "hash": <hex>, "entry": {...}}` where `hash` is SHA-256 over the
-//! previous hash and the entry's bytes, so altering, removing or reordering a line in the middle
+//! Every line is `{"prev": <hex>, "hash": <hex>, "entry": {...}}`, where `hash` is SHA-256 over
+//! the previous hash and the entry's bytes. Altering, removing or reordering a line in the middle
 //! breaks every hash after it. Opening the log verifies the whole chain and refuses a broken one.
 //!
-//! What this does and does not prove. Unkeyed, it detects accidental corruption and any edit that
-//! leaves later lines in place: a crash mid-write, a truncated copy, a line changed by hand. It is
-//! not tamper evidence against someone who can rewrite the file, since they can recompute every
-//! hash from the point they changed, and deleting a suffix leaves a shorter but self-consistent
-//! chain. Set `AUDIT_KEY` to make the chain an HMAC instead: an edit then requires the key, and
-//! the head hash can be copied somewhere the writer cannot reach (a log shipper, another host) to
-//! detect suffix deletion too. That external copy is the operator's to arrange; this module does
-//! not ship one.
-//! Two kinds of entry are written: a `pre_action` record before every action tool call (the call
-//! is refused if this record cannot be written, so no action ever reaches the engine unaudited)
-//! and a `turn` record after every turn with the user text, every tool call and result, the
-//! reply, token usage, latency and verifier flags. Each append is flushed to disk before it returns.
+//! Two kinds of entry are written:
+//!
+//! * `pre_action`, before every action tool call. If it cannot be written the call is refused, so
+//!   nothing reaches the engine unaudited.
+//! * `turn`, after every turn: the user text, every tool call and result, the reply, token usage,
+//!   latency and verifier flags.
+//!
+//! Each append is flushed to disk before it returns.
+//!
+//! What the chain proves, and what it does not. Unkeyed, it catches accidental corruption and any
+//! edit that leaves later lines in place: a crash mid-write, a truncated copy, a line changed by
+//! hand. It is not evidence against someone who can rewrite the file, because they can recompute
+//! every hash from the point they changed, and deleting a suffix leaves a shorter chain that is
+//! still self-consistent.
+//!
+//! `AUDIT_KEY` makes the chain keyed, so an edit needs the key. Copying the head hash somewhere
+//! the writer cannot reach (a log shipper, another host) would catch suffix deletion too. That
+//! copy is the operator's to arrange; this module does not ship one.
 //!
 //! Clones share one chain, so every writer in a process appends through the same lock. One log
-//! belongs to one process: two processes appending to the same file would interleave two chains.
+//! belongs to one process: two writing to the same file would interleave two chains.
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

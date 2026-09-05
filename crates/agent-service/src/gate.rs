@@ -2,13 +2,17 @@
 //! may execute at once, a confirmation step for everything else, and a verifier that checks what
 //! happened against what the user asked for.
 //!
-//! The tool *list* sent to the model never changes within a session (a changing list defeats
+//! The tool *list* sent to the model never changes within a session. A changing list defeats
 //! prompt caching and, on the newest models, invalidates the thinking blocks bound to the
-//! conversation prefix). What changes per turn is *permission*, decided from the user's own words.
-//! An action the words justify executes at once; any other action, and any order that is large,
-//! at a price the user never stated, or framed as a demo, is turned into a confirmation request:
-//! the model must relay a summary and the user must say so in a turn of their own. Nothing reaches
-//! the MCP server without either the words or the confirmation.
+//! conversation prefix.
+//!
+//! What changes per turn is *permission*, decided from the user's own words. An action those words
+//! justify executes at once. Anything else becomes a confirmation request: an order that is large,
+//! priced where the user never said, on a side they never named, or framed as a demo.
+//!
+//! A confirmation request is answered by the user, not the model. The service issues an exact
+//! summary and a token; the model must relay that summary; the user must confirm in a turn of
+//! their own. Nothing reaches the MCP server without either the words or that confirmation.
 
 use mcp_server::units::{eth, parse_price, parse_qty, usdc_from_micro};
 use serde_json::{Value, json};
@@ -365,12 +369,15 @@ fn asks_about_confirming(clause: &str) -> bool {
     .any(|q| lower.starts_with(q))
 }
 
-/// Whether a reply put a pending action's summary in front of the user. The figures that define
-/// the action must appear in the reply, in any wording: the model may phrase the ask as it likes,
-/// but it may not hide what it is asking about. For an order those are the quantity and the price,
-/// which the summary states first; the total it also carries is derived from them and a reply need
-/// not repeat it. For a cancel it is the order id. Compared on digits alone, so "3000.00" and
-/// "3,000" match, and a reply naming more than the summary is fine.
+/// Whether a reply actually put a pending action in front of the user.
+///
+/// The figures that define the action must appear in the reply. For an order that is the quantity
+/// and the price, which the summary states first; the total it also carries is derived from them,
+/// so a reply need not repeat it. For a cancel it is the order id.
+///
+/// The wording is the model's to choose; what it may not do is hide what it is asking about.
+/// Figures are compared on digits alone, so "3000.00" matches "3,000", and a reply that names more
+/// than the summary is fine.
 pub fn summary_is_disclosed(summary: &str, reply: &str) -> bool {
     let mut figures: Vec<String> = numbers(summary).iter().map(|n| digits_of(n)).collect();
     figures.truncate(2);
@@ -795,13 +802,16 @@ pub fn verify(user_text: &str, executed: &[Executed], confirmed_pending: bool) -
     flags
 }
 
-/// Numbers quoted in the reply that appear in none of the turn's inputs (the user's words, the
-/// system prompt, the conversation so far, this turn's tool arguments and results) and are not
-/// simple arithmetic on two of them. A figure the model produced itself is the most common way a
-/// trading reply misleads: a fill price that never happened, a balance that was never returned.
-/// Small whole numbers are ignored (counts such as "2 open orders"), as are values that are a
-/// sum, difference, product, ratio or percentage of two input numbers (a total, a change, a
-/// half). At most five are reported, in reply order.
+/// Figures the reply quotes that no input of the turn supports.
+///
+/// An input is the user's words, the system prompt, the conversation so far, or this turn's tool
+/// arguments and results. A figure counts as supported if it appears in one of those, or is
+/// simple arithmetic on two of them (a sum, difference, product, ratio or percentage: a total, a
+/// change, a half). Small whole numbers are ignored, since they are usually counts ("2 open
+/// orders").
+///
+/// Why: a number the model invented is the most common way a trading reply misleads. A fill price
+/// that never happened. A balance nobody returned. At most five are reported, in reply order.
 pub fn unsupported_numbers(reply: &str, sources: &[String]) -> Vec<String> {
     let parse = |t: &str| t.parse::<f64>().ok().filter(|v| v.is_finite());
     let known: Vec<f64> = sources
