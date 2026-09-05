@@ -10,6 +10,7 @@
 
 mod engine;
 mod html;
+mod mcp;
 
 use crate::Args;
 use crate::cases::Funding;
@@ -43,6 +44,8 @@ pub struct App {
     pub engine: EngineClient<Channel>,
     pub engine_addr: SocketAddr,
     pub mcp_url: String,
+    pub mcp: McpClient,
+    pub policy: Arc<mcp_server::Policy>,
     /// The in-process agent-service, when a model key was found.
     pub agent_url: Option<String>,
     /// The model's description, or the reason chat is off.
@@ -83,6 +86,7 @@ pub async fn boot(out_dir: &Path) -> anyhow::Result<Booted> {
     let mut stack = Stack::start().await?;
     stack.fund(&Funding::default()).await?;
     stack.seed(&crate::demo::seed_book()).await?;
+    let mcp = McpClient::connect(&stack.mcp_url).await?;
     let (agent_url, model, agent) = match ModelClient::from_env() {
         Ok(model) => {
             let describe = model.describe();
@@ -103,6 +107,8 @@ pub async fn boot(out_dir: &Path) -> anyhow::Result<Booted> {
         engine: stack.engine.clone(),
         engine_addr: stack.engine_addr,
         mcp_url: stack.mcp_url.clone(),
+        mcp,
+        policy: Arc::clone(&stack.policy),
         agent_url,
         model,
         events: Mutex::new(VecDeque::new()),
@@ -218,6 +224,11 @@ async fn route(
         (Method::GET, "/ui/engine/events") => engine::events(app),
         (Method::POST, "/ui/engine/reset") => engine::reset(app).await?,
         (Method::POST, "/ui/engine/load") => engine::load(app, form).await?,
+        (Method::GET, "/ui/mcp/tools") => mcp::tools(app).await?,
+        (Method::POST, "/ui/mcp/call") => mcp::call(app, form).await?,
+        (Method::GET, "/ui/mcp/resources") => mcp::resources(app).await?,
+        (Method::POST, "/ui/mcp/read") => mcp::read(app, form).await?,
+        (Method::GET, "/ui/mcp/prompt") => mcp::prompt(app).await?,
         _ => html::not_found(),
     })
 }
@@ -232,7 +243,7 @@ fn page(app: &App) -> String {
         html::esc(&app.engine_addr.to_string()),
         html::esc(app.mcp_url.trim_start_matches("http://"))
     );
-    let sections = engine::section();
+    let sections = format!("{}{}", engine::section(), mcp::section(app));
     html::page(&status, &sections)
 }
 
@@ -343,6 +354,47 @@ mod tests {
             get("/ui/engine/trades").await.contains("load-"),
             "the load test's fills are on the tape"
         );
+        // MCP: the tool list, a refusal from the policy, a read through a resource, the prompt.
+        let tools = get("/ui/mcp/tools").await;
+        assert!(
+            tools.contains("place_limit_order") && tools.contains("11 tools"),
+            "{tools}"
+        );
+        let refused = post(
+            "/ui/mcp/call",
+            "tool=place_limit_order&args=%7B%22side%22%3A%22buy%22%2C%22price_usdc%22%3A%223000.00%22%2C%22quantity_eth%22%3A%22100%22%7D",
+        )
+        .await;
+        assert_eq!(refused.headers()["hx-trigger"], "engine");
+        let refused = refused.text().await.unwrap();
+        assert!(
+            refused.contains("rejected by policy: MAX_ORDER_SIZE") && refused.contains("split the order"),
+            "{refused}"
+        );
+        let balances = post("/ui/mcp/call", "tool=get_balances&args=")
+            .await
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            balances.contains("usdc_available") && !balances.contains("tool error"),
+            "{balances}"
+        );
+        let bad = post("/ui/mcp/call", "tool=get_balances&args=%7Bnope")
+            .await
+            .text()
+            .await
+            .unwrap();
+        assert!(bad.contains("not valid JSON"), "{bad}");
+        let summary = post("/ui/mcp/read", "uri=market%3A%2F%2FETH-USDC%2Fsummary")
+            .await
+            .text()
+            .await
+            .unwrap();
+        assert!(summary.contains("best_bid"), "{summary}");
+        assert!(get("/ui/mcp/resources").await.contains("orders://me/open"));
+        assert!(get("/ui/mcp/prompt").await.contains("trading_assistant"));
+        assert!(page.contains("id=\"mcp\"") && page.contains("session notional cap"));
         assert!(http.get(format!("{base}/nope")).send().await.unwrap().status() == 404);
         handle.shutdown().await;
         booted.shutdown().await;

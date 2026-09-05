@@ -114,9 +114,9 @@ tr.sep td { border-top: 1px solid var(--line); }
 .bar.bid span { background: var(--title); left: 0; }
 .bar.ask span { background: var(--accent); right: 0; }
 tr.spread td { text-align: center; color: var(--muted); font-size: 12px; padding: 0.35rem; border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); }
-.kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.1rem 1.25rem; font-size: 13px; }
+.kv { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 0.1rem 1.25rem; font-size: 13px; }
 .kv dt { color: var(--muted); margin: 0; }
-.kv dd { margin: 0; text-align: right; }
+.kv dd { margin: 0; text-align: right; white-space: nowrap; }
 .num { font-variant-numeric: tabular-nums; }
 
 /* Chips for flags, outcomes, statuses. */

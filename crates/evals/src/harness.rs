@@ -27,6 +27,8 @@ pub struct Stack {
     pub engine: EngineClient<Channel>,
     pub engine_addr: std::net::SocketAddr,
     pub mcp_url: String,
+    /// The MCP server's risk policy, shared so the web demo can show its limits.
+    pub policy: Arc<Policy>,
     engine_handle: engine_server::ServerHandle,
     mcp_handle: mcp_server::HttpServerHandle,
     /// Round-trip times of the seeding gRPC calls, microseconds.
@@ -50,12 +52,17 @@ impl Stack {
             actions_per_minute: 120,
             ..PolicyConfig::from_env()
         }));
-        let server = Arc::new(McpServer::new(ToolSet::new(engine.clone(), ACCOUNT.into(), policy)));
+        let server = Arc::new(McpServer::new(ToolSet::new(
+            engine.clone(),
+            ACCOUNT.into(),
+            Arc::clone(&policy),
+        )));
         let (mcp_addr, mcp_handle) = serve_http("127.0.0.1:0".parse()?, server).await?;
         Ok(Self {
             engine,
             engine_addr,
             mcp_url: format!("http://{mcp_addr}/mcp"),
+            policy,
             engine_handle,
             mcp_handle,
             grpc_rtt_us: Vec::new(),

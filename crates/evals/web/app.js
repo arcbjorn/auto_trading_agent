@@ -22,6 +22,17 @@
     var box = document.getElementById('message');
     if (box && e.target && e.target.id === 'transcript') { box.value = ''; box.focus(); }
   });
+  // A tool name or preset fills the MCP form; a preset also submits it.
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest ? e.target.closest('[data-tool]') : null;
+    if (!el) return;
+    var tool = document.getElementById('tool'), args = document.getElementById('args');
+    if (!tool || !args) return;
+    tool.value = el.getAttribute('data-tool');
+    args.value = el.getAttribute('data-args') || '{}';
+    if (el.hasAttribute('data-go') && tool.form && window.htmx) htmx.trigger(tool.form, 'submit');
+    else if (el.tagName === 'A') e.preventDefault();
+  });
   // A canned prompt fills the box and submits the form.
   document.addEventListener('click', function (e) {
     var el = e.target.closest ? e.target.closest('[data-say]') : null;
