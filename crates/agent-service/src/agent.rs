@@ -81,6 +81,10 @@ pub struct AgentConfig {
     pub compensate: bool,
     /// How the permission note reaches the model; see [`NoteChannel`].
     pub note_channel: NoteChannel,
+    /// The user's message is a goal, not an order. The figures in it do not pin the order and
+    /// the verifier does not compare executed actions against the words: permission comes from
+    /// the operator who wrote the goal. The policy and the engine still apply to every action.
+    pub autonomous: bool,
 }
 
 impl Default for AgentConfig {
@@ -93,6 +97,22 @@ impl Default for AgentConfig {
             gate_tools: true,
             compensate: true,
             note_channel: NoteChannel::User,
+            autonomous: false,
+        }
+    }
+}
+
+impl AgentConfig {
+    /// The configuration for a goal run: no intent gate, no confirmation turns, no pinning to
+    /// the figures in the message, no post-turn intent check. What remains is what code
+    /// enforces regardless of the model: the MCP policy, balances, and the audit log.
+    pub fn autonomous() -> Self {
+        Self {
+            gate_tools: false,
+            confirm_unpriced: false,
+            confirm_threshold_lots: u64::MAX,
+            autonomous: true,
+            ..Self::default()
         }
     }
 }
@@ -329,6 +349,7 @@ impl Agent {
         let confirm = ConfirmationGate {
             threshold_lots: self.cfg.confirm_threshold_lots,
             confirm_unpriced: self.cfg.confirm_unpriced,
+            pin_stated_figures: !self.cfg.autonomous,
             ttl: self.cfg.confirm_ttl,
         };
         // The user's words, then the service's note on what this turn permits. Both are appended
@@ -532,11 +553,15 @@ impl Agent {
         if carried.is_some() {
             flags.push("permission_carried_over".into());
         }
-        flags.extend(gate::verify(
-            &gate_text,
-            &executed,
-            confirmation_turn || carried.is_some(),
-        ));
+        // A goal run has no request to check the actions against; the grounding check below
+        // still applies to the reply.
+        if !self.cfg.autonomous {
+            flags.extend(gate::verify(
+                &gate_text,
+                &executed,
+                confirmation_turn || carried.is_some(),
+            ));
+        }
         {
             let mut sources: Vec<String> = vec![self.system.clone(), user_text.to_string()];
             sources.extend(session.messages.iter().map(Value::to_string));

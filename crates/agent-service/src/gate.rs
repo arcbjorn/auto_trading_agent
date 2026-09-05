@@ -508,6 +508,10 @@ pub struct ConfirmationGate {
     /// An order whose limit price does not appear in the user's message (the model chose it, as
     /// for "sell now") needs a confirmation turn whatever its size.
     pub confirm_unpriced: bool,
+    /// A message that states two figures states the order: a price not among them is refused
+    /// and a changed quantity goes to confirmation. Off for a goal run, where the message is a
+    /// goal ("2 ETH at or below 3050") and the model chooses each order's price.
+    pub pin_stated_figures: bool,
     pub ttl: Duration,
 }
 
@@ -638,7 +642,8 @@ impl ConfirmationGate {
                 // sell into a buy, or a stated price into another. A quantity the model adjusted
                 // (the wallet holds less than asked) still goes to confirmation, since the user
                 // sees the exact figure before saying yes.
-                if permitted && stated.len() >= 2 && !price_quoted {
+                let pinned = self.pin_stated_figures && stated.len() >= 2;
+                if permitted && pinned && !price_quoted {
                     return Intercept::Reply(json!({
                         "rejected": true,
                         "code": "PRICE_NOT_REQUESTED",
@@ -657,7 +662,7 @@ impl ConfirmationGate {
                 }
                 let reason = if !permitted {
                     "The user's message did not clearly ask to trade."
-                } else if stated.len() >= 2 && !(price_quoted && (qty_quoted || notional_quoted)) {
+                } else if pinned && !(price_quoted && (qty_quoted || notional_quoted)) {
                     // A message that states two figures states the order. An order that keeps one
                     // and changes the other is not what was asked for, whatever the model says;
                     // a hostile scripted model found this gap by keeping the price and shrinking
@@ -936,6 +941,7 @@ mod tests {
         let gate = ConfirmationGate {
             threshold_lots: u64::MAX,
             confirm_unpriced: true,
+            pin_stated_figures: true,
             ttl: std::time::Duration::from_secs(60),
         };
         let mut pending = None;
@@ -1022,6 +1028,7 @@ mod tests {
         let gate = ConfirmationGate {
             threshold_lots: 10_000, // 1 ETH
             confirm_unpriced: true,
+            pin_stated_figures: true,
             ttl: std::time::Duration::from_secs(60),
         };
         // Large order, the user described it and has just confirmed in words: it proceeds.
@@ -1061,6 +1068,7 @@ mod tests {
         let gate = ConfirmationGate {
             threshold_lots: u64::MAX,
             confirm_unpriced: true,
+            pin_stated_figures: true,
             ttl: std::time::Duration::from_secs(60),
         };
         let mut pending = None;
@@ -1257,6 +1265,7 @@ mod tests {
         ConfirmationGate {
             threshold_lots: 10_000,
             confirm_unpriced: true,
+            pin_stated_figures: true,
             ttl: Duration::from_secs(600),
         }
     }

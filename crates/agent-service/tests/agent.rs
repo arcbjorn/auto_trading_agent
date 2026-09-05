@@ -487,6 +487,47 @@ async fn unrequested_action_is_compensated_when_the_gate_is_off() {
     assert_eq!(demo_orders(&mut s.engine, OrderStatus::Cancelled).await.len(), 1);
 }
 
+/// A goal run: the message states figures (2 ETH, 3050.00, 0.5%) but is a goal, not an order.
+/// In autonomous mode the model's own price is neither refused nor confirmed nor compensated;
+/// the same turn under the default configuration is refused as a price the user never stated.
+#[tokio::test]
+async fn a_goal_prompt_lets_the_model_choose_the_price_in_autonomous_mode() {
+    let goal = "Round 1 of 8. Your standing goal: accumulate a total of 2 ETH at or below 3050.00 USDC using limit buy orders, and never bid more than 0.5% above the current best bid. You hold 0.0000 ETH so far. Buy an appropriate amount now with one limit order; otherwise wait.";
+    let responder: Responder = Arc::new(|n, _| match n {
+        1 => tool_use(
+            "place_limit_order",
+            json!({ "side": "buy", "price_usdc": "2999.00", "quantity_eth": "0.5" }),
+        ),
+        _ => end_turn("Bid 0.5 ETH at 2999.00."),
+    });
+    let mut s = stack(Arc::clone(&responder), AgentConfig::autonomous()).await;
+    let turn = s.agent.chat_turn(&mut Session::new("goal"), goal).await.unwrap();
+    assert!(!turn.tool_calls[0].intercepted, "{}", turn.tool_calls[0].result);
+    assert!(
+        !turn.tool_calls[0].result.contains("rejected"),
+        "{}",
+        turn.tool_calls[0].result
+    );
+    assert!(
+        !turn
+            .flags
+            .iter()
+            .any(|f| f.starts_with("compensated") || f.starts_with("params_not_in_request")),
+        "{:?}",
+        turn.flags
+    );
+    assert_eq!(
+        demo_orders(&mut s.engine, OrderStatus::Open).await.len(),
+        1,
+        "the bid rests"
+    );
+
+    let mut s = stack(responder, AgentConfig::default()).await;
+    let turn = s.agent.chat_turn(&mut Session::new("goal"), goal).await.unwrap();
+    assert!(turn.tool_calls[0].intercepted && turn.tool_calls[0].result.contains("PRICE_NOT_REQUESTED"));
+    assert!(demo_orders(&mut s.engine, OrderStatus::Open).await.is_empty());
+}
+
 #[tokio::test]
 async fn refusal_and_iteration_cap_are_handled() {
     let responder: Responder = Arc::new(
