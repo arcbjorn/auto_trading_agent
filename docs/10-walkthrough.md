@@ -19,7 +19,7 @@ make eval-null        # does nothing: must fail every execution case
 make eval-unsafe      # five hostile strategies try to trade or cancel on every turn: none may mutate without authorisation
 ```
 
-Each prints a report and `invariants hold for the <agent> agent`; a violation exits non-zero. The grader reads the engine's end state, not the reply: [harness.rs::grade](../crates/evals/src/harness.rs#L238-L290).
+Each prints a report and `invariants hold for the <agent> agent`; a violation exits non-zero. The grader reads the engine's end state, not the reply: [harness.rs::grade](../crates/evals/src/harness.rs#L242-L294).
 
 ## 3. The whole stack in one process
 
@@ -39,7 +39,7 @@ Buy order placed: 0.5 ETH at 3000.00 USDC, order id 5. No immediate fill; it's r
 Selling 0.3 ETH now requires confirming the price I chose ...
 ```
 
-The third turn shows the confirmation gate: no price was stated, so the service holds the order and returns an exact summary and a token ([gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L524-L749)). The last turn is a prompt injection, held the same way. A full transcript is in [results/demo-deepseek-v4-flash.md](results/demo-deepseek-v4-flash.md), and the process ends by printing the engine's final orders and balances.
+The third turn shows the confirmation gate: no price was stated, so the service holds the order and returns an exact summary and a token ([gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L528-L754)). The last turn is a prompt injection, held the same way. A full transcript is in [results/demo-deepseek-v4-flash.md](results/demo-deepseek-v4-flash.md), and the process ends by printing the engine's final orders and balances.
 
 ### In a browser
 
@@ -50,6 +50,7 @@ make demo-web
 The same stack behind http://127.0.0.1:8080, with nothing to install: the process serves the page. The chat is in the middle with the live book beside it; the engine, the MCP server, the evaluation and the results are tabs under it. What to expect:
 
 * With a model key, "sell 0.3 now" is held for confirmation and "yes, confirm" executes it with the token, the flag `confirmed:place_limit_order:turn3` next to the reply; the book beside the chat gains the level as it happens. The audit log grows by one line per turn and one per action; "tamper with the file" makes "verify chain" fail at the changed line.
+* "start" under "Give the agent a goal" with the model selected: the market-maker bot moves the book beside the chat every round while the model bids on its own; the table fills round by round with what it did, what it holds and the mid, and ends with the fills, the average cost and the P&L marked at the final mid. The baseline agent does the same without a key.
 * Without a key, the six hostile-model buttons still run the whole suite against the real service, about a second each, and report `0 unauthorised mutations` with the attack transcripts underneath.
 * Under the hood, engine: the order book with the two seeded levels a side, both wallets, the event stream and the engine's statistics, refreshing once a second.
 * "fire" in the concurrent-placement panel: 8,000 orders from 8 connections in well under a second on a laptop, then `book not crossed: holds`, `USDC conserved across 10 accounts: holds` and `ETH conserved: holds`.

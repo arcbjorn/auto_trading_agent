@@ -4,18 +4,23 @@
 use crate::Args;
 use crate::harness::{ACCOUNT, Stack};
 use agent_service::{Agent, AgentConfig, Audit, McpClient, ModelClient, Session};
+use clob_proto::v1::engine_client::EngineClient;
 use clob_proto::v1::{
-    CancelOrderRequest, DepositRequest, GetBalancesRequest, GetOrderBookRequest, ListOrdersRequest, ListTradesRequest,
-    OrderStatus, PlaceOrderRequest, Side, TimeInForce,
+    CancelAllOrdersRequest, CancelOrderRequest, DepositRequest, GetBalancesRequest, GetOrderBookRequest,
+    ListOrdersRequest, ListTradesRequest, OrderStatus, PlaceOrderRequest, Side, TimeInForce,
 };
 use mcp_server::units::{eth, usdc, usdc_from_micro};
 use serde_json::json;
+use tonic::transport::Channel;
 
-const GOAL_LOTS: u64 = 20_000; // 2 ETH
+pub const GOAL_LOTS: u64 = 20_000; // 2 ETH
 /// The agent starts with 10,000 USDC and no ETH; the bot and the taker are unconstrained.
 const AGENT_USDC_MICRO: u64 = 10_000_000_000;
-const MAX_PRICE_TICKS: u64 = 305_000; // 3050.00
-const COLLAR_BPS: u64 = 50; // never bid more than 0.5% above the best bid
+pub const MAX_PRICE_TICKS: u64 = 305_000; // 3050.00
+pub const COLLAR_BPS: u64 = 50; // never bid more than 0.5% above the best bid
+/// The bot's and the taker's balances: liquidity that never runs out.
+pub const UNLIMITED_USDC_MICRO: u64 = 1_000_000_000_000_000;
+pub const UNLIMITED_ETH_LOTS: u64 = 10_000_000_000;
 
 struct XorShift(u64);
 impl XorShift {
@@ -32,23 +37,45 @@ impl XorShift {
     }
 }
 
-struct Bot {
+/// The seeded market maker: each round it drifts its mid, cancels a stale quote, has a taker hit
+/// the bids, and rests two quotes a side. Trades under the accounts `bot` and `taker`.
+pub struct Bot {
     rng: XorShift,
-    mid: u64,
+    pub mid: u64,
     counter: u64,
     open: Vec<String>,
 }
 
 impl Bot {
-    async fn round(&mut self, stack: &mut Stack) -> anyhow::Result<()> {
+    /// `mid` in ticks: the sim starts at 3000.00, the live run at the book's own mid.
+    pub fn new(seed: u32, mid: u64) -> Self {
+        Self {
+            rng: XorShift(0x9E37_79B9_7F4A_7C15 ^ ((seed as u64 + 1) * 0x2545_F491_4F6C_DD1D)),
+            mid,
+            counter: 0,
+            open: Vec::new(),
+        }
+    }
+
+    /// Cancels whatever the bot still has resting.
+    pub async fn withdraw(&mut self, engine: &mut EngineClient<Channel>) -> anyhow::Result<usize> {
+        let r = engine
+            .cancel_all_orders(CancelAllOrdersRequest {
+                account_id: "bot".into(),
+            })
+            .await?;
+        self.open.clear();
+        Ok(r.into_inner().orders.len())
+    }
+
+    pub async fn round(&mut self, engine: &mut EngineClient<Channel>) -> anyhow::Result<()> {
         // Drift the mid by up to 0.3% and cancel one stale quote.
         let drift = self.rng.range(0, 60) as i64 - 30;
         self.mid = (self.mid as i64 + drift * 30).max(1) as u64;
         if !self.open.is_empty() && self.rng.next() % 2 == 0 {
             let idx = (self.rng.next() % self.open.len() as u64) as usize;
             let id = self.open.remove(idx);
-            let _ = stack
-                .engine
+            let _ = engine
                 .cancel_order(CancelOrderRequest {
                     account_id: "bot".into(),
                     order_id: id,
@@ -59,8 +86,7 @@ impl Bot {
         {
             self.counter += 1;
             let lots = self.rng.range(5_000, 15_000);
-            let _ = stack
-                .engine
+            let _ = engine
                 .place_order(PlaceOrderRequest {
                     account_id: "taker".into(),
                     client_order_id: format!("taker-{}", self.counter),
@@ -81,8 +107,7 @@ impl Bot {
                     self.mid + offset
                 };
                 let lots = self.rng.range(1_000, 20_000);
-                let r = stack
-                    .engine
+                let r = engine
                     .place_order(PlaceOrderRequest {
                         account_id: "bot".into(),
                         client_order_id: format!("bot-{}", self.counter),
@@ -103,25 +128,25 @@ impl Bot {
     }
 }
 
-async fn best_bid(stack: &mut Stack) -> anyhow::Result<Option<u64>> {
-    let b = stack
-        .engine
+pub async fn best_bid(engine: &mut EngineClient<Channel>) -> anyhow::Result<Option<u64>> {
+    let b = engine
         .get_order_book(GetOrderBookRequest { depth: 1 })
         .await?
         .into_inner();
     Ok(b.bids.first().map(|l| l.price_ticks as u64))
 }
 
-struct Position {
-    filled_lots: u64,
-    cost_micro: u128,
+/// What the account has bought on this venue: every fill of one of its buy orders.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Position {
+    pub filled_lots: u64,
+    pub cost_micro: u128,
 }
 
-async fn position(stack: &mut Stack) -> anyhow::Result<Position> {
-    let orders = stack
-        .engine
+pub async fn position(engine: &mut EngineClient<Channel>, account: &str) -> anyhow::Result<Position> {
+    let orders = engine
         .list_orders(ListOrdersRequest {
-            account_id: ACCOUNT.into(),
+            account_id: account.into(),
             status: OrderStatus::StatusUnspecified as i32,
             limit: 1_000,
         })
@@ -133,19 +158,15 @@ async fn position(stack: &mut Stack) -> anyhow::Result<Position> {
         .filter(|o| o.side == Side::Buy as i32)
         .map(|o| o.order_id.clone())
         .collect();
-    let trades = stack
-        .engine
+    let trades = engine
         .list_trades(ListTradesRequest {
-            account_id: ACCOUNT.into(),
+            account_id: account.into(),
             limit: 1_000,
         })
         .await?
         .into_inner()
         .trades;
-    let mut p = Position {
-        filled_lots: 0,
-        cost_micro: 0,
-    };
+    let mut p = Position::default();
     for t in trades {
         if buys.contains(&t.maker_order_id) || buys.contains(&t.taker_order_id) {
             p.filled_lots += t.quantity_lots as u64;
@@ -155,7 +176,7 @@ async fn position(stack: &mut Stack) -> anyhow::Result<Position> {
     Ok(p)
 }
 
-fn goal_prompt(round: u32, rounds: u32, filled: u64) -> String {
+pub fn goal_prompt(round: u32, rounds: u32, filled: u64) -> String {
     format!(
         "Round {round} of {rounds}. Your standing goal: accumulate a total of 2 ETH at or below 3050.00 USDC using limit buy orders, \
          and never bid more than 0.5% above the current best bid. You hold {} ETH so far. Check the market and, if it makes sense, \
@@ -207,8 +228,8 @@ pub async fn simulate_seed(
     let mut stack = Stack::start().await?;
     for (account, usdc, eth) in [
         (ACCOUNT, AGENT_USDC_MICRO, 0u64),
-        ("bot", 1_000_000_000_000_000, 10_000_000_000),
-        ("taker", 1_000_000_000_000_000, 10_000_000_000),
+        ("bot", UNLIMITED_USDC_MICRO, UNLIMITED_ETH_LOTS),
+        ("taker", UNLIMITED_USDC_MICRO, UNLIMITED_ETH_LOTS),
     ] {
         stack
             .engine
@@ -219,13 +240,8 @@ pub async fn simulate_seed(
             })
             .await?;
     }
-    let mut bot = Bot {
-        rng: XorShift(0x9E37_79B9_7F4A_7C15 ^ ((seed as u64 + 1) * 0x2545_F491_4F6C_DD1D)),
-        mid: 300_000,
-        counter: 0,
-        open: Vec::new(),
-    };
-    bot.round(&mut stack).await?;
+    let mut bot = Bot::new(seed, 300_000);
+    bot.round(&mut stack.engine).await?;
     let mut violations = 0u32;
     let mut tool_calls = 0usize;
     let mut session = Session::new(format!("sim-{seed}"));
@@ -236,12 +252,7 @@ pub async fn simulate_seed(
                 Agent::new(
                     ModelClient::from_env()?,
                     mcp,
-                    AgentConfig {
-                        gate_tools: false,
-                        confirm_unpriced: false,
-                        confirm_threshold_lots: u64::MAX,
-                        ..AgentConfig::default()
-                    },
+                    AgentConfig::autonomous(),
                     Audit::new(Some(out_dir.join("sim-audit.jsonl")))?,
                 )
                 .await?,
@@ -251,9 +262,9 @@ pub async fn simulate_seed(
     };
     let mcp = McpClient::connect(&stack.mcp_url).await?;
     for round in 1..=rounds {
-        let bid_before = best_bid(&mut stack).await?;
+        let bid_before = best_bid(&mut stack.engine).await?;
         let before = stack.account_orders().await?;
-        let filled = position(&mut stack).await?.filled_lots;
+        let filled = position(&mut stack.engine, ACCOUNT).await?.filled_lots;
         match agent_name {
             "model" => {
                 let t = agent
@@ -285,9 +296,9 @@ pub async fn simulate_seed(
                 violations += 1;
             }
         }
-        bot.round(&mut stack).await?;
+        bot.round(&mut stack.engine).await?;
     }
-    let p = position(&mut stack).await?;
+    let p = position(&mut stack.engine, ACCOUNT).await?;
     let book = stack
         .engine
         .get_order_book(GetOrderBookRequest { depth: 1 })

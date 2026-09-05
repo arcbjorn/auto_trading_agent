@@ -23,6 +23,7 @@ type Html = Response<Full<Bytes>>;
 pub enum Output {
     Cases(Vec<Row>),
     Sim(Vec<SimRow>),
+    Live(super::live::Live),
 }
 
 /// One background run and everything the page shows about it.
@@ -36,8 +37,8 @@ pub struct Job {
     pub errors: Mutex<Vec<String>>,
     pub started: Instant,
     pub finished: Mutex<Option<Duration>>,
-    /// The CI invariants for this agent, judged when the run completes.
-    pub verdict: Mutex<Option<Result<(), String>>>,
+    /// The verdict when the run completes: what held, or what broke.
+    pub verdict: Mutex<Option<Result<String, String>>>,
     /// `(suite, case id)` in run order, so pending cases show in the grid before they finish.
     pub case_ids: Vec<(String, String)>,
     /// Verdict and transcripts first, the case grid behind a toggle: for the hostile-model panel.
@@ -46,7 +47,7 @@ pub struct Job {
 
 const KEPT_JOBS: usize = 20;
 
-fn register(app: &App, job: Arc<Job>) {
+pub fn register(app: &App, job: Arc<Job>) {
     let mut jobs = app.jobs.lock().expect("jobs lock");
     if jobs.len() >= KEPT_JOBS {
         let oldest = jobs.iter().min_by_key(|(_, j)| j.started).map(|(id, _)| id.clone());
@@ -57,7 +58,7 @@ fn register(app: &App, job: Arc<Job>) {
     jobs.insert(job.id.clone(), job);
 }
 
-fn new_id(app: &App) -> String {
+pub fn new_id(app: &App) -> String {
     format!("j{}", app.job_seq.fetch_add(1, Ordering::Relaxed) + 1)
 }
 
@@ -97,7 +98,7 @@ pub fn hostile_panel() -> String {
         })
         .collect();
     format!(
-        r##"<div class="panel" style="margin-top:1.1rem"><h3>Hostile models against the gate <span class="right muted">the real service driven by a scripted attacker over the whole suite; no key needed</span></h3>
+        r##"<div class="panel"><h3>Hostile models against the gate <span class="right muted">the real service driven by a scripted attacker over the whole suite; no key needed</span></h3>
 <div class="group"><span class="lbl">attack</span>{buttons}<span class="muted small" style="margin-left:.5rem">each runs all 57 cases, a fresh engine per case; CI requires zero unauthorised mutations for every strategy</span></div>
 <details><summary>what each strategy does</summary><ul class="list small">{notes}</ul></details>
 <div id="hostile-result" style="margin-top:.6rem"></div>
@@ -255,10 +256,10 @@ pub async fn run(app: &Arc<App>, form: &HashMap<String, String>) -> anyhow::Resu
         let verdict = {
             let errors = worker.errors.lock().expect("errors lock").len();
             match &*worker.output.lock().expect("output lock") {
-                Output::Cases(rows) => {
-                    harness::check_invariants(&worker.agent, rows, errors).map_err(|e| e.to_string())
-                }
-                Output::Sim(_) => Ok(()),
+                Output::Cases(rows) => harness::check_invariants(&worker.agent, rows, errors)
+                    .map(|()| format!("invariants hold for the {} agent", worker.agent))
+                    .map_err(|e| e.to_string()),
+                _ => Ok(String::new()),
             }
         };
         *worker.verdict.lock().expect("verdict lock") = Some(verdict);
@@ -314,12 +315,12 @@ pub async fn simulate(app: &Arc<App>, form: &HashMap<String, String>) -> anyhow:
             Output::Sim(rows) => {
                 let violations: u32 = rows.iter().map(|r| r.violations).sum();
                 if violations == 0 {
-                    Ok(())
+                    Ok(format!("no rule violations across {} seeds", rows.len()))
                 } else {
                     Err(format!("{violations} rule violations"))
                 }
             }
-            Output::Cases(_) => Ok(()),
+            _ => Ok(String::new()),
         };
         *worker.verdict.lock().expect("verdict lock") = Some(verdict);
         *worker.finished.lock().expect("finished lock") = Some(worker.started.elapsed());
@@ -334,7 +335,7 @@ pub fn job(app: &App, id: &str) -> Html {
     }
 }
 
-fn job_fragment(job: &Job) -> Html {
+pub fn job_fragment(job: &Job) -> Html {
     let done = job.done.load(Ordering::Relaxed);
     let finished = *job.finished.lock().expect("finished lock");
     let elapsed = finished.unwrap_or_else(|| job.started.elapsed());
@@ -354,10 +355,20 @@ fn job_fragment(job: &Job) -> Html {
         elapsed.as_secs_f64(),
         if finished.is_some() { "" } else { ", running" }
     ));
-    match &*job.output.lock().expect("output lock") {
-        Output::Cases(rows) => out.push_str(&cases_body(job, rows, finished.is_some())),
-        Output::Sim(rows) => out.push_str(&sim_body(job, rows)),
-    }
+    let live = match &*job.output.lock().expect("output lock") {
+        Output::Cases(rows) => {
+            out.push_str(&cases_body(job, rows, finished.is_some()));
+            false
+        }
+        Output::Sim(rows) => {
+            out.push_str(&sim_body(job, rows));
+            false
+        }
+        Output::Live(l) => {
+            out.push_str(&super::live::body(job, l));
+            true
+        }
+    };
     let errors = job.errors.lock().expect("errors lock");
     if !errors.is_empty() {
         out.push_str(&format!(
@@ -373,13 +384,18 @@ fn job_fragment(job: &Job) -> Html {
         out.push_str(&format!(
             "<p>{}</p>",
             match verdict {
-                Ok(()) => chip("ok", &format!("invariants hold for the {} agent", job.agent)),
-                Err(e) => chip("bad", &format!("invariants VIOLATED: {e}")),
+                Ok(msg) => chip("ok", msg),
+                Err(e) => chip("bad", &format!("VIOLATED: {e}")),
             }
         ));
     }
     out.push_str("</div>");
-    html::html(out)
+    // A live run moves the book; the engine panels follow every poll of its fragment.
+    if live {
+        html::html_trigger(out, "engine")
+    } else {
+        html::html(out)
+    }
 }
 
 fn cases_body(job: &Job, rows: &[Row], finished: bool) -> String {

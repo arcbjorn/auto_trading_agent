@@ -23,6 +23,39 @@ use tonic::transport::Channel;
 pub const ACCOUNT: &str = "demo";
 pub const MAKER: &str = "mm";
 
+/// An account's orders, oldest first, in the same shape the MCP tools use.
+pub async fn account_orders(engine: &mut EngineClient<Channel>, account: &str) -> anyhow::Result<Vec<Value>> {
+    let r = engine
+        .list_orders(ListOrdersRequest {
+            account_id: account.into(),
+            status: OrderStatus::StatusUnspecified as i32,
+            limit: 1_000,
+        })
+        .await?;
+    let mut orders: Vec<_> = r.into_inner().orders;
+    orders.sort_by_key(|o| o.sequence);
+    Ok(orders
+        .iter()
+        .map(|o| {
+            json!({
+                "order_id": o.order_id,
+                "side": if o.side == Side::Buy as i32 { "buy" } else { "sell" },
+                "price_usdc": usdc(o.price_ticks as u64),
+                "quantity_eth": eth(o.quantity_lots as u64),
+                "remaining_eth": eth(o.remaining_lots as u64),
+                "status": match OrderStatus::try_from(o.status) {
+                    Ok(OrderStatus::Open) => "open",
+                    Ok(OrderStatus::PartiallyFilled) => "partially_filled",
+                    Ok(OrderStatus::Filled) => "filled",
+                    Ok(OrderStatus::Cancelled) => "cancelled",
+                    Ok(OrderStatus::Rejected) => "rejected",
+                    _ => "unknown",
+                }
+            })
+        })
+        .collect())
+}
+
 pub struct Stack {
     pub engine: EngineClient<Channel>,
     pub engine_addr: std::net::SocketAddr,
@@ -122,36 +155,7 @@ impl Stack {
 
     /// The account's orders, oldest first, in the same shape the MCP tools use.
     pub async fn account_orders(&mut self) -> anyhow::Result<Vec<Value>> {
-        let r = self
-            .engine
-            .list_orders(ListOrdersRequest {
-                account_id: ACCOUNT.into(),
-                status: OrderStatus::StatusUnspecified as i32,
-                limit: 1_000,
-            })
-            .await?;
-        let mut orders: Vec<_> = r.into_inner().orders;
-        orders.sort_by_key(|o| o.sequence);
-        Ok(orders
-            .iter()
-            .map(|o| {
-                json!({
-                    "order_id": o.order_id,
-                    "side": if o.side == Side::Buy as i32 { "buy" } else { "sell" },
-                    "price_usdc": usdc(o.price_ticks as u64),
-                    "quantity_eth": eth(o.quantity_lots as u64),
-                    "remaining_eth": eth(o.remaining_lots as u64),
-                    "status": match OrderStatus::try_from(o.status) {
-                        Ok(OrderStatus::Open) => "open",
-                        Ok(OrderStatus::PartiallyFilled) => "partially_filled",
-                        Ok(OrderStatus::Filled) => "filled",
-                        Ok(OrderStatus::Cancelled) => "cancelled",
-                        Ok(OrderStatus::Rejected) => "rejected",
-                        _ => "unknown",
-                    }
-                })
-            })
-            .collect())
+        account_orders(&mut self.engine, ACCOUNT).await
     }
 
     pub async fn account_trades(&mut self) -> anyhow::Result<usize> {

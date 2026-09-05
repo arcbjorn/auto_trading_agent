@@ -28,19 +28,19 @@ Each requirement of the task, the code that implements it and the test or run th
 
 | Requirement | Code | Proof |
 |---|---|---|
-| Execute a trade | [agent.rs::Agent::chat_turn](../crates/agent-service/src/agent.rs#L298-L603) | [agent.rs::explicit_buy_places_an_order_with_an_idempotency_key](../crates/agent-service/tests/agent.rs#L267-L294) |
+| Execute a trade | [agent.rs::Agent::chat_turn](../crates/agent-service/src/agent.rs#L318-L628) | [agent.rs::explicit_buy_places_an_order_with_an_idempotency_key](../crates/agent-service/tests/agent.rs#L267-L294) |
 | Return pricing | [gate.rs::Permissions::for_turn](../crates/agent-service/src/gate.rs#L424-L436) | [agent.rs::read_only_question_permits_no_action_tools](../crates/agent-service/tests/agent.rs#L203-L264) |
 | Retrieve order history | [tools.rs::ToolSet::statement](../crates/mcp-server/src/tools.rs#L794-L838) | [book.rs::ledger_tracks_average_cost_realised_pnl_and_withdrawals](../crates/engine/src/book.rs#L1845-L1903) |
 | Guardrails: validation | [units.rs::parse_price](../crates/mcp-server/src/units.rs#L71-L73), [book.rs::MAX_PRICE](../crates/engine/src/book.rs#L34-L34) | [book.rs::hard_caps_reject_absurd_orders_before_anything_else](../crates/engine/src/book.rs#L1923-L1937) |
-| Guardrails: risk checks | [policy.rs::Policy::check_place](../crates/mcp-server/src/policy.rs#L143-L159), [gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L524-L749) | [agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L297-L359) |
-| Guardrails: prompt protections | [gate.rs::verify](../crates/agent-service/src/gate.rs#L779-L805), [audit.rs::Audit::append](../crates/agent-service/src/audit.rs#L124-L138) | [agent.rs::an_action_is_refused_when_its_audit_record_cannot_be_written](../crates/agent-service/tests/agent.rs#L764-L793) |
+| Guardrails: risk checks | [policy.rs::Policy::check_place](../crates/mcp-server/src/policy.rs#L143-L159), [gate.rs::ConfirmationGate::intercept](../crates/agent-service/src/gate.rs#L528-L754) | [agent.rs::large_order_needs_confirmation_then_executes](../crates/agent-service/tests/agent.rs#L297-L359) |
+| Guardrails: prompt protections | [gate.rs::verify](../crates/agent-service/src/gate.rs#L784-L810), [audit.rs::Audit::append](../crates/agent-service/src/audit.rs#L124-L138) | [agent.rs::an_action_is_refused_when_its_audit_record_cannot_be_written](../crates/agent-service/tests/agent.rs#L805-L834) |
 
 **4. LLM Evaluation**
 
 | Dimension | Code | Proof |
 |---|---|---|
-| Trade execution accuracy | [harness.rs::grade](../crates/evals/src/harness.rs#L238-L290) | [harness.rs::check_invariants](../crates/evals/src/harness.rs#L443-L486) in CI |
+| Trade execution accuracy | [harness.rs::grade](../crates/evals/src/harness.rs#L242-L294) | [harness.rs::check_invariants](../crates/evals/src/harness.rs#L447-L490) in CI |
 | Latency | [report.rs::render](../crates/evals/src/report.rs#L58-L214) | [docs/results](results) |
 | Safety, guardrail effectiveness | [model.rs::UnsafeModel](../crates/agent-service/src/model.rs#L68-L71) | `make eval-unsafe` in CI |
 | Prompt robustness | [perturb.rs::apply](../crates/evals/src/perturb.rs#L39-L52) | `make eval-perturbed` |
-| Simulation-based testing | [sim.rs::run](../crates/evals/src/sim.rs#L335-L349) | `make sim` |
+| Simulation-based testing | [sim.rs::run](../crates/evals/src/sim.rs#L346-L360) | `make sim` |

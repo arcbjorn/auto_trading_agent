@@ -44,7 +44,7 @@ pub fn audit_path(app: &App) -> PathBuf {
 
 /// The cockpit: the chat, with the things a message changes beside it, and the hostile-model
 /// panel under it. Shown on every view; the tabs below it are the parts under the hood.
-pub fn home(app: &App, session_id: &str, hostile: &str) -> String {
+pub fn home(app: &App, session_id: &str, hostile: &str, live: &str) -> String {
     let (notice, disabled) = match &app.model {
         Ok(model) => (
             format!(
@@ -102,7 +102,7 @@ pub fn home(app: &App, session_id: &str, hostile: &str) -> String {
     </div>
   </div>
 </div>
-{hostile}"##,
+<div class="cols even" style="margin-top:1.1rem">{live}{hostile}</div>"##,
         sid = esc(session_id),
         story = buttons(0..7),
         gate = buttons(7..CANNED.len()),

@@ -12,6 +12,7 @@ mod chat;
 mod engine;
 mod evals;
 mod html;
+mod live;
 mod markdown;
 mod mcp;
 mod results;
@@ -55,6 +56,8 @@ pub struct App {
     /// The model's description, or the reason chat is off.
     pub model: Result<String, String>,
     pub http: reqwest::Client,
+    /// The audit chain the chat writes to; a goal run's agent shares it.
+    pub audit: Audit,
     pub out_dir: PathBuf,
     pub cases_dir: PathBuf,
     pub results_dir: PathBuf,
@@ -119,6 +122,7 @@ pub async fn boot_with(model: Result<ModelClient, String>, dirs: Dirs<'_>) -> an
     // One chain per run, so the verify button always judges what this process wrote.
     let audit_path = out_dir.join("web-audit.jsonl");
     let _ = std::fs::remove_file(&audit_path);
+    let audit = Audit::new(Some(audit_path))?;
     let (agent_url, model, agent) = match model {
         Ok(model) => {
             let describe = model.describe();
@@ -126,8 +130,7 @@ pub async fn boot_with(model: Result<ModelClient, String>, dirs: Dirs<'_>) -> an
                 note_channel: NoteChannel::for_model(model.model_id()),
                 ..AgentConfig::default()
             };
-            let audit = Audit::new(Some(audit_path))?;
-            let agent = Agent::new(model, McpClient::connect(&stack.mcp_url).await?, cfg, audit).await?;
+            let agent = Agent::new(model, McpClient::connect(&stack.mcp_url).await?, cfg, audit.clone()).await?;
             let state = Arc::new(agent_service::http::State::new(agent));
             let (addr, handle) = agent_service::http::serve("127.0.0.1:0".parse()?, state).await?;
             (Some(format!("http://{addr}")), Ok(describe), Some(handle))
@@ -145,6 +148,7 @@ pub async fn boot_with(model: Result<ModelClient, String>, dirs: Dirs<'_>) -> an
         http: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(180))
             .build()?,
+        audit,
         out_dir: out_dir.to_path_buf(),
         cases_dir: cases_dir.to_path_buf(),
         results_dir: results_dir.to_path_buf(),
@@ -287,6 +291,7 @@ async fn route(
         (Method::POST, "/ui/evals/sim") => evals::simulate(app, form).await?,
         (Method::GET, p) if p.starts_with("/ui/evals/job/") => evals::job(app, p.trim_start_matches("/ui/evals/job/")),
         (Method::POST, "/ui/evals/perturb") => evals::perturb(app, form)?,
+        (Method::POST, "/ui/live/run") => live::run(app, form).await?,
         (Method::GET, p) if p.starts_with("/ui/results/") => results::report(app, p.trim_start_matches("/ui/results/")),
         _ => html::not_found(),
     })
@@ -315,7 +320,7 @@ fn page(app: &App) -> String {
             .map(|d| d.as_millis())
             .unwrap_or(0)
     );
-    let home = chat::home(app, &session_id, &evals::hostile_panel());
+    let home = chat::home(app, &session_id, &evals::hostile_panel(), &live::panel(app));
     let sections = format!(
         "{}{}{}{}",
         engine::section(),
@@ -568,6 +573,26 @@ mod tests {
             "{perturbed}"
         );
         assert!(page.contains("id=\"tab-evals\"") && page.contains("hostile-result"));
+        // A goal run on the live book: the baseline bids, the bot moves the book, the wallet is
+        // re-read, and afterwards USDC and ETH are still conserved across the bot and the taker.
+        let started = post("/ui/live/run", "agent=baseline&rounds=3&pace=0")
+            .await
+            .text()
+            .await
+            .unwrap();
+        assert!(started.contains("goal run, baseline agent"), "{started}");
+        let live = wait_for_job(&http, &base, &started).await;
+        assert!(
+            live.contains("bid 0.5 ETH at") && live.contains("marked at the final mid"),
+            "{live}"
+        );
+        assert!(live.contains("no rule breaks"), "{live}");
+        assert!(page.contains("Give the agent a goal"));
+        let load = post("/ui/engine/load", "clients=2&per=20").await.text().await.unwrap();
+        assert!(
+            load.contains("USDC conserved across 8 accounts: holds") && load.contains("ETH conserved: holds"),
+            "{load}"
+        );
         // Results: the stored reports render as HTML; the index first, paths stay inside the directory.
         let index = get("/ui/results/README.md").await;
         assert!(index.contains("<table") && index.contains("class=\"md\""), "{index}");
