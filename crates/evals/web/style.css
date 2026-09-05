@@ -92,7 +92,7 @@ button.on { color: var(--bg); background: var(--fg); border-color: transparent; 
 .ticker .wallet { margin-left: auto; }
 
 /* Explanations: hidden until asked for, one panel at a time or all at once. */
-.about { display: none; margin: 0 0 var(--s3); color: var(--muted); font-size: var(--t1); max-width: 92ch; }
+.about { display: none; margin: 0 0 var(--s3); color: var(--muted); font-size: var(--t1); }
 .about code { color: var(--fg); }
 .panel.about-open > .about, body.explain .about, section.about-open > .about { display: block; }
 .about-toggle { border: 1px solid var(--line); color: var(--muted); background: transparent; border-radius: 50%; width: 18px; height: 18px; padding: 0; line-height: 16px; font-size: 11px; text-align: center; cursor: pointer; }
@@ -113,7 +113,7 @@ nav.tabs button.active { color: var(--fg); font-weight: 600; }
 section.tab { padding: 0 0 var(--s5); }
 section.tab > h2 { margin: 0 0 var(--s1); color: var(--title); font-size: var(--t3); font-weight: 600; display: flex; align-items: center; gap: var(--s3); }
 section.tab > h2 small { color: var(--muted); font-weight: 400; font-size: var(--t0); }
-.lead { margin: 0 0 var(--s4); color: var(--muted); max-width: 92ch; }
+.lead { margin: 0 0 var(--s4); color: var(--muted); }
 .lead.home { margin-top: 0; }
 
 /* Vertical rhythm: inside a flow container, siblings are one step apart and nothing carries its
