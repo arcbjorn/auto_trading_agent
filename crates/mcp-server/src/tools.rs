@@ -63,6 +63,8 @@ pub struct ToolSet {
     engine: EngineClient<Channel>,
     account: String,
     policy: Arc<Policy>,
+    /// Serialize placements through this account boundary, including policy checks and retries.
+    placements: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Accepts a JSON string or number for decimal fields, so a model that sends `3000.5` instead of
@@ -262,6 +264,7 @@ impl ToolSet {
             engine,
             account,
             policy,
+            placements: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -636,6 +639,7 @@ impl ToolSet {
     }
 
     async fn place(&self, args: &Value) -> ToolOutput {
+        let _placement = self.placements.lock().await;
         let a: PlaceArgs = match parse_args(args) {
             Ok(a) => a,
             Err(e) => return e,
@@ -699,8 +703,20 @@ impl ToolSet {
         let resp = match self.engine.clone().place_order(req).await {
             Ok(r) => r.into_inner(),
             Err(s) => {
-                // The engine took nothing, so the session cap must not count it.
-                self.policy.release(&self.account, price, qty);
+                // A deadline, disconnect or internal failure may follow execution. Keep its
+                // reservation until reconciled; only definitive rejection releases cap room.
+                if matches!(
+                    s.code(),
+                    tonic::Code::InvalidArgument
+                        | tonic::Code::FailedPrecondition
+                        | tonic::Code::PermissionDenied
+                        | tonic::Code::Unauthenticated
+                        | tonic::Code::AlreadyExists
+                        | tonic::Code::NotFound
+                        | tonic::Code::ResourceExhausted
+                ) {
+                    self.policy.release(&self.account, price, qty);
+                }
                 return grpc_error(s);
             }
         };

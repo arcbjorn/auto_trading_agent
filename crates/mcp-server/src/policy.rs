@@ -192,8 +192,8 @@ impl Policy {
             ));
         }
         if let Some(reference) = reference_ticks {
-            let deviation_bps = price_ticks.abs_diff(reference) * 10_000 / reference.max(1);
-            if deviation_bps > self.cfg.collar_bps {
+            let deviation_bps = u128::from(price_ticks.abs_diff(reference)) * 10_000 / u128::from(reference.max(1));
+            if deviation_bps > u128::from(self.cfg.collar_bps) {
                 return Err(Rejection::new(
                     "PRICE_COLLAR",
                     format!(
@@ -217,7 +217,12 @@ impl Policy {
         }
         let mut accounts = self.accounts.lock().expect("policy lock");
         let state = accounts.entry(account.to_string()).or_default();
-        if state.notional_used_micro + notional > self.cfg.session_notional_cap_micro {
+        if notional
+            > self
+                .cfg
+                .session_notional_cap_micro
+                .saturating_sub(state.notional_used_micro)
+        {
             return Err(Rejection::new(
                 "SESSION_CAP",
                 format!(
@@ -252,7 +257,7 @@ impl Policy {
 /// with no trade yet, where no reference exists and the collar cannot apply.
 pub fn reference_price(best_bid: Option<u64>, best_ask: Option<u64>, last_trade: Option<u64>) -> Option<u64> {
     match (best_bid, best_ask) {
-        (Some(b), Some(a)) => Some((b + a) / 2),
+        (Some(b), Some(a)) => Some(b / 2 + a / 2 + (b % 2 + a % 2) / 2),
         _ => last_trade.or(best_bid).or(best_ask),
     }
 }
@@ -266,6 +271,26 @@ mod tests {
             actions_per_minute: 3,
             ..PolicyConfig::default()
         })
+    }
+
+    #[test]
+    fn wide_values_do_not_wrap_the_collar_or_session_cap() {
+        let p = Policy::new(PolicyConfig {
+            max_order_lots: u64::MAX,
+            max_order_notional_micro: u128::MAX,
+            session_notional_cap_micro: u128::MAX,
+            ..PolicyConfig::default()
+        });
+        assert_eq!(
+            p.check_place("a", u64::MAX, 1, Some(1), 0).unwrap_err().code,
+            "PRICE_COLLAR"
+        );
+        assert!(p.check_place("b", u64::MAX, u64::MAX, None, 0).is_ok());
+        assert_eq!(
+            p.check_place("b", u64::MAX, u64::MAX, None, 0).unwrap_err().code,
+            "SESSION_CAP"
+        );
+        assert_eq!(reference_price(Some(u64::MAX), Some(u64::MAX), None), Some(u64::MAX));
     }
 
     #[test]

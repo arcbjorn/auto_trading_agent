@@ -86,8 +86,8 @@ pub fn eth(lots: u64) -> String {
 
 /// Notional in micro-USDC (ticks * lots) formatted as USDC with 2 decimals, rounded half up.
 pub fn usdc_from_micro(micro: u128) -> String {
-    let cents = (micro + 5_000) / 10_000;
-    format_fixed(u64::try_from(cents).unwrap_or(u64::MAX), PRICE_DECIMALS)
+    let cents = micro / 10_000 + u128::from(micro % 10_000 >= 5_000);
+    format!("{}.{:02}", cents / 100, cents % 100)
 }
 
 /// A signed amount in micro-USDC as USDC with 2 decimals, rounded half up away from zero.
@@ -102,11 +102,12 @@ pub fn signed_usdc_from_micro(micro: i128) -> String {
 
 /// Midpoint of two prices in ticks, shown with 3 decimals only when the sum is odd.
 pub fn mid(bid: u64, ask: u64) -> String {
-    let sum = bid + ask;
+    let sum = u128::from(bid) + u128::from(ask);
     if sum % 2 == 0 {
-        usdc(sum / 2)
+        usdc(u64::try_from(sum / 2).expect("average of two u64 prices"))
     } else {
-        format_fixed(sum * 5, PRICE_DECIMALS + 1)
+        let mills = sum * 5;
+        format!("{}.{:03}", mills / 1000, mills % 1000)
     }
 }
 
@@ -116,12 +117,22 @@ pub fn average_price(notional_micro: u128, lots: u64) -> Option<u64> {
         return None;
     }
     // The average of values the engine capped: it cannot exceed a single price.
-    u64::try_from((notional_micro + u128::from(lots) / 2) / u128::from(lots)).ok()
+    let lots = u128::from(lots);
+    let rounded = notional_micro / lots + u128::from(notional_micro % lots >= lots.div_ceil(2));
+    u64::try_from(rounded).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formatting_large_notionals_does_not_overflow_or_saturate() {
+        assert_eq!(usdc_from_micro(u128::MAX), "340282366920938463463374607431768.21");
+        assert_eq!(average_price(u128::MAX, u64::MAX), None);
+        assert_eq!(mid(u64::MAX, u64::MAX), "184467440737095516.15");
+        assert_eq!(mid(u64::MAX, u64::MAX - 1), "184467440737095516.145");
+    }
 
     #[test]
     fn parses_prices_and_quantities_exactly() {

@@ -237,8 +237,16 @@ async fn an_exact_retry_is_replayed_without_paying_policy_twice() {
     }));
     let server = McpServer::new(ToolSet::new(engine, "demo".into(), policy));
     let args = json!({ "side": "buy", "price_usdc": "2990.00", "quantity_eth": "1", "client_order_id": "retry-me" });
-    let first = call(&server, 1, "place_limit_order", args.clone()).await;
+    let (first, concurrent) = tokio::join!(
+        call(&server, 1, "place_limit_order", args.clone()),
+        call(&server, 2, "place_limit_order", args.clone())
+    );
     assert_eq!(first["structuredContent"]["rejected"], Value::Null, "{first}");
+    assert_eq!(concurrent["structuredContent"]["rejected"], Value::Null, "{concurrent}");
+    assert_eq!(
+        concurrent["structuredContent"]["order_id"],
+        first["structuredContent"]["order_id"]
+    );
     let order_id = first["structuredContent"]["order_id"].clone();
     // The cap is now spent: a different order is refused.
     let other = call(
