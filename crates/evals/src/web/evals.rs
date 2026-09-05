@@ -294,7 +294,7 @@ pub async fn simulate(app: &Arc<App>, form: &HashMap<String, String>) -> anyhow:
     let agent = form.get("agent").map(|s| s.trim()).unwrap_or("baseline").to_string();
     let seeds = number(form, "seeds", 5, 20);
     let rounds = number(form, "rounds", 8, 30);
-    if agent == "model" && app.agent_url.is_none() {
+    if agent == "model" && app.models.is_empty() {
         return Ok(html::error(
             "the model agent needs a model key; this process started without one",
         ));

@@ -169,6 +169,7 @@ input[type=text]:focus, textarea:focus, select:focus { outline: none; border-col
 textarea { min-height: 5.5em; resize: vertical; }
 textarea.short { min-height: 3.6em; }
 select { width: auto; max-width: 100%; }
+select.small { font-size: var(--t0); padding: 1px var(--s2); }
 .actions, .group { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
 .flow > .group + .group { margin-top: var(--s2); }
 .group .lbl { color: var(--muted); font-size: var(--t0); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; min-width: 9.5rem; cursor: default; }

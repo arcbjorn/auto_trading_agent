@@ -59,15 +59,20 @@ pub struct Live {
     pub summary: Option<Summary>,
 }
 
-pub fn panel(app: &App) -> String {
-    let (model_option, baseline_selected) = match &app.model {
-        Ok(_) => (
-            "<option value=\"model\">the model, on its own (experimental)</option>",
+pub fn panel(selected: Option<&super::ModelChoice>) -> String {
+    let (model_option, baseline_selected, model_id) = match selected {
+        Some(m) => (
+            format!(
+                "<option value=\"model\">{}, on its own (experimental)</option>",
+                esc(&m.id)
+            ),
             "",
+            esc(&m.id),
         ),
-        Err(_) => (
-            "<option value=\"model\" disabled>the model (needs a key)</option>",
+        None => (
+            "<option value=\"model\" disabled>the model (needs a key)</option>".to_string(),
             " selected",
+            String::new(),
         ),
     };
     html::panel(
@@ -77,6 +82,7 @@ pub fn panel(app: &App) -> String {
         &format!(
             r##"<p class="muted small">Beyond the brief: the supervised chat above is the product; this is an experiment in letting the model act on a goal.</p>
 <form hx-post="/ui/live/run" hx-target="#live-result" class="actions">
+  <input type="hidden" name="model" value="{model_id}">
   <select name="agent">{model_option}<option value="baseline"{baseline_selected}>baseline: bid at the best bid</option></select>
   <label class="inline">rounds <input type="text" name="rounds" value="8"></label>
   <button type="submit" class="accent">start</button>
@@ -131,7 +137,10 @@ pub async fn run(app: &Arc<App>, form: &HashMap<String, String>) -> anyhow::Resu
         .unwrap_or(if agent_name == "model" { 400 } else { 1_500 })
         .min(5_000);
     let model = if agent_name == "model" {
-        match ModelClient::from_env() {
+        let Some(choice) = app.model(form.get("model").map(String::as_str)) else {
+            return Ok(html::error("the model needs a key; this process started without one"));
+        };
+        match ModelClient::from_env_for(choice.provider) {
             Ok(m) => Some(m),
             Err(e) => return Ok(html::error(&format!("the model needs a key: {e}"))),
         }

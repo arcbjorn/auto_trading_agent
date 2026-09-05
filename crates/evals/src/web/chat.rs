@@ -75,30 +75,45 @@ pub fn audit_path(app: &App) -> PathBuf {
 
 /// The cockpit: the chat, with the things a message changes beside it, and the hostile-model
 /// panel under it. Shown on every view; the tabs below it are the parts under the hood.
-pub fn home(app: &App, session_id: &str, hostile: &str, live: &str) -> String {
-    let (notice, disabled) = match &app.model {
-        Ok(model) => {
-            // "deepseek model=deepseek-v4-flash thinking=true ..." reads better as id and provider.
-            let id = model
-                .split("model=")
-                .nth(1)
-                .and_then(|r| r.split(' ').next())
-                .unwrap_or(model);
-            let provider = model.split(' ').next().unwrap_or("");
+pub fn home(app: &App, session_id: &str, hostile: &str, live: &str, selected: Option<&super::ModelChoice>) -> String {
+    let (notice, disabled) = match selected {
+        Some(m) if app.models.len() > 1 => {
+            // Several keys: choose the model here; changing it starts a new session on that model.
+            let options: String = app
+                .models
+                .iter()
+                .map(|c| {
+                    format!(
+                        "<option value=\"{}\" title=\"{}\"{}>{} via {}</option>",
+                        esc(&c.id),
+                        esc(&c.describe),
+                        if c.id == m.id { " selected" } else { "" },
+                        esc(&c.id),
+                        c.provider
+                    )
+                })
+                .collect();
             (
                 format!(
-                    "<p class=\"muted small\">model <b title=\"{}\">{}</b> via {} · each turn is one <code>POST /chat</code>; the raw request and response sit under every reply</p>",
-                    esc(model),
-                    esc(id),
-                    esc(provider)
+                    "<p class=\"muted small\">model <select name=\"model\" form=\"chat-form\" class=\"small\" onchange=\"location.search = '?model=' + encodeURIComponent(this.value)\">{options}</select> · each turn is one <code>POST /chat</code>; the raw request and response sit under every reply</p>"
                 ),
                 "",
             )
         }
-        Err(why) => (
+        Some(m) => (
+            format!(
+                "<p class=\"muted small\">model <b title=\"{}\">{}</b> via {} · each turn is one <code>POST /chat</code>; the raw request and response sit under every reply</p><input type=\"hidden\" name=\"model\" form=\"chat-form\" value=\"{}\">",
+                esc(&m.describe),
+                esc(&m.id),
+                m.provider,
+                esc(&m.id)
+            ),
+            "",
+        ),
+        None => (
             format!(
                 "<p class=\"err\">Chat is off: {}. Set <code>MODEL_PROVIDER=deepseek</code> with <code>DEEPSEEK_API_KEY</code>, or <code>ANTHROPIC_API_KEY</code>, and start again (<code>make demo-web</code> loads <code>.env</code>). Everything else on this page works without a key, the hostile-model runs included.</p>",
-                esc(why)
+                esc(app.no_model.as_deref().unwrap_or("no model key"))
             ),
             " disabled",
         ),
@@ -126,7 +141,7 @@ pub fn home(app: &App, session_id: &str, hostile: &str, live: &str) -> String {
 <div class="group"><span class="lbl" title="each of these makes one guardrail act; the label names it">test a guardrail</span>{guardrails}</div>
 <div id="transcript" class="transcript scrollbox"></div>
 {thinking}
-<form hx-post="/ui/chat" hx-target="#transcript" hx-swap="beforeend" hx-indicator="#chat-ind" hx-disabled-elt="find button[type=submit]" class="row">
+<form id="chat-form" hx-post="/ui/chat" hx-target="#transcript" hx-swap="beforeend" hx-indicator="#chat-ind" hx-disabled-elt="find button[type=submit]" class="row">
   <input type="hidden" name="session_id" value="{sid}">
   <input type="text" id="message" name="message" placeholder="say something to the agent" autocomplete="off"{disabled}>
   <button type="submit" class="accent"{disabled}>send</button>
@@ -214,11 +229,12 @@ fn flag_class(flag: &str) -> &'static str {
 
 /// One user message through `POST /chat`, rendered as a turn plus an out-of-band session block.
 pub async fn turn(app: &App, form: &HashMap<String, String>) -> anyhow::Result<Html> {
-    let Some(url) = &app.agent_url else {
+    let Some(choice) = app.model(form.get("model").map(String::as_str)) else {
         return Ok(html::html(
             "<p class=\"err\">Chat is off: no model key was found when this process started.</p>".into(),
         ));
     };
+    let url = &choice.url;
     let session_id = form
         .get("session_id")
         .filter(|s| agent_service::http::valid_session_id(s))

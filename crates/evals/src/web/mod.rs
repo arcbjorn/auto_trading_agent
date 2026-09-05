@@ -51,10 +51,10 @@ pub struct App {
     pub mcp_url: String,
     pub mcp: McpClient,
     pub policy: Arc<mcp_server::Policy>,
-    /// The in-process agent-service, when a model key was found.
-    pub agent_url: Option<String>,
-    /// The model's description, or the reason chat is off.
-    pub model: Result<String, String>,
+    /// One in-process agent-service per model whose key is present; the first is the default.
+    pub models: Vec<ModelChoice>,
+    /// Why chat is off, when no model could be built.
+    pub no_model: Option<String>,
     pub http: reqwest::Client,
     /// The audit chain the chat writes to; a goal run's agent shares it.
     pub audit: Audit,
@@ -73,11 +73,27 @@ pub struct App {
     pub started: Instant,
 }
 
+/// A model the page can talk to: its agent-service and how to name it.
+pub struct ModelChoice {
+    pub id: String,
+    pub provider: &'static str,
+    pub describe: String,
+    pub url: String,
+}
+
+impl App {
+    /// The model named by the page or the form, or the default when the name is unknown.
+    pub fn model(&self, id: Option<&str>) -> Option<&ModelChoice> {
+        id.and_then(|id| self.models.iter().find(|m| m.id == id))
+            .or_else(|| self.models.first())
+    }
+}
+
 /// The running stack behind the page; dropped in order on shutdown.
 pub struct Booted {
     pub app: Arc<App>,
     stack: Stack,
-    agent: Option<agent_service::http::HttpServerHandle>,
+    agents: Vec<agent_service::http::HttpServerHandle>,
     /// The event-stream follower; stopped first, since its open `Subscribe` stream would
     /// otherwise hold up the engine's graceful shutdown.
     watcher: tokio::task::JoinHandle<()>,
@@ -87,7 +103,7 @@ impl Booted {
     pub async fn shutdown(self) {
         self.watcher.abort();
         let _ = self.watcher.await;
-        if let Some(agent) = self.agent {
+        for agent in self.agents {
             agent.shutdown().await;
         }
         self.stack.shutdown().await;
@@ -102,13 +118,28 @@ pub struct Dirs<'a> {
     pub out: &'a Path,
 }
 
+/// Builds a client for every provider whose key is present. `MODEL_PROVIDER`, when set, comes
+/// first and is the default; the reasons the others failed are kept for the page when none works.
 pub async fn boot(dirs: Dirs<'_>) -> anyhow::Result<Booted> {
-    boot_with(ModelClient::from_env().map_err(|e| e.to_string()), dirs).await
+    let preferred = std::env::var("MODEL_PROVIDER").unwrap_or_default();
+    let mut providers = vec!["anthropic", "deepseek"];
+    if let Some(i) = providers.iter().position(|p| *p == preferred.trim()) {
+        providers.swap(0, i);
+    }
+    let (mut models, mut reasons) = (Vec::new(), Vec::new());
+    for provider in providers {
+        match ModelClient::from_env_for(provider) {
+            Ok(m) => models.push(m),
+            Err(e) => reasons.push(e.to_string()),
+        }
+    }
+    let no_model = models.is_empty().then(|| reasons.join("; "));
+    boot_with(models, no_model, dirs).await
 }
 
 /// [`boot`] with the model chosen by the caller: the tests drive the real chat API with the
 /// harness's scripted hostile model, so no key is needed there either.
-pub async fn boot_with(model: Result<ModelClient, String>, dirs: Dirs<'_>) -> anyhow::Result<Booted> {
+pub async fn boot_with(models: Vec<ModelClient>, no_model: Option<String>, dirs: Dirs<'_>) -> anyhow::Result<Booted> {
     let Dirs {
         cases: cases_dir,
         results: results_dir,
@@ -123,28 +154,32 @@ pub async fn boot_with(model: Result<ModelClient, String>, dirs: Dirs<'_>) -> an
     let audit_path = out_dir.join("web-audit.jsonl");
     let _ = std::fs::remove_file(&audit_path);
     let audit = Audit::new(Some(audit_path))?;
-    let (agent_url, model, agent) = match model {
-        Ok(model) => {
-            let describe = model.describe();
-            let cfg = AgentConfig {
-                note_channel: NoteChannel::for_model(model.model_id()),
-                ..AgentConfig::default()
-            };
-            let agent = Agent::new(model, McpClient::connect(&stack.mcp_url).await?, cfg, audit.clone()).await?;
-            let state = Arc::new(agent_service::http::State::new(agent));
-            let (addr, handle) = agent_service::http::serve("127.0.0.1:0".parse()?, state).await?;
-            (Some(format!("http://{addr}")), Ok(describe), Some(handle))
-        }
-        Err(why) => (None, Err(why), None),
-    };
+    let (mut choices, mut agents) = (Vec::new(), Vec::new());
+    for model in models {
+        let (id, provider, describe) = (model.model_id().to_string(), model.provider(), model.describe());
+        let cfg = AgentConfig {
+            note_channel: NoteChannel::for_model(&id),
+            ..AgentConfig::default()
+        };
+        let agent = Agent::new(model, McpClient::connect(&stack.mcp_url).await?, cfg, audit.clone()).await?;
+        let state = Arc::new(agent_service::http::State::new(agent));
+        let (addr, handle) = agent_service::http::serve("127.0.0.1:0".parse()?, state).await?;
+        choices.push(ModelChoice {
+            id,
+            provider,
+            describe,
+            url: format!("http://{addr}"),
+        });
+        agents.push(handle);
+    }
     let app = Arc::new(App {
         engine: stack.engine.clone(),
         engine_addr: stack.engine_addr,
         mcp_url: stack.mcp_url.clone(),
         mcp,
         policy: Arc::clone(&stack.policy),
-        agent_url,
-        model,
+        models: choices,
+        no_model,
         http: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(180))
             .build()?,
@@ -163,7 +198,7 @@ pub async fn boot_with(model: Result<ModelClient, String>, dirs: Dirs<'_>) -> an
     Ok(Booted {
         app,
         stack,
-        agent,
+        agents,
         watcher,
     })
 }
@@ -225,10 +260,11 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
     println!("web demo   http://{addr}");
     println!("engine     {} (gRPC)", app.engine_addr);
     println!("mcp        {}", app.mcp_url);
-    match (&app.model, &app.agent_url) {
-        (Ok(model), Some(url)) => println!("chat       {model} through {url}/chat"),
-        (Ok(_), None) => println!("chat       off"),
-        (Err(why), _) => println!("chat       off ({why})"),
+    for m in &app.models {
+        println!("chat       {} through {}/chat", m.describe, m.url);
+    }
+    if let Some(why) = &app.no_model {
+        println!("chat       off ({why})");
     }
     println!("ctrl-c to stop");
     tokio::signal::ctrl_c().await?;
@@ -244,6 +280,7 @@ async fn handle(req: Request<Incoming>, app: Arc<App>) -> Result<Response<Full<B
         m => m.clone(),
     };
     let path = req.uri().path().to_string();
+    let query = req.uri().query().unwrap_or("").to_string();
     let form = if method == Method::POST {
         match Limited::new(req.into_body(), 256 << 10).collect().await {
             Ok(b) => form(&b.to_bytes()),
@@ -252,7 +289,7 @@ async fn handle(req: Request<Incoming>, app: Arc<App>) -> Result<Response<Full<B
     } else {
         HashMap::new()
     };
-    let res = route(&app, method, &path, &form).await;
+    let res = route(&app, method, &path, &query, &form).await;
     Ok(res.unwrap_or_else(|e| html::error(&e.to_string())))
 }
 
@@ -260,10 +297,15 @@ async fn route(
     app: &Arc<App>,
     method: Method,
     path: &str,
+    query: &str,
     form: &HashMap<String, String>,
 ) -> anyhow::Result<Response<Full<Bytes>>> {
     Ok(match (method, path) {
-        (Method::GET, "/") => html::html(page(app)),
+        // `?model=<id>` picks the model the page talks to; a change reloads into a new session.
+        (Method::GET, "/") => {
+            let params = form_from(query.as_bytes());
+            html::html(page(app, params.get("model").map(String::as_str)))
+        }
         (Method::GET, "/htmx.min.js") => html::asset("application/javascript", HTMX),
         (Method::GET, "/style.css") => html::asset("text/css", CSS),
         (Method::GET, "/app.js") => html::asset("application/javascript", JS),
@@ -301,14 +343,12 @@ async fn route(
     })
 }
 
-fn page(app: &App) -> String {
-    // The status shows ports and the model id; the full description is on the agent tab.
-    let chat = match &app.model {
-        Ok(m) => format!(
-            "chat <b>{}</b>",
-            html::esc(m.split("model=").nth(1).and_then(|r| r.split(' ').next()).unwrap_or(m))
-        ),
-        Err(_) => "chat <b>off</b>".to_string(),
+fn page(app: &App, model: Option<&str>) -> String {
+    let selected = app.model(model);
+    // The status shows ports and the model id; the full description is in the chat panel.
+    let chat = match selected {
+        Some(m) => format!("chat <b>{}</b>", html::esc(&m.id)),
+        None => "chat <b>off</b>".to_string(),
     };
     let port = |addr: &str| addr.rsplit(':').next().map(|p| format!(":{p}")).unwrap_or_default();
     let status = format!(
@@ -324,7 +364,13 @@ fn page(app: &App) -> String {
             .map(|d| d.as_millis())
             .unwrap_or(0)
     );
-    let home = chat::home(app, &session_id, &evals::hostile_panel(), &live::panel(app));
+    let home = chat::home(
+        app,
+        &session_id,
+        &evals::hostile_panel(),
+        &live::panel(selected),
+        selected,
+    );
     let sections = format!(
         "{}{}{}{}",
         engine::section(),
@@ -335,8 +381,12 @@ fn page(app: &App) -> String {
     html::page(&status, &home, &sections)
 }
 
-/// `application/x-www-form-urlencoded`, which is what htmx sends.
+/// `application/x-www-form-urlencoded`, which is what htmx sends; also the shape of a query string.
 pub fn form(body: &[u8]) -> HashMap<String, String> {
+    form_from(body)
+}
+
+fn form_from(body: &[u8]) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for pair in body.split(|b| *b == b'&') {
         if pair.is_empty() {
@@ -426,6 +476,19 @@ mod tests {
         assert_eq!(f["clients"], "8");
         assert_eq!(f["empty"], "");
         assert_eq!(f["odd"], "%zz%4", "a malformed escape is kept as it was");
+    }
+
+    #[test]
+    fn live_panel_escapes_the_selected_model() {
+        let model = ModelChoice {
+            id: "custom\"<&model".into(),
+            provider: "anthropic",
+            describe: String::new(),
+            url: String::new(),
+        };
+        let panel = live::panel(Some(&model));
+        assert!(panel.contains("name=\"model\" value=\"custom&quot;&lt;&amp;model\""));
+        assert!(panel.contains("custom&quot;&lt;&amp;model, on its own"));
     }
 
     /// The page and every engine panel render against a real in-process stack; the reset and the
@@ -635,8 +698,12 @@ mod tests {
     async fn chat_turn_through_the_real_api() {
         use agent_service::{UnsafeModel, UnsafeStrategy};
         let dir = std::env::temp_dir().join(format!("web-chat-test-{}", std::process::id()));
-        let model = ModelClient::Unsafe(UnsafeModel::new(UnsafeStrategy::Place));
-        let booted = boot_with(Ok(model), dirs(&dir)).await.expect("boot");
+        // Two scripted models: the page offers a choice, and the form's `model` picks the agent.
+        let models = vec![
+            ModelClient::Unsafe(UnsafeModel::new(UnsafeStrategy::Place)),
+            ModelClient::Unsafe(UnsafeModel::new(UnsafeStrategy::CancelAll)),
+        ];
+        let booted = boot_with(models, None, dirs(&dir)).await.expect("boot");
         let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), Arc::clone(&booted.app))
             .await
             .expect("serve");
@@ -658,6 +725,34 @@ mod tests {
             !page.contains("Chat is off") && page.contains("id=\"transcript\""),
             "chat must be on"
         );
+        assert!(
+            page.contains("<select name=\"model\"") && page.contains("unsafe-scripted:cancel_all"),
+            "{page}"
+        );
+        let other = http
+            .get(format!("{base}/?model=unsafe-scripted:cancel_all"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            other.contains("chat <b>unsafe-scripted:cancel_all</b>"),
+            "the query picks the model"
+        );
+        let second = post(
+            "/ui/chat",
+            "session_id=web-t1&model=unsafe-scripted%3Acancel_all&message=What+is+ETH+trading+at%3F",
+        )
+        .await
+        .text()
+        .await
+        .unwrap();
+        assert!(
+            second.contains("cancel_all_orders") && second.contains("held by the service"),
+            "{second}"
+        );
         let turn = post("/ui/chat", "session_id=web-t1&message=What+is+ETH+trading+at%3F").await;
         assert_eq!(turn.headers()["hx-trigger"], "engine, chat");
         let turn = turn.text().await.unwrap();
@@ -670,6 +765,10 @@ mod tests {
             "{turn}"
         );
         assert!(turn.contains("permitted: no action tools"), "{turn}");
+        assert!(
+            turn.contains("&quot;turn&quot;: 1"),
+            "each model has its own session: {turn}"
+        );
         let audit = http
             .get(format!("{base}/ui/chat/audit"))
             .send()
@@ -680,7 +779,8 @@ mod tests {
             .unwrap();
         assert!(audit.contains("turn 1 finished"), "{audit}");
         let ok = post("/ui/chat/audit/verify", "").await.text().await.unwrap();
-        assert!(ok.contains("chain verified: 1 lines"), "{ok}");
+        // Both models write to the one audit chain, so the two turns above are two lines.
+        assert!(ok.contains("chain verified: 2 lines"), "{ok}");
         post("/ui/chat/audit/tamper", "").await;
         let broken = post("/ui/chat/audit/verify", "").await.text().await.unwrap();
         assert!(broken.contains("chain broken"), "{broken}");

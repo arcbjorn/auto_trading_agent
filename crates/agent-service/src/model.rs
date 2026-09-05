@@ -221,12 +221,17 @@ impl From<DeepSeekClient> for ModelClient {
 impl ModelClient {
     /// `MODEL_PROVIDER=anthropic` (default) or `deepseek`; each provider reads its own variables.
     pub fn from_env() -> anyhow::Result<Self> {
-        match std::env::var("MODEL_PROVIDER").as_deref().map(str::trim) {
-            Ok("deepseek") => Ok(ModelClient::DeepSeek(DeepSeekClient::new(DeepSeekConfig::from_env()?)?)),
-            Ok("anthropic") | Ok("") | Err(_) => Ok(ModelClient::Anthropic(AnthropicClient::new(
+        Self::from_env_for(std::env::var("MODEL_PROVIDER").as_deref().unwrap_or(""))
+    }
+
+    /// The client for one provider, from that provider's own variables. `""` means anthropic.
+    pub fn from_env_for(provider: &str) -> anyhow::Result<Self> {
+        match provider.trim() {
+            "deepseek" => Ok(ModelClient::DeepSeek(DeepSeekClient::new(DeepSeekConfig::from_env()?)?)),
+            "anthropic" | "" => Ok(ModelClient::Anthropic(AnthropicClient::new(
                 AnthropicConfig::from_env()?,
             )?)),
-            Ok(other) => anyhow::bail!("unknown MODEL_PROVIDER {other:?}; use anthropic or deepseek"),
+            other => anyhow::bail!("unknown MODEL_PROVIDER {other:?}; use anthropic or deepseek"),
         }
     }
 

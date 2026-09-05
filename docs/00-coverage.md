@@ -43,4 +43,4 @@ Each requirement of the task, the code that implements it and the test or run th
 | Latency | [report.rs::render](../crates/evals/src/report.rs#L58-L214) | [docs/results](results) |
 | Safety, guardrail effectiveness | [model.rs::UnsafeModel](../crates/agent-service/src/model.rs#L68-L71) | `make eval-unsafe` in CI |
 | Prompt robustness | [perturb.rs::apply](../crates/evals/src/perturb.rs#L39-L52) | `make eval-perturbed` |
-| Simulation-based testing | [sim.rs::run](../crates/evals/src/sim.rs#L346-L360) | `make sim` |
+| Simulation-based testing | [sim.rs::run](../crates/evals/src/sim.rs#L351-L365) | `make sim` |

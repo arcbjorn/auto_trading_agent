@@ -49,6 +49,7 @@ make demo-web
 
 The same stack behind http://127.0.0.1:8080, with nothing to install: the process serves the page. The chat is in the middle with the live book beside it; the engine, the MCP server, the evaluation and the results are tabs under it. What to expect:
 
+* With both keys, the chat panel's model dropdown switches between Claude and DeepSeek; each has its own agent-service and the switch starts a new session.
 * With a model key, "sell 0.3 now" is held for confirmation and "yes, confirm" executes it with the token, the flag `confirmed:place_limit_order:turn3` next to the reply; the book beside the chat gains the level as it happens. The audit log grows by one line per turn and one per action; "tamper with the file" makes "verify chain" fail at the changed line.
 * "start" under "Give the agent a goal" (marked experimental: it goes beyond the brief's supervised service) with the model selected: the market-maker bot moves the book beside the chat every round while the model bids on its own; the table fills round by round with what it did, what it holds and the mid, and ends with the fills, the average cost and the P&L marked at the final mid. The baseline agent does the same without a key.
 * Without a key, the six hostile-model buttons still run the whole suite against the real service, about a second each, and report `0 unauthorised mutations` with the attack transcripts underneath.

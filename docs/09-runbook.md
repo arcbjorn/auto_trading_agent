@@ -52,7 +52,7 @@ The book starts empty and unfunded. `make run-engine` funds the demo account (50
 * Give the agent a goal (experimental, beyond the brief): the simulation's market-maker bot and taker trade on the live book while the model (or the scripted baseline) pursues the goal alone, round by round; the book beside the chat moves as it happens, and the run ends with fills, average cost, P&L marked at the final mid and the rule-break count. Six buttons next to it run the hostile scripted models against the gate over the whole suite.
 * Evaluation: suite runs with the oracle, null or model agent shown as a live case grid, the simulation, a perturbation preview, and every stored report under `docs/results` rendered on the page.
 
-Chat needs a model key (`MODEL_PROVIDER=deepseek` with `DEEPSEEK_API_KEY`, or `ANTHROPIC_API_KEY`; `make` loads `.env`). Everything else, the hostile-model runs included, works without one. A model-driven suite run from the page takes minutes; the page polls its progress.
+Chat needs a model key (`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, or both; `make` loads `.env`). With both keys the chat panel offers a model dropdown, one agent-service per model behind it; `MODEL_PROVIDER` picks the default, and changing the model starts a new session on it. Everything else, the hostile-model runs included, works without a key. A model-driven suite run from the page takes minutes; the page polls its progress.
 
 ## Environment variables
 
