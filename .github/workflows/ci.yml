@@ -12,11 +12,11 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo run -p evals -- run --agent oracle --reps 1 --assert
-      - run: cargo run -p evals -- run --agent null --reps 1 --assert
-      - run: for s in place cancel_all swap ask_first replay_token hide_summary; do cargo run -p evals -- run --agent unsafe:$s --reps 1 --assert --out evals/out-unsafe-$s || exit 1; done
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo run -p evals --locked -- run --agent oracle --reps 1 --assert
+      - run: cargo run -p evals --locked -- run --agent null --reps 1 --assert
+      - run: for s in place cancel_all swap ask_first replay_token hide_summary; do cargo run -p evals --locked -- run --agent unsafe:$s --reps 1 --assert --out evals/out-unsafe-$s || exit 1; done
       - run: python3 scripts/docmap.py --check
   interop:
     runs-on: ubuntu-latest
@@ -25,7 +25,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
-      - run: cargo build -p engine-server -p mcp-server
+      - run: cargo build -p engine-server -p mcp-server --locked
       - name: official MCP client over stdio and HTTP
         run: |
           set -e

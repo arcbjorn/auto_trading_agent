@@ -1,5 +1,7 @@
 /target
 **/*.rs.bk
+__pycache__/
+*.py[cod]
 /evals/out/
 audit.jsonl
 *.log

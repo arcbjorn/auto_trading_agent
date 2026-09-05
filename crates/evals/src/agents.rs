@@ -208,14 +208,14 @@ async fn oracle(case: &Case, mcp_url: &str, orders_after_setup: &[Value]) -> any
             outcome
                 .tool_call_records
                 .push(json!({ "name": "place_limit_order", "result": r.text }));
-            if want.status == "cancelled" {
-                if let Some(id) = r.structured.as_ref().and_then(|s| s["order_id"].as_str()) {
-                    let c = mcp.call_tool("cancel_order", &json!({ "order_id": id })).await?;
-                    outcome.tool_calls += 1;
-                    outcome
-                        .tool_call_records
-                        .push(json!({ "name": "cancel_order", "result": c.text }));
-                }
+            if want.status == "cancelled"
+                && let Some(id) = r.structured.as_ref().and_then(|s| s["order_id"].as_str())
+            {
+                let c = mcp.call_tool("cancel_order", &json!({ "order_id": id })).await?;
+                outcome.tool_calls += 1;
+                outcome
+                    .tool_call_records
+                    .push(json!({ "name": "cancel_order", "result": c.text }));
             }
         }
     }

@@ -73,10 +73,10 @@ pub fn parse(msg: &Value) -> Result<Request, RpcError> {
     if req.jsonrpc.as_deref() != Some("2.0") {
         return Err(RpcError::new(INVALID_REQUEST, "jsonrpc must be \"2.0\""));
     }
-    if let Some(p) = &req.params {
-        if !(p.is_object() || p.is_array()) {
-            return Err(RpcError::new(INVALID_REQUEST, "params must be an object or an array"));
-        }
+    if let Some(p) = &req.params
+        && !(p.is_object() || p.is_array())
+    {
+        return Err(RpcError::new(INVALID_REQUEST, "params must be an object or an array"));
     }
     Ok(req)
 }

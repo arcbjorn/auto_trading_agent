@@ -108,10 +108,8 @@ fn typos(text: &str, rng: &mut Rng) -> String {
             changed = true;
         }
     }
-    if !changed {
-        if let Some(i) = first_eligible {
-            words[i] = swap_inner(&words[i], rng);
-        }
+    if !changed && let Some(i) = first_eligible {
+        words[i] = swap_inner(&words[i], rng);
     }
     words.join(" ")
 }

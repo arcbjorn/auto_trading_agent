@@ -341,17 +341,16 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
             let judge = args.judge;
             set.spawn(async move {
                 let mut outcome = run_one(&driver, &suite, &case, rep).await;
-                if judge {
-                    if let Ok(row) = outcome.as_mut() {
-                        if let Ok(model) = agent_service::ModelClient::from_env() {
-                            let seen = crate::agents::TurnOutcome {
-                                reply: row.reply.clone(),
-                                tool_call_records: row.tool_call_records.clone(),
-                                ..crate::agents::TurnOutcome::default()
-                            };
-                            row.judge = crate::judge::score(&model, &case, &seen).await;
-                        }
-                    }
+                if judge
+                    && let Ok(row) = outcome.as_mut()
+                    && let Ok(model) = agent_service::ModelClient::from_env()
+                {
+                    let seen = crate::agents::TurnOutcome {
+                        reply: row.reply.clone(),
+                        tool_call_records: row.tool_call_records.clone(),
+                        ..crate::agents::TurnOutcome::default()
+                    };
+                    row.judge = crate::judge::score(&model, &case, &seen).await;
                 }
                 drop(permit);
                 (index, rep, suite, case.id, outcome)

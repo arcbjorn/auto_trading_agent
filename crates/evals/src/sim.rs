@@ -77,7 +77,7 @@ impl Bot {
         // Drift the mid by up to 0.3% and cancel one stale quote.
         let drift = self.rng.range(0, 60) as i64 - 30;
         self.mid = (self.mid as i64 + drift * 30).max(1) as u64;
-        if !self.open.is_empty() && self.rng.next() % 2 == 0 {
+        if !self.open.is_empty() && self.rng.next().is_multiple_of(2) {
             let idx = (self.rng.next() % self.open.len() as u64) as usize;
             let id = self.open.remove(idx);
             let _ = engine
@@ -122,10 +122,10 @@ impl Bot {
                         tif: TimeInForce::Gtc as i32,
                     })
                     .await?;
-                if let Some(o) = r.into_inner().order {
-                    if o.remaining_lots > 0 {
-                        self.open.push(o.order_id);
-                    }
+                if let Some(o) = r.into_inner().order
+                    && o.remaining_lots > 0
+                {
+                    self.open.push(o.order_id);
                 }
             }
         }

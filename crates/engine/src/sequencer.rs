@@ -159,12 +159,12 @@ fn apply(book: &mut Book, journal: &mut Option<Journal>, cmd: Command, now: i64)
             }),
             _ => None,
         };
-        if let Some(r) = record {
-            if let Err(e) = j.append(&r) {
-                // A journal that cannot be written must not silently become a non-durable engine.
-                tracing_error(&e);
-                return Err(EngineError::Shutdown);
-            }
+        if let Some(r) = record
+            && let Err(e) = j.append(&r)
+        {
+            // A journal that cannot be written must not silently become a non-durable engine.
+            tracing_error(&e);
+            return Err(EngineError::Shutdown);
         }
     }
     match cmd {
@@ -257,21 +257,21 @@ pub fn spawn_with_journal(mut book: Book, capacity: usize, depth: usize, mut jou
                         Err(_) => break,
                     }
                 }
-                if let Some(j) = journal.as_mut() {
-                    if let Err(e) = j.commit() {
-                        // The book has already been mutated by this batch but the journal may not
-                        // hold it, so the two no longer agree. Serving on would hand out state a
-                        // restart could not reproduce: stop instead, and let the operator restart
-                        // from the last durable point.
-                        tracing_error(&e);
-                        for (reply, _) in pending.drain(..) {
-                            let _ = reply.send(Err(EngineError::Shutdown));
-                        }
-                        eprintln!(
-                            "journal commit failed; the matcher is stopping so the book cannot drift from its journal"
-                        );
-                        break;
+                if let Some(j) = journal.as_mut()
+                    && let Err(e) = j.commit()
+                {
+                    // The book has already been mutated by this batch but the journal may not
+                    // hold it, so the two no longer agree. Serving on would hand out state a
+                    // restart could not reproduce: stop instead, and let the operator restart
+                    // from the last durable point.
+                    tracing_error(&e);
+                    for (reply, _) in pending.drain(..) {
+                        let _ = reply.send(Err(EngineError::Shutdown));
                     }
+                    eprintln!(
+                        "journal commit failed; the matcher is stopping so the book cannot drift from its journal"
+                    );
+                    break;
                 }
                 published.store(Arc::new(book.snapshot(depth)));
                 // Subscribers see every event of the batch, in sequence order, after the snapshot.

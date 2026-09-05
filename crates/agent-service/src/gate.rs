@@ -289,18 +289,18 @@ pub fn ids_named(text: &str) -> Vec<String> {
         .collect();
     let mut ids = Vec::new();
     for (i, t) in tokens.iter().enumerate() {
-        if let Some(rest) = t.strip_prefix('#') {
-            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
-                ids.push(rest.to_string());
-                continue;
-            }
+        if let Some(rest) = t.strip_prefix('#')
+            && !rest.is_empty()
+            && rest.chars().all(|c| c.is_ascii_digit())
+        {
+            ids.push(rest.to_string());
+            continue;
         }
-        if ID_WORDS.contains(t) {
-            if let Some(next) = tokens.get(i + 1) {
-                if next.chars().all(|c| c.is_ascii_digit()) {
-                    ids.push((*next).to_string());
-                }
-            }
+        if ID_WORDS.contains(t)
+            && let Some(next) = tokens.get(i + 1)
+            && next.chars().all(|c| c.is_ascii_digit())
+        {
+            ids.push((*next).to_string());
         }
     }
     ids

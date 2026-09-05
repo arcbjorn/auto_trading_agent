@@ -536,7 +536,7 @@ pub async fn load(app: &App, form: &HashMap<String, String>) -> anyhow::Result<H
                     .place_order(PlaceOrderRequest {
                         account_id: account.clone(),
                         client_order_id: format!("load-{t}-{i}-{}", t0.elapsed().as_nanos()),
-                        side: if t % 2 == 0 { Side::Buy } else { Side::Sell } as i32,
+                        side: if t.is_multiple_of(2) { Side::Buy } else { Side::Sell } as i32,
                         price_ticks: i64::try_from(lo + (t + i) % width)?,
                         quantity_lots: 100,
                         tif: TimeInForce::Gtc as i32,

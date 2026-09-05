@@ -998,10 +998,10 @@ impl Book {
                 }
             }
         }
-        if let (Some(b), Some(a)) = (self.best_bid(), self.best_ask()) {
-            if b >= a {
-                return Err(format!("crossed book: bid {b} >= ask {a}"));
-            }
+        if let (Some(b), Some(a)) = (self.best_bid(), self.best_ask())
+            && b >= a
+        {
+            return Err(format!("crossed book: bid {b} >= ask {a}"));
         }
         let mut backing: HashMap<&Arc<str>, (u128, Qty)> = HashMap::new();
         for o in self.orders.values() {
@@ -1066,10 +1066,10 @@ impl Book {
                 }
             }
         }
-        if let (Some(first), Some(last)) = (self.trades.front(), self.trades.back()) {
-            if last.id + 1 - first.id != self.trades.len() as u64 {
-                return Err("retained trade ids are not contiguous".into());
-            }
+        if let (Some(first), Some(last)) = (self.trades.front(), self.trades.back())
+            && last.id + 1 - first.id != self.trades.len() as u64
+        {
+            return Err("retained trade ids are not contiguous".into());
         }
         if self.events.len() > RECENT_EVENTS
             || self.closed.len() > self.retention.closed_orders

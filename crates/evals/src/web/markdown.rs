@@ -9,39 +9,38 @@ fn inline(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 16);
     let mut rest = s;
     while !rest.is_empty() {
-        if let Some(after) = rest.strip_prefix('`') {
-            if let Some(end) = after.find('`') {
-                out.push_str(&format!("<code>{}</code>", esc(&after[..end])));
-                rest = &after[end + 1..];
-                continue;
-            }
+        if let Some(after) = rest.strip_prefix('`')
+            && let Some(end) = after.find('`')
+        {
+            out.push_str(&format!("<code>{}</code>", esc(&after[..end])));
+            rest = &after[end + 1..];
+            continue;
         }
-        if let Some(after) = rest.strip_prefix("**") {
-            if let Some(end) = after.find("**") {
-                out.push_str(&format!("<b>{}</b>", inline(&after[..end])));
-                rest = &after[end + 2..];
-                continue;
-            }
+        if let Some(after) = rest.strip_prefix("**")
+            && let Some(end) = after.find("**")
+        {
+            out.push_str(&format!("<b>{}</b>", inline(&after[..end])));
+            rest = &after[end + 2..];
+            continue;
         }
-        if let Some(after) = rest.strip_prefix('[') {
-            if let (Some(close), Some(paren)) = (after.find("]("), after.find(')')) {
-                if close < paren {
-                    let text = &after[..close];
-                    let url = &after[close + 2..paren];
-                    if url.starts_with("http://") || url.starts_with("https://") {
-                        out.push_str(&format!(
-                            "<a href=\"{}\" target=\"_blank\" rel=\"noopener\">{}</a>",
-                            esc(url),
-                            inline(text)
-                        ));
-                    } else {
-                        // A repository-relative link has no target on this page: keep its text.
-                        out.push_str(&format!("{} <code class=\"muted\">{}</code>", inline(text), esc(url)));
-                    }
-                    rest = &after[paren + 1..];
-                    continue;
-                }
+        if let Some(after) = rest.strip_prefix('[')
+            && let (Some(close), Some(paren)) = (after.find("]("), after.find(')'))
+            && close < paren
+        {
+            let text = &after[..close];
+            let url = &after[close + 2..paren];
+            if url.starts_with("http://") || url.starts_with("https://") {
+                out.push_str(&format!(
+                    "<a href=\"{}\" target=\"_blank\" rel=\"noopener\">{}</a>",
+                    esc(url),
+                    inline(text)
+                ));
+            } else {
+                // A repository-relative link has no target on this page: keep its text.
+                out.push_str(&format!("{} <code class=\"muted\">{}</code>", inline(text), esc(url)));
             }
+            rest = &after[paren + 1..];
+            continue;
         }
         let mut chars = rest.char_indices();
         let (_, c) = chars.next().expect("non-empty");
