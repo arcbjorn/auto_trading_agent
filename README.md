@@ -13,25 +13,37 @@ The demo runs its own order book with simulated balances. **The model requests a
 
 ## Quick start
 
-Requires Rust 1.88 or newer and `make`. No system `protoc` is needed.
+You need Rust 1.88 or newer and `make`. Nothing else: the protobuf compiler is vendored, and the page has no build step.
+
+**1. Add a model key** (optional, but it is what turns chat on):
+
+```sh
+cp .env.example .env      # then paste ANTHROPIC_API_KEY or DEEPSEEK_API_KEY, or both
+```
+
+`make` reads `.env` on every run. With both keys the page offers a model dropdown; `MODEL_PROVIDER=deepseek` in `.env` makes DeepSeek the default.
+
+**2. Start the demo:**
 
 ```sh
 make demo-web
 ```
 
-Open [the local demo](http://127.0.0.1:8080). It builds and starts the stack with a funded demo account and a seeded book. Explore the market, call MCP tools, run scripted evaluations and read reports without an API key.
+The first build takes a few minutes. When it prints `web demo   http://127.0.0.1:8080`, open that address.
 
-To enable chat, copy [.env.example](.env.example) to `.env`, add `ANTHROPIC_API_KEY` or `DEEPSEEK_API_KEY`, then restart the demo. `make` loads the file automatically. Try “What is ETH trading at?”, “Buy 0.5 ETH at 3000” or “Cancel that order”.
+**3. What you see:** one page running the whole stack. A chat with the agent, and beside it the live order book, the last trades, the session and the audit log. Type "Buy 0.5 ETH at 3000" and watch the order appear in the book; type "Sell 0.3 ETH now" and the service holds it for your confirmation. The tabs underneath open the engine, the MCP server, the evaluation harness and the recorded results.
 
-Other useful commands:
+Without a key, everything works except the chat itself: the MCP tools, the load test, the hostile-model runs against the gate, the evaluation suites and the reports.
+
+**Other ways to run it:**
 
 ```sh
-make demo                              # eight-turn terminal conversation; needs a model key
-make eval-oracle                       # check expected outcomes through MCP; no key needed
-cargo test --workspace --locked        # unit, property and integration tests
+make demo                         # the same eight-turn conversation in the terminal; needs a key
+make eval-oracle                  # the evaluation harness with a scripted agent; no key needed
+cargo test --workspace --locked   # 118 unit, property and integration tests
 ```
 
-For DeepSeek terminal demos and model evaluations, set `MODEL_PROVIDER=deepseek` in `.env`. To run separate services, use `make run-engine`, `make run-mcp` and `make run-agent` in three terminals. See the [runbook](docs/09-runbook.md) for configuration and troubleshooting.
+The three services can also run separately (`make run-engine`, `make run-mcp`, `make run-agent`); the [runbook](docs/09-runbook.md) covers configuration, ports and troubleshooting.
 
 ## Where to look
 
