@@ -23,7 +23,13 @@
     var t = document.getElementById('transcript');
     if (t && e.target && (e.target === t || t.contains(e.target))) t.scrollTop = t.scrollHeight;
     var box = document.getElementById('message');
-    if (box && e.target && e.target.id === 'transcript') { box.value = ''; box.focus(); }
+    if (box && e.target && e.target.id === 'transcript') {
+      box.value = '';
+      // Keep the page still: the transcript scrolls inside its own box.
+      box.focus({ preventScroll: true });
+      // A confirmation that has been answered keeps its buttons only as a record.
+      t.querySelectorAll('.turn:not(:last-child) .actions button').forEach(function (b) { b.disabled = true; });
+    }
   });
   // A tool name or preset fills the MCP form; a preset also submits it.
   document.addEventListener('click', function (e) {

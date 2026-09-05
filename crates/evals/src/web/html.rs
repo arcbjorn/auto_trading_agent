@@ -41,10 +41,12 @@ pub fn html_trigger(body: String, event: &str) -> Response<Full<Bytes>> {
     r
 }
 
+/// Assets are compiled into the binary, so a rebuild must be picked up on the next load:
+/// `no-cache` makes the browser revalidate rather than reuse them for an hour.
 pub fn asset(content_type: &str, body: &'static str) -> Response<Full<Bytes>> {
     let mut r = respond(StatusCode::OK, content_type, body);
     r.headers_mut()
-        .insert(header::CACHE_CONTROL, "max-age=3600".parse().expect("header value"));
+        .insert(header::CACHE_CONTROL, "no-cache".parse().expect("header value"));
     r
 }
 

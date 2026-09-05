@@ -61,6 +61,8 @@ html, body {
 *::-webkit-scrollbar { display: none; }
 a { color: var(--fg); }
 code { font-size: var(--t1); }
+/* Resets: no element carries its own vertical margin; the rhythm rule below is the only source. */
+p, dl, dd, ul, ol, pre, details, table, form, h1, h2, h3, h4 { margin: 0; }
 .wrap { max-width: 1320px; margin: 0 auto; padding: 0 var(--s5) var(--s6); }
 .muted { color: var(--muted); }
 .small { font-size: var(--t0); }
@@ -115,7 +117,6 @@ section.tab > h2 small { color: var(--muted); font-weight: 400; font-size: var(-
 .flow > * + * { margin-top: var(--s3); }
 .flow-tight > * + * { margin-top: var(--s2); }
 .flow > .result:empty { margin-top: 0; }
-.flow > p, .flow > dl, .flow > ul, .flow > table, .flow > pre, .flow > details, .flow > form { margin-top: var(--s3); }
 .flow > :first-child { margin-top: 0; }
 
 /* Layout. */
@@ -132,7 +133,6 @@ section.tab > h2 small { color: var(--muted); font-weight: 400; font-size: var(-
 .panel > h3, .panel > summary > h3 { margin: 0 0 var(--s4); font-size: var(--t0); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: var(--s2); }
 .panel > h3 .t, .panel > summary > h3 .t { color: var(--fg); }
 .panel > h3 .src, .panel > summary > h3 .src { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; text-align: right; }
-p { margin: 0; }
 .result:empty { display: none; }
 details.panel > summary { list-style: none; cursor: pointer; }
 details.panel > summary::-webkit-details-marker { display: none; }
@@ -159,7 +159,6 @@ textarea { min-height: 5.5em; resize: vertical; }
 textarea.short { min-height: 3.6em; }
 select { width: auto; max-width: 100%; }
 .actions, .group { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
-.actions { margin: 0; }
 .flow > .group + .group { margin-top: var(--s2); }
 .group .lbl { color: var(--muted); font-size: var(--t0); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; min-width: 9.5rem; cursor: default; }
 form.row { display: flex; gap: var(--s2); align-items: stretch; }
@@ -179,10 +178,10 @@ td.text { white-space: normal; max-width: 36ch; }
 .bar.bid span { background: var(--title); left: 0; }
 .bar.ask span { background: var(--accent); right: 0; }
 tr.spread td { text-align: center; color: var(--muted); font-size: var(--t0); padding: var(--s1); border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); }
-.kv { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: var(--s1) var(--s4); font-size: var(--t1); margin: 0; }
+.kv { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: var(--s1) var(--s4); font-size: var(--t1); }
 .kv dt { color: var(--muted); margin: 0; }
 .kv dd { margin: 0; text-align: right; white-space: nowrap; }
-.list { list-style: none; padding: 0; margin: 0; font-size: var(--t1); }
+.list { list-style: none; padding: 0; font-size: var(--t1); }
 .list li { padding: var(--s1) 0; border-bottom: 1px dotted var(--line); display: flex; gap: var(--s3); white-space: nowrap; }
 .list li:last-child { border-bottom: 0; }
 .list li .k { color: var(--muted); min-width: 9rem; }
@@ -203,8 +202,7 @@ tr.spread td { text-align: center; color: var(--muted); font-size: var(--t0); pa
 .chip.warn { border-color: var(--accent); color: var(--accent); }
 .chip.bad { background: var(--accent); border-color: var(--accent); color: var(--bg); }
 .chip.muted { color: var(--muted); }
-pre { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r1); padding: var(--s2) var(--s3); overflow: auto; font-size: var(--t0); line-height: 1.45; max-height: 380px; margin: 0; }
-details { margin: 0; }
+pre { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r1); padding: var(--s2) var(--s3); overflow: auto; font-size: var(--t0); line-height: 1.45; max-height: 380px; }
 details > *:not(summary) { margin-top: var(--s2); }
 details summary { cursor: pointer; color: var(--muted); font-size: var(--t0); }
 details summary:hover { color: var(--fg); }

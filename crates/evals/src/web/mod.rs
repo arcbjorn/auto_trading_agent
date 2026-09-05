@@ -238,7 +238,11 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
 }
 
 async fn handle(req: Request<Incoming>, app: Arc<App>) -> Result<Response<Full<Bytes>>, Infallible> {
-    let method = req.method().clone();
+    // HEAD is answered like GET; hyper drops the body.
+    let method = match req.method() {
+        &Method::HEAD => Method::GET,
+        m => m.clone(),
+    };
     let path = req.uri().path().to_string();
     let form = if method == Method::POST {
         match Limited::new(req.into_body(), 256 << 10).collect().await {
