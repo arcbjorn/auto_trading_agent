@@ -44,16 +44,21 @@ pub struct Bot {
     pub mid: u64,
     counter: u64,
     open: Vec<String>,
+    /// Makes the bot's client order ids unique per run: on a shared engine a reused id with
+    /// different parameters is refused as a conflicting retry.
+    tag: String,
 }
 
 impl Bot {
-    /// `mid` in ticks: the sim starts at 3000.00, the live run at the book's own mid.
-    pub fn new(seed: u32, mid: u64) -> Self {
+    /// `mid` in ticks: the sim starts at 3000.00, the live run at the book's own mid. `tag`
+    /// distinguishes this run's orders from any earlier run's on the same engine.
+    pub fn new(seed: u32, mid: u64, tag: &str) -> Self {
         Self {
             rng: XorShift(0x9E37_79B9_7F4A_7C15 ^ ((seed as u64 + 1) * 0x2545_F491_4F6C_DD1D)),
             mid,
             counter: 0,
             open: Vec::new(),
+            tag: tag.to_string(),
         }
     }
 
@@ -89,7 +94,7 @@ impl Bot {
             let _ = engine
                 .place_order(PlaceOrderRequest {
                     account_id: "taker".into(),
-                    client_order_id: format!("taker-{}", self.counter),
+                    client_order_id: format!("taker-{}-{}", self.tag, self.counter),
                     side: Side::Sell as i32,
                     price_ticks: (self.mid - 300) as i64,
                     quantity_lots: lots as i64,
@@ -110,7 +115,7 @@ impl Bot {
                 let r = engine
                     .place_order(PlaceOrderRequest {
                         account_id: "bot".into(),
-                        client_order_id: format!("bot-{}", self.counter),
+                        client_order_id: format!("bot-{}-{}", self.tag, self.counter),
                         side: side as i32,
                         price_ticks: price as i64,
                         quantity_lots: lots as i64,
@@ -240,7 +245,7 @@ pub async fn simulate_seed(
             })
             .await?;
     }
-    let mut bot = Bot::new(seed, 300_000);
+    let mut bot = Bot::new(seed, 300_000, &format!("seed{seed}"));
     bot.round(&mut stack.engine).await?;
     let mut violations = 0u32;
     let mut tool_calls = 0usize;

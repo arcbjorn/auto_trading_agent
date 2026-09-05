@@ -587,6 +587,17 @@ mod tests {
             "{live}"
         );
         assert!(live.contains("no rule breaks"), "{live}");
+        // A second run on the same book must not collide with the first run's order ids.
+        let started = post("/ui/live/run", "agent=baseline&rounds=2&pace=0")
+            .await
+            .text()
+            .await
+            .unwrap();
+        let again = wait_for_job(&http, &base, &started).await;
+        assert!(
+            again.contains("no rule breaks") && !again.contains("infrastructure errors"),
+            "{again}"
+        );
         assert!(page.contains("Give the agent a goal"));
         let load = post("/ui/engine/load", "clients=2&per=20").await.text().await.unwrap();
         assert!(

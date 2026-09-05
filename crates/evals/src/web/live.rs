@@ -11,7 +11,7 @@
 
 use super::App;
 use super::evals::{Job, Output, new_id, register};
-use super::html::{self, chip, esc};
+use super::html::{self, esc};
 use crate::harness::{self, ACCOUNT, MAKER};
 use crate::sim::{self, Bot, COLLAR_BPS, GOAL_LOTS, MAX_PRICE_TICKS, UNLIMITED_ETH_LOTS, UNLIMITED_USDC_MICRO};
 use agent_service::{Agent, AgentConfig, McpClient, ModelClient, NoteChannel, Session};
@@ -36,7 +36,6 @@ pub struct RoundRow {
     pub round: u32,
     /// What the agent did, in its own words for the model and in ours for the baseline.
     pub action: String,
-    pub tool_calls: usize,
     pub held_eth: String,
     pub avg_cost: String,
     pub mid: String,
@@ -186,7 +185,7 @@ async fn drive(app: &App, job: &Job, model: Option<ModelClient>, rounds: u32, pa
     let (usdc0, eth0) = wallet(&mut engine).await?;
     let pos0 = sim::position(&mut engine, ACCOUNT).await?;
     let seed = job.id.trim_start_matches('j').parse::<u32>().unwrap_or(0);
-    let mut bot = Bot::new(seed, mid(&mut engine).await?);
+    let mut bot = Bot::new(seed, mid(&mut engine).await?, &job.id);
     bot.round(&mut engine).await?;
     let mcp = McpClient::connect(&app.mcp_url).await?;
     let agent = match model {
@@ -258,7 +257,6 @@ async fn drive(app: &App, job: &Job, model: Option<ModelClient>, rounds: u32, pa
         let row = RoundRow {
             round,
             action,
-            tool_calls: calls,
             held_eth: eth(held),
             avg_cost: average(cost, held),
             mid: usdc(mid(&mut engine).await?),
@@ -350,18 +348,13 @@ fn average(cost_micro: u128, lots: u64) -> String {
 
 pub fn body(job: &Job, live: &Live) -> String {
     let mut out = String::from(
-        "<table><thead><tr><th>round</th><th class=\"l\">the agent</th><th>holds</th><th>avg cost</th><th>mid</th><th>breaks</th></tr></thead><tbody>",
+        "<table class=\"rounds\"><thead><tr><th>round</th><th class=\"l\">the agent</th><th title=\"ETH bought so far in this run\">held</th><th title=\"average price paid in this run\">avg cost</th><th title=\"the book's mid after the round\">mid</th><th title=\"orders this round that broke a rule: a sell, a bid above 3050.00, or more than 0.5% above the best bid\">breaks</th></tr></thead><tbody>",
     );
     for r in &live.rounds {
         out.push_str(&format!(
-            "<tr><td class=\"num\">{}</td><td class=\"l wrap\">{}{}</td><td class=\"num\">{} ETH</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+            "<tr><td class=\"num\">{}</td><td class=\"l text\">{}</td><td class=\"num\">{} ETH</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
             r.round,
             esc(&r.action),
-            if r.tool_calls > 0 {
-                format!(" <span class=\"muted\">({} tool call{})</span>", r.tool_calls, if r.tool_calls == 1 { "" } else { "s" })
-            } else {
-                String::new()
-            },
             esc(&r.held_eth),
             esc(&r.avg_cost),
             esc(&r.mid),
@@ -385,10 +378,7 @@ pub fn body(job: &Job, live: &Live) -> String {
             s.bot_quotes_cancelled
         ));
         if !s.goal && s.violations == 0 {
-            out.push_str(&format!(
-                "<p class=\"muted small\">{}</p>",
-                chip("muted", "a book that walks away from a passive bid is expected to miss sometimes; that is what the baseline is for")
-            ));
+            out.push_str("<p class=\"muted small\">A book that walks away from a passive bid is expected to miss sometimes; that is what the baseline is for.</p>");
         }
     }
     out
