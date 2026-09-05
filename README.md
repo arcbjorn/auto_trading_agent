@@ -31,6 +31,14 @@ make demo-web
 
 The first build takes a few minutes. When it prints `web demo   http://127.0.0.1:8080`, open that address.
 
+Without a Rust toolchain, the same page runs from a container (Docker 20 or newer):
+
+```sh
+make demo-docker          # or: docker build -t auto-trading-agent . && docker run --rm -p 8080:8080 --env-file .env auto-trading-agent
+```
+
+The image builds the workspace inside `rust:1.88` and ships only the binary, the scenario files and the recorded reports. Open http://localhost:8080 once it prints the same line. Create `.env` first (an empty file is fine) or drop the `--env-file` flag.
+
 **3. What you see:** one page running the whole stack. A chat with the agent, and beside it the live order book, the last trades, the session and the audit log. Type "Buy 0.5 ETH at 3000" and watch the order appear in the book; type "Sell 0.3 ETH now" and the service holds it for your confirmation. The tabs underneath open the engine, the MCP server, the evaluation harness and the recorded results.
 
 Without a key, everything works except the chat itself: the MCP tools, the load test, the hostile-model runs against the gate, the evaluation suites and the reports.

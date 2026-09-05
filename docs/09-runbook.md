@@ -64,6 +64,10 @@ Preserve balance mode, exposure and retention settings for recovery. Snapshots e
 
 Chat needs a model key (`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, or both; `make` loads `.env`). With both keys the chat panel offers a model dropdown, one agent-service per model behind it; `MODEL_PROVIDER` picks the default, and changing the model starts a new session on it. Everything else, the hostile-model runs included, works without a key. A model-driven suite run from the page takes minutes; the page polls its progress.
 
+## Docker
+
+`make demo-docker` builds `Dockerfile` and runs the web demo on port 8080. It is the fallback for a machine without Rust; on the host, `make demo-web` is faster and is the primary path (ADR-18). The image is two stages: `rust:1.88-slim-bookworm` compiles the workspace with `--locked` and the vendored `protoc`, and `debian:bookworm-slim` carries the `evals` binary, `evals/cases`, `docs/results` and CA certificates for the model APIs, running as an unprivileged user. Inside the container the page listens on `0.0.0.0:8080`; the browser reaches it as `localhost:8080`, which the request boundary accepts. Keys arrive through `--env-file .env`; the engine, MCP server and agent-service stay inside the container on ephemeral ports, as they do on the host.
+
 ## Environment variables
 
 | Component | Variable | Default |

@@ -5,6 +5,8 @@
 Rust edition 2024, minimum 1.88; `rust-toolchain.toml` selects the stable channel. The workspace
 forbids `unsafe_code`, denies `todo!` and `dbg!`, and the four crates holding market state deny
 unchecked numeric casts (see ADR-25). The protobuf build script configures `protoc` directly.
+The container fallback (ADR-18) builds in `rust:1.88-slim-bookworm` and runs in `debian:bookworm-slim`
+with `ca-certificates` for the model APIs; nothing else is installed in the image.
 
 ## Policy
 

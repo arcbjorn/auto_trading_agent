@@ -70,9 +70,9 @@ Durability for a deterministic book needs only its inputs. The journal holds eve
 
 An agent that can sell what it does not hold is not trading infrastructure. Balances live in the book, next to the orders they back, so reservation, settlement and release happen inside the same deterministic step as matching and are journaled with it; a separate ledger service would need two-phase coordination for something the single writer does for free. Amounts are integers in the engine's own units, so a notional is a multiplication with no rounding. `Deposit` is a gRPC method the operator, the harness and the simulation call; it is not an MCP tool, so no prompt can fund an account. Alternatives: a policy-level notional cap only (what the MCP server already has, and it cannot know what was filled), or balances in the MCP server (one more source of truth, and desktop hosts would bypass it).
 
-## ADR-18 No Docker in this slice
+## ADR-18 Cargo first; one Dockerfile as the fallback
 
-Every component is a cargo binary with environment-variable configuration; the runbook has the three commands. A compose file would add an untested surface without changing the design.
+Every component is a cargo binary with environment-variable configuration; the runbook has the three commands, and `make demo-web` is the primary path. A single `Dockerfile` exists for one case only: a reviewer's machine without a Rust toolchain, where a compile error would otherwise be the first impression. It builds the workspace in a pinned toolchain image and ships the web demo alone, and it is built and driven in a real browser before each change to it lands. There is still no compose file: the demo is one process, so orchestration would add an untested surface without changing the design.
 
 ## ADR-19 An agent loop, not a routing classifier
 
