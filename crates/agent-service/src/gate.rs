@@ -433,7 +433,7 @@ fn names_side(reply: &str, word: &str) -> bool {
     let lower = reply.to_lowercase();
     words(&lower)
         .map(|w| w.trim_matches(|c| c == '.' || c == ','))
-        .filter(|w| w.len() >= stem.len() + 1)
+        .filter(|w| w.len() > stem.len())
         .any(|w| {
             let tail = &w[stem.len()..];
             w.starts_with(stem) && matches!(tail, "ing" | "s" | "es" | "ed" | "e")
