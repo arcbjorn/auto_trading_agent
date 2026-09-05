@@ -3,7 +3,7 @@
 //!   evals run  [--suite execution|paraphrase|safety|all] [--case ID] [--reps N] [--parallel N] [--agent model|oracle|null|unsafe[:place|cancel_all|swap|ask_first|replay_token|hide_summary]] [--cases DIR] [--out DIR] [--perturb casing|noise|typos|all] [--judge] [--assert]
 //!   evals sim  [--seeds N] [--rounds R] [--agent model|baseline|null] [--out DIR]
 //!   evals demo                       the whole stack in one process and a scripted conversation
-//!   evals web  [--addr HOST:PORT]    the same stack behind a browser page (default 127.0.0.1:8080)
+//!   evals web  [--addr HOST:PORT] [--results DIR]   the same stack behind a browser page (default 127.0.0.1:8080)
 //!
 //! `--agent model` calls the Messages API and needs ANTHROPIC_API_KEY. `oracle` performs the
 //! expected actions directly (it must score 100% on execution) and `null` does nothing (it must
@@ -45,6 +45,8 @@ pub struct Args {
     pub judge: bool,
     /// Where `evals web` listens.
     pub addr: String,
+    /// The stored reports `evals web` shows (default docs/results).
+    pub results_dir: PathBuf,
 }
 
 fn parse_args() -> Args {
@@ -63,6 +65,7 @@ fn parse_args() -> Args {
         perturb: None,
         judge: false,
         addr: "127.0.0.1:8080".into(),
+        results_dir: "docs/results".into(),
     };
     let mut it = std::env::args().skip(1);
     if let Some(cmd) = it.next() {
@@ -90,6 +93,7 @@ fn parse_args() -> Args {
             "--seeds" => args.seeds = value.parse().unwrap_or(3),
             "--rounds" => args.rounds = value.parse().unwrap_or(5),
             "--addr" => args.addr = value,
+            "--results" => args.results_dir = value.into(),
             other => eprintln!("ignoring unknown flag {other}"),
         }
     }

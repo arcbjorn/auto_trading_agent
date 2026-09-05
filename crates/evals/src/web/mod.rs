@@ -12,7 +12,9 @@ mod chat;
 mod engine;
 mod evals;
 mod html;
+mod markdown;
 mod mcp;
+mod results;
 
 use crate::Args;
 use crate::cases::Funding;
@@ -55,6 +57,7 @@ pub struct App {
     pub http: reqwest::Client,
     pub out_dir: PathBuf,
     pub cases_dir: PathBuf,
+    pub results_dir: PathBuf,
     /// Background evaluation runs, by id; the page polls them.
     pub jobs: Mutex<HashMap<String, Arc<evals::Job>>>,
     pub job_seq: AtomicU64,
@@ -90,13 +93,24 @@ impl Booted {
 
 /// Starts the engine and the MCP server, funds and seeds the demo book, and starts the
 /// agent-service when a model key is present.
-pub async fn boot(cases_dir: &Path, out_dir: &Path) -> anyhow::Result<Booted> {
-    boot_with(ModelClient::from_env().map_err(|e| e.to_string()), cases_dir, out_dir).await
+pub struct Dirs<'a> {
+    pub cases: &'a Path,
+    pub results: &'a Path,
+    pub out: &'a Path,
+}
+
+pub async fn boot(dirs: Dirs<'_>) -> anyhow::Result<Booted> {
+    boot_with(ModelClient::from_env().map_err(|e| e.to_string()), dirs).await
 }
 
 /// [`boot`] with the model chosen by the caller: the tests drive the real chat API with the
 /// harness's scripted hostile model, so no key is needed there either.
-pub async fn boot_with(model: Result<ModelClient, String>, cases_dir: &Path, out_dir: &Path) -> anyhow::Result<Booted> {
+pub async fn boot_with(model: Result<ModelClient, String>, dirs: Dirs<'_>) -> anyhow::Result<Booted> {
+    let Dirs {
+        cases: cases_dir,
+        results: results_dir,
+        out: out_dir,
+    } = dirs;
     let mut stack = Stack::start().await?;
     stack.fund(&Funding::default()).await?;
     stack.seed(&crate::demo::seed_book()).await?;
@@ -133,6 +147,7 @@ pub async fn boot_with(model: Result<ModelClient, String>, cases_dir: &Path, out
             .build()?,
         out_dir: out_dir.to_path_buf(),
         cases_dir: cases_dir.to_path_buf(),
+        results_dir: results_dir.to_path_buf(),
         jobs: Mutex::new(HashMap::new()),
         job_seq: AtomicU64::new(0),
         events: Mutex::new(VecDeque::new()),
@@ -195,7 +210,12 @@ pub async fn serve(addr: SocketAddr, app: Arc<App>) -> anyhow::Result<(SocketAdd
 }
 
 pub async fn run(args: &Args) -> anyhow::Result<()> {
-    let booted = boot(&args.cases_dir, &args.out_dir).await?;
+    let booted = boot(Dirs {
+        cases: &args.cases_dir,
+        results: &args.results_dir,
+        out: &args.out_dir,
+    })
+    .await?;
     let (addr, handle) = serve(args.addr.parse()?, Arc::clone(&booted.app)).await?;
     let app = &booted.app;
     println!("web demo   http://{addr}");
@@ -261,6 +281,7 @@ async fn route(
         (Method::POST, "/ui/evals/sim") => evals::simulate(app, form).await?,
         (Method::GET, p) if p.starts_with("/ui/evals/job/") => evals::job(app, p.trim_start_matches("/ui/evals/job/")),
         (Method::POST, "/ui/evals/perturb") => evals::perturb(app, form)?,
+        (Method::GET, p) if p.starts_with("/ui/results/") => results::report(app, p.trim_start_matches("/ui/results/")),
         _ => html::not_found(),
     })
 }
@@ -284,11 +305,12 @@ fn page(app: &App) -> String {
             .unwrap_or(0)
     );
     let sections = format!(
-        "{}{}{}{}",
+        "{}{}{}{}{}",
         engine::section(),
         mcp::section(app),
         chat::section(app, &session_id, &evals::hostile_panel()),
-        evals::section(app)
+        evals::section(app),
+        results::section(app)
     );
     html::page(&status, &sections)
 }
@@ -343,9 +365,18 @@ fn percent_decode(s: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    /// The scenario files, from the crate root that `cargo test` runs in.
-    fn cases_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../evals/cases")
+    /// The scenario files and the stored reports, from the crate root that `cargo test` runs in.
+    fn repo(sub: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(sub)
+    }
+
+    fn dirs(out: &Path) -> Dirs<'_> {
+        // The two repository paths are leaked once per test: the struct borrows and tests are short.
+        Dirs {
+            cases: Box::leak(Box::new(repo("evals/cases"))),
+            results: Box::leak(Box::new(repo("docs/results"))),
+            out,
+        }
     }
 
     /// Polls a background run until its fragment stops asking to be polled.
@@ -387,7 +418,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn page_and_engine_panels_render() {
         let dir = std::env::temp_dir().join(format!("web-test-{}", std::process::id()));
-        let booted = boot(&cases_dir(), &dir).await.expect("boot");
+        let booted = boot(dirs(&dir)).await.expect("boot");
         let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), Arc::clone(&booted.app))
             .await
             .expect("serve");
@@ -526,6 +557,21 @@ mod tests {
             "{perturbed}"
         );
         assert!(page.contains("id=\"evals\"") && page.contains("hostile-result"));
+        // Results: the stored reports render as HTML; the index first, paths stay inside the directory.
+        let index = get("/ui/results/README.md").await;
+        assert!(index.contains("<table") && index.contains("class=\"md\""), "{index}");
+        assert!(page.contains("id=\"results\"") && page.contains("report-model-deepseek-v4-flash.md"));
+        for bad in [
+            "/ui/results/../README.md",
+            "/ui/results/nope.md",
+            "/ui/results/README.txt",
+        ] {
+            assert_eq!(
+                http.get(format!("{base}{bad}")).send().await.unwrap().status(),
+                404,
+                "{bad}"
+            );
+        }
         assert!(http.get(format!("{base}/nope")).send().await.unwrap().status() == 404);
         handle.shutdown().await;
         booted.shutdown().await;
@@ -540,7 +586,7 @@ mod tests {
         use agent_service::{UnsafeModel, UnsafeStrategy};
         let dir = std::env::temp_dir().join(format!("web-chat-test-{}", std::process::id()));
         let model = ModelClient::Unsafe(UnsafeModel::new(UnsafeStrategy::Place));
-        let booted = boot_with(Ok(model), &cases_dir(), &dir).await.expect("boot");
+        let booted = boot_with(Ok(model), dirs(&dir)).await.expect("boot");
         let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), Arc::clone(&booted.app))
             .await
             .expect("serve");
