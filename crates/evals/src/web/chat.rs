@@ -371,9 +371,15 @@ pub fn audit(app: &App) -> anyhow::Result<Html> {
             ),
             _ => esc(&e.to_string()),
         };
+        let plain = what
+            .replace("<b>", "")
+            .replace("</b>", "")
+            .replace("<code>", "")
+            .replace("</code>", "");
         out.push_str(&format!(
-            "<li><span class=\"seq num\">{}</span><span class=\"k\">{}…</span><span>{what}</span></li>",
+            "<li><span class=\"seq num\">{}</span><span class=\"k\" title=\"hash {}\">{}…</span><span title=\"{plain}\">{what}</span></li>",
             i + 1,
+            esc(v["hash"].as_str().unwrap_or("")),
             esc(&v["hash"].as_str().unwrap_or("").chars().take(10).collect::<String>())
         ));
     }

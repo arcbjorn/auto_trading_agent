@@ -169,7 +169,7 @@ table { width: 100%; border-collapse: collapse; font-size: var(--t1); }
 th, td { padding: 2px var(--s2); text-align: right; white-space: nowrap; }
 th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); }
 td:first-child, th:first-child, td.l, th.l { text-align: left; }
-td.wrap { white-space: normal; max-width: 36ch; }
+td.text { white-space: normal; max-width: 36ch; }
 .panel > table, .result > table { margin-top: var(--s2); }
 .bar { position: relative; min-width: 7rem; }
 .bar span { position: absolute; top: 15%; bottom: 15%; opacity: 0.18; border-radius: 2px; }
@@ -220,6 +220,11 @@ details summary:hover { color: var(--fg); }
 .turn .meta { color: var(--muted); font-size: var(--t0); margin-top: var(--s1); }
 .run { margin: var(--s2) 0; padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r1); }
 .run > p { margin: 0 0 var(--s1); }
+.run > p .chip { margin-left: var(--s1); }
+.jobhead { display: flex; gap: var(--s3); align-items: baseline; margin: 0; }
+table.rounds td { vertical-align: top; }
+table.rounds td.text { min-width: 22ch; max-width: 48ch; }
+table.rounds th:not(.l), table.rounds td:not(.text) { width: 1%; }
 
 /* Evaluation grids and reports. */
 .cases { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: var(--s1); font-size: var(--t0); margin-top: var(--s2); }
