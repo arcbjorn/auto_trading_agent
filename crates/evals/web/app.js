@@ -2,6 +2,9 @@
 (function () {
   var root = document.documentElement;
   try { var saved = localStorage.getItem('theme'); if (saved) root.dataset.theme = saved; } catch (e) {}
+  // ?theme=light or ?theme=dark forces a theme for this load (screenshots, projectors).
+  var forced = /[?&]theme=(light|dark)\b/.exec(location.search);
+  if (forced) root.dataset.theme = forced[1];
   function label() {
     var dark = root.dataset.theme === 'dark' ||
       (!root.dataset.theme && window.matchMedia('(prefers-color-scheme: dark)').matches);
