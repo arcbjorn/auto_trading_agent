@@ -16,7 +16,7 @@ cargo build --workspace --release
 cargo test --workspace                          # 104 tests
 cp .env.example .env                            # add ANTHROPIC_API_KEY or DEEPSEEK_API_KEY; make loads it
 make demo                                       # whole stack in one process, eight turns
-make demo-web                                   # the same stack behind a browser page on 127.0.0.1:8080
+make demo-web                                   # the same stack behind a browser page on 127.0.0.1:8080 (the goal run on it is experimental)
 make run-engine  /  make run-mcp  /  make run-agent      # the three services, then POST /chat on :8080
 ```
 

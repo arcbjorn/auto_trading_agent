@@ -1,6 +1,9 @@
-//! Give the agent a goal on the live book. The simulation's market-maker bot and taker trade on
-//! this process's engine while the agent, alone with the goal, decides each round; the cockpit's
-//! book, trades and wallet move as it happens, and every action lands in the audit log.
+//! Experimental: give the agent a goal on the live book. The brief asks for a supervised
+//! natural-language service and an evaluation that includes a simulation; letting the model act
+//! on a goal against the live book goes beyond it, and is marked as such on the page and in the
+//! docs. The simulation's market-maker bot and taker trade on this process's engine while the
+//! agent, alone with the goal, decides each round; the cockpit's book, trades and wallet move as
+//! it happens, and every action lands in the audit log.
 //!
 //! This is `evals sim` re-based onto the shared engine: the same bot, the same goal, the same
 //! rule check, but the account starts from whatever it holds, so P&L is the wallet's change over
@@ -59,20 +62,23 @@ pub struct Live {
 
 pub fn panel(app: &App) -> String {
     let (model_option, baseline_selected) = match &app.model {
-        Ok(_) => ("<option value=\"model\">the model, on its own</option>", ""),
+        Ok(_) => (
+            "<option value=\"model\">the model, on its own (experimental)</option>",
+            "",
+        ),
         Err(_) => (
             "<option value=\"model\" disabled>the model (needs a key)</option>",
             " selected",
         ),
     };
     format!(
-        r##"<div class="panel"><h3>Give the agent a goal <span class="right muted">autonomous rounds on this book</span></h3>
+        r##"<div class="panel"><h3>Give the agent a goal <span class="chip warn" style="margin-left:.4rem">experimental</span><span class="right muted">autonomous rounds on this book</span></h3>
 <form hx-post="/ui/live/run" hx-target="#live-result" class="actions" style="margin-top:0">
   <select name="agent" style="width:auto">{model_option}<option value="baseline"{baseline_selected}>baseline: bid at the best bid</option></select>
   <label class="inline">rounds <input type="text" name="rounds" value="8" style="width:3.5rem"></label>
   <button type="submit" class="accent">start</button>
 </form>
-<p class="muted small">The goal: accumulate 2 ETH at or below 3050.00 with limit bids, never more than 0.5% above the best bid. Each round a market-maker bot moves this book and a taker hits the bids; the agent reads the goal and the market and decides alone. Watch the book beside the chat. Rule breaks are counted and every action lands in the audit log.</p>
+<p class="muted small">Beyond the brief: the supervised chat above is the product, this is an experiment in letting the model act on a goal. The goal: accumulate 2 ETH at or below 3050.00 with limit bids, never more than 0.5% above the best bid. Each round a market-maker bot moves this book and a taker hits the bids; the agent reads the goal and the market and decides alone. Watch the book beside the chat. Rule breaks are counted, every action lands in the audit log, and the maker's seed levels are restored afterwards if the market ate them.</p>
 <div id="live-result"></div>
 </div>"##
     )

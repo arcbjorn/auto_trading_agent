@@ -139,9 +139,9 @@ A `request_id` in the chat request (`{"session_id", "request_id", "message"}`) m
 | `MAX_SESSIONS` | `1000` | sessions kept in memory |
 | `SESSION_IDLE_SECS` | `3600` | idle sessions are dropped first when the store is full |
 
-## Autonomous mode
+## Autonomous mode (experimental)
 
-`AgentConfig::autonomous()` is the configuration for a goal run: the message is a goal ("accumulate 2 ETH at or below 3050"), not an order, and the operator who wrote it is the permission. It turns off the intent gate, the confirmation turns, the rule that the figures in the message pin the order, and the post-turn intent check. What remains is what code enforces regardless of the model: the MCP policy, balances, self-trade prevention, and the audit log, which the goal run's agent shares with the chat.
+The brief asks for a supervised service: a person asks, the model requests, code decides. Letting the model act on a goal goes beyond it, so this mode is marked experimental in the code, on the page and here; the chat API never uses it. `AgentConfig::autonomous()` is the configuration for a goal run: the message is a goal ("accumulate 2 ETH at or below 3050"), not an order, and the operator who wrote it is the permission. It turns off the intent gate, the confirmation turns, the rule that the figures in the message pin the order, and the post-turn intent check. What remains is what code enforces regardless of the model: the MCP policy, balances, self-trade prevention, and the audit log, which the goal run's agent shares with the chat.
 
 It is an explicit setting, not the gate switched off. With `gate_tools: false` alone the verifier still compares every executed action with the words and compensates a mismatch, and a goal prompt's own figures would refuse every price the model chose. The simulation and the web page's "give the agent a goal" both use it.
 

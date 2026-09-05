@@ -81,9 +81,11 @@ pub struct AgentConfig {
     pub compensate: bool,
     /// How the permission note reaches the model; see [`NoteChannel`].
     pub note_channel: NoteChannel,
-    /// The user's message is a goal, not an order. The figures in it do not pin the order and
-    /// the verifier does not compare executed actions against the words: permission comes from
-    /// the operator who wrote the goal. The policy and the engine still apply to every action.
+    /// Experimental. The user's message is a goal, not an order. The figures in it do not pin
+    /// the order and the verifier does not compare executed actions against the words:
+    /// permission comes from the operator who wrote the goal. The policy and the engine still
+    /// apply to every action. Used by the simulation and the web page's goal run, not by the
+    /// chat API.
     pub autonomous: bool,
 }
 
@@ -103,9 +105,9 @@ impl Default for AgentConfig {
 }
 
 impl AgentConfig {
-    /// The configuration for a goal run: no intent gate, no confirmation turns, no pinning to
-    /// the figures in the message, no post-turn intent check. What remains is what code
-    /// enforces regardless of the model: the MCP policy, balances, and the audit log.
+    /// Experimental: the configuration for a goal run. No intent gate, no confirmation turns,
+    /// no pinning to the figures in the message, no post-turn intent check. What remains is what
+    /// code enforces regardless of the model: the MCP policy, balances, and the audit log.
     pub fn autonomous() -> Self {
         Self {
             gate_tools: false,

@@ -28,7 +28,7 @@ Each requirement of the task, the code that implements it and the test or run th
 
 | Requirement | Code | Proof |
 |---|---|---|
-| Execute a trade | [agent.rs::Agent::chat_turn](../crates/agent-service/src/agent.rs#L318-L628) | [agent.rs::explicit_buy_places_an_order_with_an_idempotency_key](../crates/agent-service/tests/agent.rs#L267-L294) |
+| Execute a trade | [agent.rs::Agent::chat_turn](../crates/agent-service/src/agent.rs#L320-L630) | [agent.rs::explicit_buy_places_an_order_with_an_idempotency_key](../crates/agent-service/tests/agent.rs#L267-L294) |
 | Return pricing | [gate.rs::Permissions::for_turn](../crates/agent-service/src/gate.rs#L424-L436) | [agent.rs::read_only_question_permits_no_action_tools](../crates/agent-service/tests/agent.rs#L203-L264) |
 | Retrieve order history | [tools.rs::ToolSet::statement](../crates/mcp-server/src/tools.rs#L794-L838) | [book.rs::ledger_tracks_average_cost_realised_pnl_and_withdrawals](../crates/engine/src/book.rs#L1845-L1903) |
 | Guardrails: validation | [units.rs::parse_price](../crates/mcp-server/src/units.rs#L71-L73), [book.rs::MAX_PRICE](../crates/engine/src/book.rs#L34-L34) | [book.rs::hard_caps_reject_absurd_orders_before_anything_else](../crates/engine/src/book.rs#L1923-L1937) |

@@ -101,3 +101,8 @@ The task asks for a book for a single pair, and every layer leans on that. The M
 ## ADR-18 No Docker in this slice
 
 Every component is a cargo binary with environment-variable configuration; the runbook has the three commands. A compose file would add an untested surface without changing the design.
+
+## The goal run is experimental
+
+The brief asks for a supervised natural-language service and an evaluation that includes a simulation. The web page also lets the model act on a goal against the live book, which is the simulation's agent and bot re-based onto the shared engine. That is beyond the brief, so it is marked experimental in the code (`AgentConfig::autonomous`), on the page and in the docs, and the chat API never uses the mode. It stays because it shows what the deterministic layers do when the model is on its own: the policy, the balances and the audit log hold whether or not a person is in the loop. Alternative: leave it out, which would have hidden the regression it found, where the rule that a message's figures pin the order also refused every price a goal-driven model chose.
+
