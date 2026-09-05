@@ -125,14 +125,15 @@ pub fn home(app: &App, session_id: &str, hostile: &str, live: &str) -> String {
 <div class="group"><span class="lbl">trade</span>{trade}</div>
 <div class="group"><span class="lbl" title="each of these makes one guardrail act; the label names it">test a guardrail</span>{guardrails}</div>
 <div id="transcript" class="transcript scrollbox"></div>
-<form hx-post="/ui/chat" hx-target="#transcript" hx-swap="beforeend" hx-indicator="#chat-ind" class="row">
+{thinking}
+<form hx-post="/ui/chat" hx-target="#transcript" hx-swap="beforeend" hx-indicator="#chat-ind" hx-disabled-elt="find button[type=submit]" class="row">
   <input type="hidden" name="session_id" value="{sid}">
   <input type="text" id="message" name="message" placeholder="say something to the agent" autocomplete="off"{disabled}>
   <button type="submit" class="accent"{disabled}>send</button>
   <button type="button" class="small" onclick="location.reload()">new session</button>
-</form>
-<span id="chat-ind" class="htmx-indicator">the model is thinking</span>"##,
+</form>"##,
             sid = esc(session_id),
+            thinking = html::indicator("chat-ind", "the model is thinking"),
             ask = buttons(&ASK),
             trade = buttons(&TRADE),
             guardrails = buttons(&GUARDRAILS),

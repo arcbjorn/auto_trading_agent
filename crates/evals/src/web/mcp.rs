@@ -93,10 +93,11 @@ pub fn section(app: &App) -> String {
         &format!(
             r##"{reads}{actions}{refusals}
 <form hx-post="/ui/mcp/call" hx-target="#mcp-result" hx-indicator="#mcp-ind" class="note">
-  <div class="actions"><input type="text" id="tool" name="tool" value="get_market_summary" class="grow" spellcheck="false"><button type="submit" class="accent">call</button><span id="mcp-ind" class="htmx-indicator">calling</span></div>
+  <div class="actions"><input type="text" id="tool" name="tool" value="get_market_summary" class="grow" spellcheck="false"><button type="submit" class="accent">call</button>{calling}</div>
   <textarea id="args" name="args" spellcheck="false" class="short">{{}}</textarea>
 </form>
 <div id="mcp-result" class="result flow scrollbox"></div>"##,
+            calling = html::indicator("mcp-ind", "calling"),
             reads = preset_group("read"),
             actions = preset_group("act"),
             refusals = preset_group("refused by policy"),

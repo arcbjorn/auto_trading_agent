@@ -217,8 +217,16 @@ pre { background: var(--panel); border: 1px solid var(--line); border-radius: va
 details > *:not(summary) { margin-top: var(--s2); }
 details summary { cursor: pointer; color: var(--muted); font-size: var(--t0); }
 details summary:hover { color: var(--fg); }
-.htmx-indicator { opacity: 0; transition: opacity 0.2s; color: var(--muted); font-size: var(--t0); }
+/* Indicators: text and three pulsing dots while a request is in flight. The element keeps its
+   space when idle, so showing it moves nothing. */
+.htmx-indicator { display: inline-flex; align-items: center; gap: var(--s1); opacity: 0; transition: opacity 0.2s; color: var(--muted); font-size: var(--t0); min-height: 1.5em; }
 .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
+.dots { display: inline-flex; align-items: center; gap: 3px; margin-left: 2px; }
+.dots i { display: block; width: 5px; height: 5px; border-radius: 50%; background: var(--title); animation: pulse 1.2s infinite ease-in-out; }
+.dots i:nth-child(2) { animation-delay: 0.2s; }
+.dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes pulse { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: 0.7; } }
 .progress { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
 .progress span { display: block; height: 100%; background: var(--title); transition: width 0.3s; }
 

@@ -73,13 +73,16 @@ pub fn section() -> String {
         "Concurrent placement",
         "PlaceOrder from N connections",
         "Each client is its own gRPC connection placing GTC orders inside the current spread, so they trade with each other and leave the demo levels alone; their leftovers are cancelled afterwards. Then the book must not be crossed, and USDC and ETH must be conserved across every account: the sum of the wallets equals the sum of the deposits.",
-        r##"<form hx-post="/ui/engine/load" hx-target="#load-result" hx-indicator="#load-ind" class="actions">
+        &format!(
+            r##"<form hx-post="/ui/engine/load" hx-target="#load-result" hx-indicator="#load-ind" class="actions">
   <label class="inline">clients <input type="text" name="clients" value="8"></label>
   <label class="inline">orders each <input type="text" name="per" value="1000"></label>
   <button class="accent" type="submit">fire</button>
-  <span id="load-ind" class="htmx-indicator">running</span>
+  {running}
 </form>
 <div id="load-result" class="result flow scrollbox small"></div>"##,
+            running = html::indicator("load-ind", "running"),
+        ),
     );
     let stats = format!(
         "<details class=\"panel\"><summary><h3><span class=\"t\">Engine statistics</span><span class=\"src\">GetStats, click to open</span></h3></summary>{}</details>",

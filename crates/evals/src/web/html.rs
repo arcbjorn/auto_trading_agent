@@ -68,6 +68,14 @@ pub fn not_found() -> Response<Full<Bytes>> {
     respond(StatusCode::NOT_FOUND, "text/plain", "not found")
 }
 
+/// An htmx indicator: text and three pulsing dots, visible while a request is in flight.
+pub fn indicator(id: &str, text: &str) -> String {
+    format!(
+        "<span id=\"{id}\" class=\"htmx-indicator\">{}<span class=\"dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span></span>",
+        esc(text)
+    )
+}
+
 pub fn chip(class: &str, text: &str) -> String {
     format!("<span class=\"chip {class}\">{}</span>", esc(text))
 }
