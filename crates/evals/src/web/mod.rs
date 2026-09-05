@@ -10,6 +10,7 @@
 
 mod chat;
 mod engine;
+mod evals;
 mod html;
 mod mcp;
 
@@ -53,6 +54,10 @@ pub struct App {
     pub model: Result<String, String>,
     pub http: reqwest::Client,
     pub out_dir: PathBuf,
+    pub cases_dir: PathBuf,
+    /// Background evaluation runs, by id; the page polls them.
+    pub jobs: Mutex<HashMap<String, Arc<evals::Job>>>,
+    pub job_seq: AtomicU64,
     /// The newest engine events, filled by [`engine::watch_events`].
     pub events: Mutex<VecDeque<engine::EventRow>>,
     /// Every account this process has funded: the reset cancels their orders and the load test
@@ -85,13 +90,13 @@ impl Booted {
 
 /// Starts the engine and the MCP server, funds and seeds the demo book, and starts the
 /// agent-service when a model key is present.
-pub async fn boot(out_dir: &Path) -> anyhow::Result<Booted> {
-    boot_with(ModelClient::from_env().map_err(|e| e.to_string()), out_dir).await
+pub async fn boot(cases_dir: &Path, out_dir: &Path) -> anyhow::Result<Booted> {
+    boot_with(ModelClient::from_env().map_err(|e| e.to_string()), cases_dir, out_dir).await
 }
 
 /// [`boot`] with the model chosen by the caller: the tests drive the real chat API with the
 /// harness's scripted hostile model, so no key is needed there either.
-pub async fn boot_with(model: Result<ModelClient, String>, out_dir: &Path) -> anyhow::Result<Booted> {
+pub async fn boot_with(model: Result<ModelClient, String>, cases_dir: &Path, out_dir: &Path) -> anyhow::Result<Booted> {
     let mut stack = Stack::start().await?;
     stack.fund(&Funding::default()).await?;
     stack.seed(&crate::demo::seed_book()).await?;
@@ -127,6 +132,9 @@ pub async fn boot_with(model: Result<ModelClient, String>, out_dir: &Path) -> an
             .timeout(std::time::Duration::from_secs(180))
             .build()?,
         out_dir: out_dir.to_path_buf(),
+        cases_dir: cases_dir.to_path_buf(),
+        jobs: Mutex::new(HashMap::new()),
+        job_seq: AtomicU64::new(0),
         events: Mutex::new(VecDeque::new()),
         accounts: Mutex::new([ACCOUNT.to_string(), MAKER.to_string()].into_iter().collect()),
         reseeds: AtomicU64::new(0),
@@ -187,7 +195,7 @@ pub async fn serve(addr: SocketAddr, app: Arc<App>) -> anyhow::Result<(SocketAdd
 }
 
 pub async fn run(args: &Args) -> anyhow::Result<()> {
-    let booted = boot(&args.out_dir).await?;
+    let booted = boot(&args.cases_dir, &args.out_dir).await?;
     let (addr, handle) = serve(args.addr.parse()?, Arc::clone(&booted.app)).await?;
     let app = &booted.app;
     println!("web demo   http://{addr}");
@@ -249,6 +257,10 @@ async fn route(
         (Method::GET, "/ui/chat/audit") => chat::audit(app)?,
         (Method::POST, "/ui/chat/audit/verify") => chat::verify(app),
         (Method::POST, "/ui/chat/audit/tamper") => chat::tamper(app),
+        (Method::POST, "/ui/evals/run") => evals::run(app, form).await?,
+        (Method::POST, "/ui/evals/sim") => evals::simulate(app, form).await?,
+        (Method::GET, p) if p.starts_with("/ui/evals/job/") => evals::job(app, p.trim_start_matches("/ui/evals/job/")),
+        (Method::POST, "/ui/evals/perturb") => evals::perturb(app, form)?,
         _ => html::not_found(),
     })
 }
@@ -272,10 +284,11 @@ fn page(app: &App) -> String {
             .unwrap_or(0)
     );
     let sections = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         engine::section(),
         mcp::section(app),
-        chat::section(app, &session_id)
+        chat::section(app, &session_id, &evals::hostile_panel()),
+        evals::section(app)
     );
     html::page(&status, &sections)
 }
@@ -330,6 +343,36 @@ fn percent_decode(s: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// The scenario files, from the crate root that `cargo test` runs in.
+    fn cases_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../evals/cases")
+    }
+
+    /// Polls a background run until its fragment stops asking to be polled.
+    async fn wait_for_job(http: &reqwest::Client, base: &str, fragment: &str) -> String {
+        let id = fragment
+            .split("id=\"job-")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .expect("job id in fragment")
+            .to_string();
+        for _ in 0..600 {
+            let body = http
+                .get(format!("{base}/ui/evals/job/{id}"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            if !body.contains("hx-trigger") {
+                return body;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        panic!("job {id} did not finish");
+    }
+
     #[test]
     fn form_decodes_percent_and_plus() {
         let f = form(b"message=Buy+0.5+ETH+%40+3000&clients=8&empty=&odd=%zz%4");
@@ -344,7 +387,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn page_and_engine_panels_render() {
         let dir = std::env::temp_dir().join(format!("web-test-{}", std::process::id()));
-        let booted = boot(&dir).await.expect("boot");
+        let booted = boot(&cases_dir(), &dir).await.expect("boot");
         let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), Arc::clone(&booted.app))
             .await
             .expect("serve");
@@ -436,6 +479,53 @@ mod tests {
             .unwrap();
         assert!(off.contains("Chat is off"), "{off}");
         assert!(get("/ui/chat/audit").await.contains("Empty"));
+        // Evaluation: the oracle must pass the safety suite, a hostile model must leak nothing,
+        // the baseline simulation runs, and a perturbation is shown.
+        let started = post("/ui/evals/run", "agent=oracle&suite=safety&parallel=8")
+            .await
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            started.contains("id=\"job-") && started.contains("running"),
+            "{started}"
+        );
+        let oracle = wait_for_job(&http, &base, &started).await;
+        assert!(oracle.contains("invariants hold for the oracle agent"), "{oracle}");
+        assert!(
+            oracle.contains("(100%)") && oracle.contains("case pass") && !oracle.contains("case fail"),
+            "{oracle}"
+        );
+        let started = post("/ui/evals/run", "agent=unsafe%3Areplay_token&suite=safety&parallel=8")
+            .await
+            .text()
+            .await
+            .unwrap();
+        let hostile = wait_for_job(&http, &base, &started).await;
+        assert!(
+            hostile.contains("0 unauthorised mutations") && hostile.contains("invariants hold for the unsafe agent"),
+            "{hostile}"
+        );
+        let started = post("/ui/evals/sim", "agent=baseline&seeds=1&rounds=2")
+            .await
+            .text()
+            .await
+            .unwrap();
+        let sim = wait_for_job(&http, &base, &started).await;
+        assert!(
+            sim.contains("simulation, baseline agent") && sim.contains("seeds reached the goal"),
+            "{sim}"
+        );
+        let perturbed = post("/ui/evals/perturb", "case=balance-query&kind=casing")
+            .await
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            perturbed.contains("perturbed (casing)") && perturbed.contains("balance-query"),
+            "{perturbed}"
+        );
+        assert!(page.contains("id=\"evals\"") && page.contains("hostile-result"));
         assert!(http.get(format!("{base}/nope")).send().await.unwrap().status() == 404);
         handle.shutdown().await;
         booted.shutdown().await;
@@ -450,7 +540,7 @@ mod tests {
         use agent_service::{UnsafeModel, UnsafeStrategy};
         let dir = std::env::temp_dir().join(format!("web-chat-test-{}", std::process::id()));
         let model = ModelClient::Unsafe(UnsafeModel::new(UnsafeStrategy::Place));
-        let booted = boot_with(Ok(model), &dir).await.expect("boot");
+        let booted = boot_with(Ok(model), &cases_dir(), &dir).await.expect("boot");
         let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), Arc::clone(&booted.app))
             .await
             .expect("serve");
@@ -468,7 +558,10 @@ mod tests {
             }
         };
         let page = http.get(&base).send().await.unwrap().text().await.unwrap();
-        assert!(!page.contains("Chat is off") && page.contains("id=\"transcript\""), "chat must be on");
+        assert!(
+            !page.contains("Chat is off") && page.contains("id=\"transcript\""),
+            "chat must be on"
+        );
         let turn = post("/ui/chat", "session_id=web-t1&message=What+is+ETH+trading+at%3F").await;
         assert_eq!(turn.headers()["hx-trigger"], "engine, chat");
         let turn = turn.text().await.unwrap();

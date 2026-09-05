@@ -42,7 +42,7 @@ pub fn audit_path(app: &App) -> PathBuf {
     app.out_dir.join("web-audit.jsonl")
 }
 
-pub fn section(app: &App, session_id: &str) -> String {
+pub fn section(app: &App, session_id: &str, hostile: &str) -> String {
     let (notice, disabled) = match &app.model {
         Ok(model) => (
             format!(
@@ -97,13 +97,14 @@ pub fn section(app: &App, session_id: &str) -> String {
     </div>
   </div>
 </div>
+{hostile}
 </section>"##,
         sid = esc(session_id),
         audit = html::live("audit", "/ui/chat/audit", "5s", "chat"),
     )
 }
 
-fn compact(args: &Value) -> String {
+pub fn compact(args: &Value) -> String {
     match args.as_object() {
         Some(o) => o
             .iter()

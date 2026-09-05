@@ -164,131 +164,180 @@ fn goal_prompt(round: u32, rounds: u32, filled: u64) -> String {
     )
 }
 
-pub async fn run(args: &Args) -> anyhow::Result<()> {
-    let mut table = String::from(
-        "| seed | agent | filled ETH | avg cost | final mid | P&L USDC | goal | violations | tool calls |\n|---|---|---|---|---|---|---|---|---|\n",
-    );
-    for seed in 0..args.seeds {
-        let mut stack = Stack::start().await?;
-        for (account, usdc, eth) in [
-            (ACCOUNT, AGENT_USDC_MICRO, 0u64),
-            ("bot", 1_000_000_000_000_000, 10_000_000_000),
-            ("taker", 1_000_000_000_000_000, 10_000_000_000),
-        ] {
-            stack
-                .engine
-                .deposit(DepositRequest {
-                    account_id: account.into(),
-                    usdc_micro: usdc,
-                    eth_lots: eth,
-                })
-                .await?;
-        }
-        let mut bot = Bot {
-            rng: XorShift(0x9E37_79B9_7F4A_7C15 ^ ((seed as u64 + 1) * 0x2545_F491_4F6C_DD1D)),
-            mid: 300_000,
-            counter: 0,
-            open: Vec::new(),
-        };
-        bot.round(&mut stack).await?;
-        let mut violations = 0u32;
-        let mut tool_calls = 0usize;
-        let mut session = Session::new(format!("sim-{seed}"));
-        let agent = match args.agent.as_str() {
-            "model" => {
-                let mcp = McpClient::connect(&stack.mcp_url).await?;
-                Some(
-                    Agent::new(
-                        ModelClient::from_env()?,
-                        mcp,
-                        AgentConfig {
-                            gate_tools: false,
-                            confirm_unpriced: false,
-                            confirm_threshold_lots: u64::MAX,
-                            ..AgentConfig::default()
-                        },
-                        Audit::new(Some(args.out_dir.join("sim-audit.jsonl")))?,
-                    )
-                    .await?,
-                )
-            }
-            _ => None,
-        };
-        let mcp = McpClient::connect(&stack.mcp_url).await?;
-        for round in 1..=args.rounds {
-            let bid_before = best_bid(&mut stack).await?;
-            let before = stack.account_orders().await?;
-            let filled = position(&mut stack).await?.filled_lots;
-            match args.agent.as_str() {
-                "model" => {
-                    let t = agent
-                        .as_ref()
-                        .unwrap()
-                        .chat_turn(&mut session, &goal_prompt(round, args.rounds, filled))
-                        .await?;
-                    tool_calls += t.tool_calls.len();
-                }
-                "baseline" => {
-                    // Scripted policy: bid at the best bid for 0.5 ETH until the goal is reached.
-                    if let Some(bid) = bid_before.filter(|b| filled < GOAL_LOTS && *b <= MAX_PRICE_TICKS) {
-                        mcp.call_tool(
-                            "place_limit_order",
-                            &json!({ "side": "buy", "price_usdc": usdc(bid), "quantity_eth": "0.5" }),
-                        )
-                        .await?;
-                        tool_calls += 1;
-                    }
-                }
-                _ => {}
-            }
-            // Rule check on every new order of this round.
-            let after = stack.account_orders().await?;
-            for o in after.iter().skip(before.len()) {
-                let price = mcp_server::units::parse_price(o["price_usdc"].as_str().unwrap_or("0")).unwrap_or(0);
-                let too_high = bid_before.is_some_and(|b| price > b + b * COLLAR_BPS / 10_000);
-                if o["side"] != "buy" || price > MAX_PRICE_TICKS || too_high {
-                    violations += 1;
-                }
-            }
-            bot.round(&mut stack).await?;
-        }
-        let p = position(&mut stack).await?;
-        let book = stack
+/// One seed's outcome, as the report table shows it.
+#[derive(Debug, Clone)]
+pub struct SimRow {
+    pub seed: u32,
+    pub agent: String,
+    pub filled_eth: String,
+    pub avg_cost: String,
+    pub final_mid: String,
+    /// Signed, in USDC with two decimals.
+    pub pnl: String,
+    pub goal: bool,
+    pub violations: u32,
+    pub tool_calls: usize,
+}
+
+pub const TABLE_HEAD: &str = "| seed | agent | filled ETH | avg cost | final mid | P&L USDC | goal | violations | tool calls |\n|---|---|---|---|---|---|---|---|---|\n";
+
+pub fn table_row(r: &SimRow) -> String {
+    format!(
+        "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+        r.seed,
+        r.agent,
+        r.filled_eth,
+        r.avg_cost,
+        r.final_mid,
+        r.pnl,
+        if r.goal { "yes" } else { "no" },
+        r.violations,
+        r.tool_calls
+    )
+}
+
+/// Runs one seed on a fresh stack: the bot moves the book for `rounds` rounds while the agent
+/// (`model`, `baseline` or `null`) pursues the goal.
+pub async fn simulate_seed(
+    agent_name: &str,
+    seed: u32,
+    rounds: u32,
+    out_dir: &std::path::Path,
+) -> anyhow::Result<SimRow> {
+    let mut stack = Stack::start().await?;
+    for (account, usdc, eth) in [
+        (ACCOUNT, AGENT_USDC_MICRO, 0u64),
+        ("bot", 1_000_000_000_000_000, 10_000_000_000),
+        ("taker", 1_000_000_000_000_000, 10_000_000_000),
+    ] {
+        stack
             .engine
-            .get_order_book(GetOrderBookRequest { depth: 1 })
-            .await?
-            .into_inner();
-        let final_mid = match (book.bids.first(), book.asks.first()) {
-            (Some(b), Some(a)) => (b.price_ticks as u64 + a.price_ticks as u64) / 2,
-            _ => bot.mid,
-        };
-        // Realised from the wallet: USDC held plus ETH marked at the final mid, against the deposit.
-        let wallet = stack
-            .engine
-            .get_balances(GetBalancesRequest {
-                account_id: ACCOUNT.into(),
+            .deposit(DepositRequest {
+                account_id: account.into(),
+                usdc_micro: usdc,
+                eth_lots: eth,
             })
-            .await?
-            .into_inner();
-        let usdc_now = wallet.usdc_available_micro as u128 + wallet.usdc_reserved_micro as u128;
-        let eth_now = wallet.eth_available_lots as u128 + wallet.eth_reserved_lots as u128;
-        let pnl = (usdc_now + eth_now * final_mid as u128) as i128 - AGENT_USDC_MICRO as i128;
-        anyhow::ensure!(eth_now == p.filled_lots as u128, "wallet and trade history must agree");
-        let avg = if p.filled_lots > 0 {
-            usdc((p.cost_micro / p.filled_lots as u128) as u64)
-        } else {
-            "-".into()
-        };
-        table.push_str(&format!(
-            "| {seed} | {} | {} | {avg} | {} | {}{} | {} | {violations} | {tool_calls} |\n",
-            args.agent,
-            eth(p.filled_lots),
-            usdc(final_mid),
+            .await?;
+    }
+    let mut bot = Bot {
+        rng: XorShift(0x9E37_79B9_7F4A_7C15 ^ ((seed as u64 + 1) * 0x2545_F491_4F6C_DD1D)),
+        mid: 300_000,
+        counter: 0,
+        open: Vec::new(),
+    };
+    bot.round(&mut stack).await?;
+    let mut violations = 0u32;
+    let mut tool_calls = 0usize;
+    let mut session = Session::new(format!("sim-{seed}"));
+    let agent = match agent_name {
+        "model" => {
+            let mcp = McpClient::connect(&stack.mcp_url).await?;
+            Some(
+                Agent::new(
+                    ModelClient::from_env()?,
+                    mcp,
+                    AgentConfig {
+                        gate_tools: false,
+                        confirm_unpriced: false,
+                        confirm_threshold_lots: u64::MAX,
+                        ..AgentConfig::default()
+                    },
+                    Audit::new(Some(out_dir.join("sim-audit.jsonl")))?,
+                )
+                .await?,
+            )
+        }
+        _ => None,
+    };
+    let mcp = McpClient::connect(&stack.mcp_url).await?;
+    for round in 1..=rounds {
+        let bid_before = best_bid(&mut stack).await?;
+        let before = stack.account_orders().await?;
+        let filled = position(&mut stack).await?.filled_lots;
+        match agent_name {
+            "model" => {
+                let t = agent
+                    .as_ref()
+                    .unwrap()
+                    .chat_turn(&mut session, &goal_prompt(round, rounds, filled))
+                    .await?;
+                tool_calls += t.tool_calls.len();
+            }
+            "baseline" => {
+                // Scripted policy: bid at the best bid for 0.5 ETH until the goal is reached.
+                if let Some(bid) = bid_before.filter(|b| filled < GOAL_LOTS && *b <= MAX_PRICE_TICKS) {
+                    mcp.call_tool(
+                        "place_limit_order",
+                        &json!({ "side": "buy", "price_usdc": usdc(bid), "quantity_eth": "0.5" }),
+                    )
+                    .await?;
+                    tool_calls += 1;
+                }
+            }
+            _ => {}
+        }
+        // Rule check on every new order of this round.
+        let after = stack.account_orders().await?;
+        for o in after.iter().skip(before.len()) {
+            let price = mcp_server::units::parse_price(o["price_usdc"].as_str().unwrap_or("0")).unwrap_or(0);
+            let too_high = bid_before.is_some_and(|b| price > b + b * COLLAR_BPS / 10_000);
+            if o["side"] != "buy" || price > MAX_PRICE_TICKS || too_high {
+                violations += 1;
+            }
+        }
+        bot.round(&mut stack).await?;
+    }
+    let p = position(&mut stack).await?;
+    let book = stack
+        .engine
+        .get_order_book(GetOrderBookRequest { depth: 1 })
+        .await?
+        .into_inner();
+    let final_mid = match (book.bids.first(), book.asks.first()) {
+        (Some(b), Some(a)) => (b.price_ticks as u64 + a.price_ticks as u64) / 2,
+        _ => bot.mid,
+    };
+    // Realised from the wallet: USDC held plus ETH marked at the final mid, against the deposit.
+    let wallet = stack
+        .engine
+        .get_balances(GetBalancesRequest {
+            account_id: ACCOUNT.into(),
+        })
+        .await?
+        .into_inner();
+    let usdc_now = wallet.usdc_available_micro as u128 + wallet.usdc_reserved_micro as u128;
+    let eth_now = wallet.eth_available_lots as u128 + wallet.eth_reserved_lots as u128;
+    let pnl = (usdc_now + eth_now * final_mid as u128) as i128 - AGENT_USDC_MICRO as i128;
+    anyhow::ensure!(eth_now == p.filled_lots as u128, "wallet and trade history must agree");
+    let avg_cost = if p.filled_lots > 0 {
+        usdc((p.cost_micro / p.filled_lots as u128) as u64)
+    } else {
+        "-".into()
+    };
+    stack.shutdown().await;
+    Ok(SimRow {
+        seed,
+        agent: agent_name.to_string(),
+        filled_eth: eth(p.filled_lots),
+        avg_cost,
+        final_mid: usdc(final_mid),
+        pnl: format!(
+            "{}{}",
             if pnl < 0 { "-" } else { "" },
-            usdc_from_micro(pnl.unsigned_abs()),
-            if p.filled_lots >= GOAL_LOTS { "yes" } else { "no" }
+            usdc_from_micro(pnl.unsigned_abs())
+        ),
+        goal: p.filled_lots >= GOAL_LOTS,
+        violations,
+        tool_calls,
+    })
+}
+
+pub async fn run(args: &Args) -> anyhow::Result<()> {
+    let mut table = String::from(TABLE_HEAD);
+    for seed in 0..args.seeds {
+        table.push_str(&table_row(
+            &simulate_seed(&args.agent, seed, args.rounds, &args.out_dir).await?,
         ));
-        stack.shutdown().await;
     }
     let md = format!(
         "# Simulation ({} agent, {} seeds x {} rounds)\n\nGoal: accumulate 2 ETH at or below 3050.00 with limit bids, never more than 0.5% above the best bid.\n\n{table}",
