@@ -242,11 +242,14 @@ async fn cancels_race_placements_and_leave_the_book_empty() {
                     .into_inner();
                 ids.push(r.order.unwrap().order_id);
             }
+            // Every cancel is its own task so they race in the matcher, but they share the
+            // account's connection: a tonic channel multiplexes over HTTP/2, and 1,200 fresh TCP
+            // connects at once overflow the listener's accept backlog and get reset, which is a
+            // fact about the runner, not about the engine.
             let mut cancels = Vec::new();
             for id in ids {
-                let url = url.clone();
+                let mut c = c.clone();
                 cancels.push(tokio::spawn(async move {
-                    let mut c = EngineClient::connect(url).await.unwrap();
                     c.cancel_order(CancelOrderRequest {
                         account_id: format!("acct-{a}"),
                         order_id: id,
