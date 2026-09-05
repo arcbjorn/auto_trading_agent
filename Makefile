@@ -2,7 +2,7 @@
 -include .env
 export
 
-.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent docmap eval-oracle eval-null eval-unsafe eval-model eval-perturbed eval-judged sim demo demo-web interop
+.PHONY: build test lint fmt bench soak run-engine run-mcp run-mcp-stdio run-agent docmap eval-oracle eval-null eval-unsafe eval-model eval-perturbed eval-judged sim demo demo-web demo-docker interop
 
 build:
 	cargo build --workspace --release
@@ -70,6 +70,11 @@ demo:
 # The same stack behind a browser page on 127.0.0.1:8080; chat needs a model key, the rest does not.
 demo-web:
 	cargo run --release -p evals -- web
+
+# The same page from a container, for a machine without Rust: builds the image, then serves on 8080.
+demo-docker:
+	docker build -t auto-trading-agent .
+	docker run --rm -p 8080:8080 --env-file .env auto-trading-agent
 
 sim:
 	cargo run --release -p evals -- sim --agent baseline --seeds 5 --rounds 8

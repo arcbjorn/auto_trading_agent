@@ -37,3 +37,18 @@ jobs:
           MCP_BIND=127.0.0.1:8000 ./target/debug/mcp-server --http &
           sleep 1
           uv run --with mcp python scripts/mcp_interop_check.py --http http://127.0.0.1:8000/mcp
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # The fallback path for a machine without Rust must keep building: the image, then the page.
+      - run: docker build -t auto-trading-agent .
+      - run: |
+          set -e
+          docker run -d --name demo -p 8080:8080 auto-trading-agent
+          for i in $(seq 1 60); do curl -sf http://localhost:8080/healthz >/dev/null && break; sleep 1; done
+          curl -sf http://localhost:8080/ | grep -q 'id="cockpit"'
+          curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' http://localhost:8080/ | grep -q 403
+          docker logs demo | grep -q 'web demo   http://localhost:8080'
+          docker rm -f demo

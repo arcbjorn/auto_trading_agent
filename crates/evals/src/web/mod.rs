@@ -257,7 +257,13 @@ pub async fn run(args: &Args) -> anyhow::Result<()> {
     .await?;
     let (addr, handle) = serve(args.addr.parse()?, Arc::clone(&booted.app)).await?;
     let app = &booted.app;
-    println!("web demo   http://{addr}");
+    // Bound to every interface (a container), the address to open is still localhost.
+    let shown = if addr.ip().is_unspecified() {
+        format!("localhost:{}", addr.port())
+    } else {
+        addr.to_string()
+    };
+    println!("web demo   http://{shown}");
     println!("engine     {} (gRPC)", app.engine_addr);
     println!("mcp        {}", app.mcp_url);
     for m in &app.models {

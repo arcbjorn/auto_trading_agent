@@ -1,0 +1,9 @@
+# The build copies only the manifests, crates and proto; everything else stays out of the context.
+target
+evals/out
+evals/out-*
+.env
+*.pdf
+*.log
+audit.jsonl
+.git
