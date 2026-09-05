@@ -8,6 +8,7 @@
 //!
 //! Chat needs a model key; every other panel works without one.
 
+mod chat;
 mod engine;
 mod html;
 mod mcp;
@@ -27,7 +28,7 @@ use hyper_util::rt::TokioIo;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -50,6 +51,8 @@ pub struct App {
     pub agent_url: Option<String>,
     /// The model's description, or the reason chat is off.
     pub model: Result<String, String>,
+    pub http: reqwest::Client,
+    pub out_dir: PathBuf,
     /// The newest engine events, filled by [`engine::watch_events`].
     pub events: Mutex<VecDeque<engine::EventRow>>,
     /// Every account this process has funded: the reset cancels their orders and the load test
@@ -83,25 +86,34 @@ impl Booted {
 /// Starts the engine and the MCP server, funds and seeds the demo book, and starts the
 /// agent-service when a model key is present.
 pub async fn boot(out_dir: &Path) -> anyhow::Result<Booted> {
+    boot_with(ModelClient::from_env().map_err(|e| e.to_string()), out_dir).await
+}
+
+/// [`boot`] with the model chosen by the caller: the tests drive the real chat API with the
+/// harness's scripted hostile model, so no key is needed there either.
+pub async fn boot_with(model: Result<ModelClient, String>, out_dir: &Path) -> anyhow::Result<Booted> {
     let mut stack = Stack::start().await?;
     stack.fund(&Funding::default()).await?;
     stack.seed(&crate::demo::seed_book()).await?;
     let mcp = McpClient::connect(&stack.mcp_url).await?;
-    let (agent_url, model, agent) = match ModelClient::from_env() {
+    std::fs::create_dir_all(out_dir)?;
+    // One chain per run, so the verify button always judges what this process wrote.
+    let audit_path = out_dir.join("web-audit.jsonl");
+    let _ = std::fs::remove_file(&audit_path);
+    let (agent_url, model, agent) = match model {
         Ok(model) => {
             let describe = model.describe();
             let cfg = AgentConfig {
                 note_channel: NoteChannel::for_model(model.model_id()),
                 ..AgentConfig::default()
             };
-            std::fs::create_dir_all(out_dir)?;
-            let audit = Audit::new(Some(out_dir.join("web-audit.jsonl")))?;
+            let audit = Audit::new(Some(audit_path))?;
             let agent = Agent::new(model, McpClient::connect(&stack.mcp_url).await?, cfg, audit).await?;
             let state = Arc::new(agent_service::http::State::new(agent));
             let (addr, handle) = agent_service::http::serve("127.0.0.1:0".parse()?, state).await?;
             (Some(format!("http://{addr}")), Ok(describe), Some(handle))
         }
-        Err(e) => (None, Err(e.to_string()), None),
+        Err(why) => (None, Err(why), None),
     };
     let app = Arc::new(App {
         engine: stack.engine.clone(),
@@ -111,6 +123,10 @@ pub async fn boot(out_dir: &Path) -> anyhow::Result<Booted> {
         policy: Arc::clone(&stack.policy),
         agent_url,
         model,
+        http: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180))
+            .build()?,
+        out_dir: out_dir.to_path_buf(),
         events: Mutex::new(VecDeque::new()),
         accounts: Mutex::new([ACCOUNT.to_string(), MAKER.to_string()].into_iter().collect()),
         reseeds: AtomicU64::new(0),
@@ -229,6 +245,10 @@ async fn route(
         (Method::GET, "/ui/mcp/resources") => mcp::resources(app).await?,
         (Method::POST, "/ui/mcp/read") => mcp::read(app, form).await?,
         (Method::GET, "/ui/mcp/prompt") => mcp::prompt(app).await?,
+        (Method::POST, "/ui/chat") => chat::turn(app, form).await?,
+        (Method::GET, "/ui/chat/audit") => chat::audit(app)?,
+        (Method::POST, "/ui/chat/audit/verify") => chat::verify(app),
+        (Method::POST, "/ui/chat/audit/tamper") => chat::tamper(app),
         _ => html::not_found(),
     })
 }
@@ -243,7 +263,20 @@ fn page(app: &App) -> String {
         html::esc(&app.engine_addr.to_string()),
         html::esc(app.mcp_url.trim_start_matches("http://"))
     );
-    let sections = format!("{}{}", engine::section(), mcp::section(app));
+    // A fresh session per page load; "new session" reloads the page.
+    let session_id = format!(
+        "web-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    let sections = format!(
+        "{}{}{}",
+        engine::section(),
+        mcp::section(app),
+        chat::section(app, &session_id)
+    );
     html::page(&status, &sections)
 }
 
@@ -395,7 +428,73 @@ mod tests {
         assert!(get("/ui/mcp/resources").await.contains("orders://me/open"));
         assert!(get("/ui/mcp/prompt").await.contains("trading_assistant"));
         assert!(page.contains("id=\"mcp\"") && page.contains("session notional cap"));
+        // Chat without a model: the panel says so instead of failing.
+        let off = post("/ui/chat", "session_id=web-1&message=hello")
+            .await
+            .text()
+            .await
+            .unwrap();
+        assert!(off.contains("Chat is off"), "{off}");
+        assert!(get("/ui/chat/audit").await.contains("Empty"));
         assert!(http.get(format!("{base}/nope")).send().await.unwrap().status() == 404);
+        handle.shutdown().await;
+        booted.shutdown().await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The chat panel drives the real `POST /chat`; with the harness's hostile scripted model the
+    /// turn shows an action held by the gate, the session shows a pending confirmation, and the
+    /// audit panel shows a verifiable chain that the tamper button breaks.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn chat_turn_through_the_real_api() {
+        use agent_service::{UnsafeModel, UnsafeStrategy};
+        let dir = std::env::temp_dir().join(format!("web-chat-test-{}", std::process::id()));
+        let model = ModelClient::Unsafe(UnsafeModel::new(UnsafeStrategy::Place));
+        let booted = boot_with(Ok(model), &dir).await.expect("boot");
+        let (addr, handle) = serve("127.0.0.1:0".parse().unwrap(), Arc::clone(&booted.app))
+            .await
+            .expect("serve");
+        let http = reqwest::Client::new();
+        let base = format!("http://{addr}");
+        let post = |path: &str, body: &str| {
+            let (http, url, body) = (http.clone(), format!("{base}{path}"), body.to_string());
+            async move {
+                http.post(url)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(body)
+                    .send()
+                    .await
+                    .expect("post")
+            }
+        };
+        let page = http.get(&base).send().await.unwrap().text().await.unwrap();
+        assert!(!page.contains("Chat is off") && page.contains("id=\"transcript\""), "chat must be on");
+        let turn = post("/ui/chat", "session_id=web-t1&message=What+is+ETH+trading+at%3F").await;
+        assert_eq!(turn.headers()["hx-trigger"], "engine, chat");
+        let turn = turn.text().await.unwrap();
+        assert!(
+            turn.contains("place_limit_order") && turn.contains("held by the service"),
+            "{turn}"
+        );
+        assert!(
+            turn.contains("hx-swap-oob") && turn.contains("the next message decides"),
+            "{turn}"
+        );
+        assert!(turn.contains("permitted this turn: no action tools"), "{turn}");
+        let audit = http
+            .get(format!("{base}/ui/chat/audit"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(audit.contains("turn 1 finished"), "{audit}");
+        let ok = post("/ui/chat/audit/verify", "").await.text().await.unwrap();
+        assert!(ok.contains("chain verified: 1 lines"), "{ok}");
+        post("/ui/chat/audit/tamper", "").await;
+        let broken = post("/ui/chat/audit/verify", "").await.text().await.unwrap();
+        assert!(broken.contains("chain broken"), "{broken}");
         handle.shutdown().await;
         booted.shutdown().await;
         let _ = std::fs::remove_dir_all(dir);
