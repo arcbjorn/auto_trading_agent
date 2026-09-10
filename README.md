@@ -1,5 +1,7 @@
 # auto_trading_agent
 
+![Auto Trading Agent: metallic agents in a misty forest beside a stream.](docs/assets/banner.jpg)
+
 A local ETH/USDC trading system in Rust. Ask Claude or DeepSeek to check prices, place limit orders or cancel them, then inspect the tool calls, fills and balances in the browser.
 
 The demo runs its own order book with simulated balances. **The model requests actions; code checks funds, order parameters and risk limits.** Intent recognition uses heuristics, and the services are intended for local use without caller authentication.
@@ -42,6 +44,13 @@ The image builds the workspace inside `rust:1.88` and ships only the binary, the
 **3. What you see:** one page running the whole stack. A chat with the agent, and beside it the live order book, the last trades, the session and the audit log. Type "Buy 0.5 ETH at 3000" and watch the order appear in the book; type "Sell 0.3 ETH now" and the service holds it for your confirmation. The tabs underneath open the engine, the MCP server, the evaluation harness and the recorded results.
 
 Without a key, everything works except the chat itself: the MCP tools, the load test, the hostile-model runs against the gate, the evaluation suites and the reports.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/demo-dark.png">
+  <img src="docs/assets/demo-light.png" alt="The demo page: a limit buy of 0.5 ETH at 3000 USDC, the place_limit_order tool call it produced, the raw request and response, and the order resting at 3000.00 in the live book." width="100%">
+</picture>
+
+That turn, in the page: the tool call the model made, what the service did with it, the raw request and response, and the order resting in the book beside it.
 
 **Other ways to run it:**
 
