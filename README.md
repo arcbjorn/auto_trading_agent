@@ -1,5 +1,3 @@
-# auto_trading_agent
-
 ![Auto Trading Agent: metallic agents in a misty forest beside a stream.](docs/assets/banner.jpg)
 
 A local ETH/USDC trading system in Rust. Ask Claude or DeepSeek to check prices, place limit orders or cancel them, then inspect the tool calls, fills and balances in the browser.
